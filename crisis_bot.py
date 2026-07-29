@@ -18,7 +18,7 @@ CONFIG = {
     "initial_capital": 13.35,  # Your balance
     "test_mode": False,
     "trade_percentage": 0.80,   # 80% of capital = ~$10.68 per trade
-    "cycles": 10,               # ✅ RUN 10 CYCLES
+    "cycles": 100,               # ✅ RUN 10 CYCLES
     "hold_seconds": 10,         # Hold time per trade
     "binance": {
         "api_key": "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn",
