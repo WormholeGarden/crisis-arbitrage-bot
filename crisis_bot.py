@@ -20,9 +20,9 @@ import os
 
 CONFIG = {
     # --- CAPITAL ---
-    "initial_capital": 100,
+    "initial_capital": 1000,  # ✅ Increased to meet minimum order size
     "max_positions": 2,
-    "risk_per_trade": 0.10,
+    "risk_per_trade": 0.10,   # 10% of $1000 = $100 per trade
     
     # --- EXCHANGE API KEYS (BINANCE.US) ---
     "binance": {
@@ -72,15 +72,31 @@ class BinanceAPI:
         self.api_secret = api_secret
         self.base_url = "https://api.binance.us"
     
+    def _format_quantity(self, amount: float) -> str:
+        """Format BTC quantity to meet Binance.US LOT_SIZE filter"""
+        # Minimum BTC quantity for BTCUSDT on Binance.US is 0.0001
+        # Step size is 0.000001 (1 micro-BTC)
+        MIN_QUANTITY = 0.0001
+        STEP_SIZE = 0.000001
+        
+        # ✅ Ensure minimum quantity
+        if amount < MIN_QUANTITY:
+            print(f"⚠️ Quantity {amount:.8f} below minimum {MIN_QUANTITY}. Increasing to {MIN_QUANTITY}.")
+            amount = MIN_QUANTITY
+        
+        # ✅ Round to step size
+        rounded = round(amount / STEP_SIZE) * STEP_SIZE
+        return f"{rounded:.8f}"
+    
     def place_order(self, symbol: str, side: str, amount: float, price: float) -> Dict:
         """Place a REAL order on Binance.US with correct signature"""
         try:
             timestamp = int(time.time() * 1000)
             
-            # ✅ Format quantity to 8 decimal places (BTC precision)
-            quantity_str = f"{amount:.8f}"
+            # ✅ Format quantity to meet LOT_SIZE filter
+            quantity_str = self._format_quantity(amount)
             
-            # ✅ Build params in the EXACT order Binance expects
+            # ✅ Build params
             params = {
                 "symbol": symbol,
                 "side": side.upper(),
@@ -92,7 +108,7 @@ class BinanceAPI:
                 "recvWindow": 5000
             }
             
-            # ✅ Generate signature from the query string
+            # ✅ Generate signature
             query_string = "&".join([f"{k}={v}" for k, v in params.items()])
             signature = hmac.new(
                 self.api_secret.encode('utf-8'),
@@ -227,8 +243,8 @@ class CrisisArbitrageBot:
         # Use real BTC price, not hardcoded values
         entry_price = round(self.btc_price * (1 - country["discount"]), 2)
         
-        # ✅ ROUND BTC QUANTITY TO 8 DECIMAL PLACES
-        btc_amount = round(position_size / entry_price, 8)
+        # Calculate BTC quantity and ensure it meets minimums
+        btc_amount = position_size / entry_price
         
         print(f"\n📡 PLACING REAL BUY ORDER...")
         print(f"   Symbol: BTCUSDT")
