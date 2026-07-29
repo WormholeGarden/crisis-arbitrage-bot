@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 🚀 CRISIS ARBITRAGE BOT - BINANCE.US REAL TRADING
-FIXED: LOT_SIZE and tick size filters
+FIXED: $5 minimum balance version
 """
 
 import time
@@ -15,14 +15,16 @@ import random
 import os
 
 # ========================================================================
-# 📊 CONFIGURATION
+# 📊 CONFIGURATION - UPDATED FOR $5 BALANCE
 # ========================================================================
 
 CONFIG = {
-    "initial_capital": 1000,
-    "max_positions": 2,
-    "risk_per_trade": 0.01,
+    # --- CAPITAL (YOUR ACTUAL BALANCE) ---
+    "initial_capital": 5,  # ✅ $5 USD balance
+    "max_positions": 1,    # Only 1 position at a time
+    "risk_per_trade": 1.0, # 100% of capital = $5 per trade
     
+    # --- EXCHANGE API KEYS ---
     "binance": {
         "api_key": "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn",
         "api_secret": "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0",
@@ -71,22 +73,6 @@ class BinanceAPI:
         self.base_url = "https://api.binance.us"
         self._filter_cache = {}
 
-    def get_account_balance(self) -> Dict:
-        timestamp = int(time.time() * 1000)
-        params = {"timestamp": timestamp, "recvWindow": 5000}
-        query_string = "&".join([f"{k}={v}" for k, v in params.items()])
-        signature = hmac.new(
-            self.api_secret.encode('utf-8'),
-            query_string.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
-        params["signature"] = signature
-        headers = {"X-MBX-APIKEY": self.api_key}
-        resp = requests.get(f"{self.base_url}/api/v3/account", headers=headers, params=params)
-        if resp.status_code != 200:
-            return {"error": f"HTTP {resp.status_code}: {resp.text}"}
-        return [b for b in resp.json()["balances"] if float(b["free"]) > 0]
-
     def _get_symbol_filters(self, symbol: str) -> Dict:
         """Fetch and cache real LOT_SIZE / PRICE_FILTER values from Binance.US"""
         if symbol in self._filter_cache:
@@ -98,7 +84,6 @@ class BinanceAPI:
 
         lot_size = next(f for f in info["filters"] if f["filterType"] == "LOT_SIZE")
         price_filter = next(f for f in info["filters"] if f["filterType"] == "PRICE_FILTER")
-        # MIN_NOTIONAL / NOTIONAL naming varies by exchange version
         notional = next((f for f in info["filters"] if f["filterType"] in ("MIN_NOTIONAL", "NOTIONAL")), None)
 
         filters = {
@@ -111,12 +96,11 @@ class BinanceAPI:
         return filters
 
     def _round_step(self, value: float, step_str: str) -> str:
-        """Round value down to the nearest step, using Decimal to avoid float drift"""
+        """Round value down to the nearest step"""
         from decimal import Decimal, ROUND_DOWN
         step = Decimal(step_str)
         val = Decimal(str(value))
         rounded = (val // step) * step
-        # format with the same number of decimal places as step_str
         decimals = abs(step.as_tuple().exponent)
         return f"{rounded:.{decimals}f}"
 
@@ -129,7 +113,7 @@ class BinanceAPI:
         return f"{rounded:.{decimals}f}"
 
     def place_order(self, symbol: str, side: str, amount: float, price: float) -> Dict:
-        """Place a REAL order on Binance.US using live exchange filters"""
+        """Place a REAL order on Binance.US"""
         try:
             filters = self._get_symbol_filters(symbol)
 
@@ -141,14 +125,13 @@ class BinanceAPI:
             quantity_str = self._round_step(amount, filters["stepSize"])
             price_str = self._round_price(price, filters["tickSize"])
 
-            # Guard against MIN_NOTIONAL rejection too, since that's the next common failure
             min_notional = float(filters.get("minNotional") or 0)
             if min_notional and float(quantity_str) * float(price_str) < min_notional:
                 print(f"❌ Order notional ${float(quantity_str)*float(price_str):.2f} "
                       f"below exchange minimum ${min_notional:.2f}")
                 return {"error": "Below MIN_NOTIONAL"}
 
-            print(f"📋 Formatted Order (live filters: step={filters['stepSize']}, tick={filters['tickSize']}):")
+            print(f"📋 Formatted Order:")
             print(f"   Quantity: {quantity_str}")
             print(f"   Price: ${price_str}")
 
@@ -337,7 +320,7 @@ class CrisisArbitrageBot:
         print("\n" + "="*70)
         print("🏦 CRISIS ARBITRAGE BOT - REAL BINANCE.US TRADING")
         print("="*70)
-        print(f"📊 Starting Capital: ${self.capital:,.0f}")
+        print(f"📊 Starting Capital: ${self.capital:,.2f}")
         print(f"📈 BTC Price: ${self.btc_price:,.2f}")
         print("="*70)
         
@@ -345,7 +328,14 @@ class CrisisArbitrageBot:
         print(f"📊 Found {len(opportunities)} opportunities")
         
         for country in opportunities:
-            position_size = self.capital * self.config["risk_per_trade"]
+            # ✅ Use ALL capital for one trade (with $5 balance)
+            position_size = self.capital  # Use all available capital
+            
+            # ✅ Skip if position is too small
+            if position_size < 1:
+                print(f"⚠️ Position size ${position_size:.2f} is too small. Minimum $1 recommended.")
+                continue
+            
             print(f"\n🚀 EXECUTING TRADE: {country['flag']} {country['name']}")
             print(f"   Discount: {country['discount']*100:.0f}%")
             print(f"   Position Size: ${position_size:,.2f}")
@@ -409,7 +399,7 @@ class CrisisArbitrageBot:
         print(f"📊 Trades: {total}")
         print(f"✅ Win Rate: {win_rate:.1f}%")
         print(f"📈 ROI: {(self.total_profit / self.config['initial_capital']) * 100:.1f}%")
-        print(f"💵 Current Capital: ${self.capital:,.0f}")
+        print(f"💵 Current Capital: ${self.capital:,.2f}")
         print(f"✅ Wins: {self.win_count}")
         print(f"❌ Losses: {self.loss_count}")
         print("="*70)
