@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE BOT - HEDGE FUND EDITION
+🚀 CRISIS ARBITRAGE BOT - REAL BINANCE TRADING
 FULLY AUTOMATED REAL CRYPTO EXECUTION VIA BINANCE API
 """
 
@@ -38,12 +38,12 @@ CONFIG = {
     
     # --- EXECUTION MODE ---
     "manual_execution": {
-        "enabled": False,  # FALSE = AUTO TRADE
+        "enabled": False,
         "email_alerts": False,
         "email": "marino.montagno@gmail.com",
     },
     
-    # --- ASSET CLASSES (CRYPTO ONLY FOR AUTO) ---
+    # --- ASSET CLASSES ---
     "assets": {
         "crypto": {"enabled": True, "max_per_trade": 5000},
         "gold": {"enabled": False, "max_per_trade": 10000},
@@ -143,8 +143,11 @@ class BinanceAPI:
             return 0.0
     
     def place_order(self, symbol: str, side: str, amount: float, price: float) -> Dict:
+        """Place a REAL order on Binance"""
         try:
             headers = {"X-MBX-APIKEY": self.api_key}
+            
+            # ✅ CORRECT: Use the actual symbol
             params = {
                 "symbol": symbol,
                 "side": side.upper(),
@@ -155,12 +158,19 @@ class BinanceAPI:
                 "timestamp": int(time.time() * 1000)
             }
             params["signature"] = self._sign_request(params)
+            
+            # ✅ CORRECT: The correct endpoint
             response = requests.post(
                 f"{self.base_url}/api/v3/order",
                 headers=headers,
                 params=params
             )
-            return response.json()
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {"error": f"HTTP {response.status_code}: {response.text}"}
+                
         except Exception as e:
             return {"error": str(e)}
 
@@ -203,7 +213,7 @@ class AssetExecutor:
         print(f"{'='*60}")
         
         print(f"\n📍 Trade: {country['flag']} {country['iso']}")
-        print(f"   Asset: USDT")
+        print(f"   Asset: BTCUSDT")
         print(f"   Exchange: Binance")
         print(f"   Entry Price: ${trade['entry_price']:,.2f}")
         print(f"   Exit Price: ${trade['exit_price']:,.2f}")
@@ -216,23 +226,25 @@ class AssetExecutor:
     def _place_real_binance_order(self, country: Dict, trade: Dict) -> Dict:
         """Place a REAL order on Binance"""
         try:
-            # Calculate order amount
-            symbol = "USDT"
+            # ✅ Use BTCUSDT - a REAL trading pair on Binance
+            symbol = "BTCUSDT"
             side = "BUY"
-            amount = trade['position_size'] / trade['entry_price']
+            
+            # Convert position size to BTC amount
+            btc_amount = trade['position_size'] / trade['entry_price']
             price = trade['entry_price']
             
             print(f"\n📡 PLACING REAL BINANCE ORDER...")
             print(f"   Symbol: {symbol}")
             print(f"   Side: {side}")
-            print(f"   Quantity: {amount:.6f}")
+            print(f"   Quantity: {btc_amount:.6f} BTC")
             print(f"   Price: ${price:,.2f}")
             
             # ✅ THIS PLACES A REAL ORDER ON BINANCE
             order_result = self.exchange.place_order(
                 symbol=symbol,
                 side=side,
-                amount=amount,
+                amount=btc_amount,
                 price=price
             )
             
@@ -241,19 +253,17 @@ class AssetExecutor:
                 return {"status": "failed", "error": order_result['error']}
             
             print(f"✅ ORDER PLACED SUCCESSFULLY!")
-            print(f"   Order ID: {order_result.get('orderId', 'N/A')}")
-            print(f"   Status: {order_result.get('status', 'N/A')}")
-            
-            # Check if order was filled
-            if order_result.get('status') == 'FILLED':
-                print(f"✅ Order FILLED at ${price:,.2f}")
+            print(f"   Order ID: {order_result.get('orderId', 'Check Binance')}")
+            print(f"   Status: {order_result.get('status', 'Check Binance')}")
+            print(f"   Executed Qty: {order_result.get('executedQty', '0')}")
             
             return {
                 "status": "executed",
                 "type": "crypto",
-                "order_result": order_result,
-                "entry_price": price,
-                "amount": amount
+                "order": order_result,
+                "symbol": symbol,
+                "price": price,
+                "amount": btc_amount
             }
             
         except Exception as e:
@@ -547,5 +557,6 @@ class CrisisArbitrageBot:
 # ========================================================================
 
 if __name__ == "__main__":
+    # Create and run the bot
     bot = CrisisArbitrageBot(CONFIG)
     bot.run(cycles=1)
