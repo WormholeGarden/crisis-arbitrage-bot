@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 🚀 CRISIS ARBITRAGE BOT - BINANCE.US REAL TRADING
-FIXED: Uses actual USDT balance from Binance.US
+RUNNING WITH YOUR 9.33 USDT BALANCE
 """
 
 import time
@@ -9,19 +9,17 @@ import json
 import hashlib
 import hmac
 import requests
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 from datetime import datetime
-import random
-import os
 
 # ========================================================================
 # 📊 CONFIGURATION
 # ========================================================================
 
 CONFIG = {
-    "initial_capital": 5,  # Will be overridden by actual balance
+    "initial_capital": 9.33,  # Your actual balance
     "max_positions": 1,
-    "risk_per_trade": 1.0,
+    "risk_per_trade": 0.50,   # Use 50% = ~$4.66 per trade
     
     "binance": {
         "api_key": "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn",
@@ -188,40 +186,6 @@ class CrisisArbitrageBot:
             print(f"⚠️ Could not fetch BTC price: {e}")
         return 64000.0
     
-    def _get_usdt_balance(self) -> float:
-        """Get actual USDT balance from Binance.US"""
-        try:
-            api_key = self.config["binance"]["api_key"]
-            api_secret = self.config["binance"]["api_secret"]
-            
-            timestamp = int(time.time() * 1000)
-            params = {"timestamp": timestamp}
-            
-            query_string = f"timestamp={timestamp}"
-            signature = hmac.new(
-                api_secret.encode('utf-8'),
-                query_string.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
-            params["signature"] = signature
-            
-            headers = {"X-MBX-APIKEY": api_key}
-            response = requests.get(
-                "https://api.binance.us/api/v3/account",
-                headers=headers,
-                params=params
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                for balance in data.get("balances", []):
-                    if balance["asset"] == "USDT":
-                        return float(balance["free"])
-            return 0.0
-        except Exception as e:
-            print(f"⚠️ Could not fetch balance: {e}")
-            return 0.0
-    
     def _load_fsi_data(self) -> Dict:
         return {
             "SOM": {"name": "Somalia", "flag": "🇸🇴", "fsi_score": 111.3},
@@ -345,17 +309,6 @@ class CrisisArbitrageBot:
         return result
     
     def run_cycle(self):
-        # ✅ GET ACTUAL BALANCE FIRST
-        actual_balance = self._get_usdt_balance()
-        if actual_balance > 0:
-            self.capital = actual_balance
-            print(f"💰 Found USDT balance: ${self.capital:,.2f}")
-        else:
-            print(f"⚠️ No USDT balance found. Check your Binance.US wallet.")
-            print(f"   Your $9.60 is likely in USD, not USDT.")
-            print(f"   Convert USD to USDT in Binance.US first.")
-            return
-        
         print("\n" + "="*70)
         print("🏦 CRISIS ARBITRAGE BOT - REAL BINANCE.US TRADING")
         print("="*70)
@@ -363,19 +316,15 @@ class CrisisArbitrageBot:
         print(f"📈 BTC Price: ${self.btc_price:,.2f}")
         print("="*70)
         
-        if self.capital < 5:
-            print(f"⚠️ Balance ${self.capital:.2f} is too low. Minimum $5 recommended.")
-            return
-        
         opportunities = self.get_opportunities()
         print(f"📊 Found {len(opportunities)} opportunities")
         
         for country in opportunities:
-            # Use 50% of capital for safer trading
-            position_size = self.capital * 0.5
+            # Use 50% of capital per trade
+            position_size = self.capital * CONFIG["risk_per_trade"]
             
             if position_size < 1:
-                print(f"⚠️ Position size ${position_size:.2f} is too small.")
+                print(f"⚠️ Position size ${position_size:.2f} too small. Minimum $1.")
                 continue
             
             print(f"\n🚀 EXECUTING TRADE: {country['flag']} {country['name']}")
