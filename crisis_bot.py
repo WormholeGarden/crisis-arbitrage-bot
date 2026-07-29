@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 🚀 CRISIS ARBITRAGE BOT - SIMPLE MARKET TRADING
-FIXED: Proper LOT_SIZE rounding
+FIXED: Uses 100% of capital to meet MIN_NOTIONAL
 """
 
 import time
@@ -82,33 +82,30 @@ class BinanceAPI:
             # Get current BTC price
             btc_price = self._get_btc_price()
             
+            # ✅ CHECK MINIMUM NOTIONAL FIRST
+            if amount_usdt < min_notional:
+                print(f"⚠️ Amount ${amount_usdt:.2f} below minimum ${min_notional:.2f}")
+                amount_usdt = min_notional
+                print(f"   Adjusted to ${amount_usdt:.2f}")
+            
             # Calculate BTC quantity
             btc_amount = amount_usdt / btc_price
             
-            # ✅ ROUND DOWN TO STEP SIZE
+            # Round down to step size
             btc_amount = self._round_to_step(btc_amount, filters["stepSize"])
             
-            # ✅ ENSURE MINIMUM QUANTITY
+            # Ensure minimum quantity
             if btc_amount < min_qty:
                 print(f"⚠️ Quantity {btc_amount:.8f} below minimum {min_qty}. Using minimum.")
                 btc_amount = min_qty
             
-            # ✅ CHECK MINIMUM NOTIONAL (price * quantity)
-            if btc_amount * btc_price < min_notional:
-                print(f"⚠️ Order value ${btc_amount * btc_price:.2f} below minimum ${min_notional:.2f}")
-                btc_amount = min_notional / btc_price
-                btc_amount = self._round_to_step(btc_amount, filters["stepSize"])
-                print(f"   Adjusted to {btc_amount:.8f} BTC (${btc_amount * btc_price:.2f})")
-            
-            # ✅ FORMAT AS STRING WITH 8 DECIMAL PLACES
+            # Format as string with 8 decimal places
             quantity_str = f"{btc_amount:.8f}"
             
             print(f"\n📡 PLACING {side.upper()} MARKET ORDER...")
             print(f"   BTC Price: ${btc_price:,.2f}")
             print(f"   Amount: ${amount_usdt:,.2f}")
             print(f"   Quantity: {quantity_str} BTC")
-            print(f"   Min Qty: {min_qty:.8f} BTC")
-            print(f"   Step Size: {step_size:.8f} BTC")
             
             timestamp = int(time.time() * 1000)
             
@@ -175,16 +172,11 @@ class CrisisArbitrageBot:
         print(f"📈 BTC Price: ${btc_price:,.2f}")
         print("="*70)
         
-        # Use 50% of capital per trade
-        trade_amount = self.capital * 0.5
-        
-        if trade_amount < 1:
-            print(f"⚠️ Trade amount ${trade_amount:.2f} is too small.")
-            print(f"   Minimum recommended: $5")
-            return
+        # ✅ USE ALL CAPITAL (Binance.US minimum is ~$10)
+        trade_amount = self.capital
         
         print(f"\n🚀 EXECUTING TRADE...")
-        print(f"   Trade Amount: ${trade_amount:,.2f}")
+        print(f"   Trade Amount: ${trade_amount:,.2f} (all capital)")
         
         # 1. BUY BTC
         buy_result = self.api.place_market_order("BUY", trade_amount)
