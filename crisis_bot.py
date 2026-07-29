@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE BOT - REAL BINANCE TRADING
-FULLY AUTOMATED REAL CRYPTO EXECUTION VIA BINANCE API
+🚀 CRISIS ARBITRAGE BOT - BINANCE.US REAL TRADING
+FULLY AUTOMATED REAL CRYPTO EXECUTION VIA BINANCE.US API
 """
 
 import time
@@ -24,7 +24,7 @@ CONFIG = {
     "max_positions": 2,
     "risk_per_trade": 0.10,
     
-    # --- EXCHANGE API KEYS (YOUR KEYS ARE SAFE) ---
+    # --- EXCHANGE API KEYS (BINANCE.US) ---
     "binance": {
         "api_key": "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn",
         "api_secret": "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0",
@@ -77,9 +77,9 @@ class ExchangeConnector:
                     self.config["binance"]["api_key"],
                     self.config["binance"]["api_secret"]
                 )
-                print("✅ Binance connected")
+                print("✅ Binance.US connected")
             except Exception as e:
-                print(f"⚠️ Binance connection failed: {e}")
+                print(f"⚠️ Binance.US connection failed: {e}")
         
         if self.config["bybit"]["enabled"]:
             try:
@@ -105,13 +105,13 @@ class ExchangeConnector:
             return self.bybit.place_order(symbol, side, amount, price)
         return {"error": "No exchange connected"}
 
-# ─── BINANCE API ──────────────────────────────────────────────────────────
+# ─── BINANCE.US API ──────────────────────────────────────────────────────────
 
 class BinanceAPI:
     def __init__(self, api_key: str, api_secret: str):
         self.api_key = api_key
         self.api_secret = api_secret
-        self.base_url = "https://api.binance.com"
+        self.base_url = "https://api.binance.us"  # ✅ FIXED: .US endpoint
     
     def _sign_request(self, params: Dict) -> str:
         query_string = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
@@ -143,11 +143,9 @@ class BinanceAPI:
             return 0.0
     
     def place_order(self, symbol: str, side: str, amount: float, price: float) -> Dict:
-        """Place a REAL order on Binance"""
+        """Place a REAL order on Binance.US"""
         try:
             headers = {"X-MBX-APIKEY": self.api_key}
-            
-            # ✅ CORRECT: Use the actual symbol
             params = {
                 "symbol": symbol,
                 "side": side.upper(),
@@ -159,7 +157,7 @@ class BinanceAPI:
             }
             params["signature"] = self._sign_request(params)
             
-            # ✅ CORRECT: The correct endpoint
+            # ✅ Uses .us endpoint
             response = requests.post(
                 f"{self.base_url}/api/v3/order",
                 headers=headers,
@@ -207,26 +205,26 @@ class AssetExecutor:
         self.exchange = exchange
     
     def execute_crypto(self, country: Dict, trade: Dict) -> Dict:
-        """Execute a REAL crypto trade on Binance"""
+        """Execute a REAL crypto trade on Binance.US"""
         print(f"\n{'='*60}")
-        print("🪙 CRYPTO TRADE EXECUTION (REAL BINANCE ORDER)")
+        print("🪙 CRYPTO TRADE EXECUTION (REAL BINANCE.US ORDER)")
         print(f"{'='*60}")
         
         print(f"\n📍 Trade: {country['flag']} {country['iso']}")
         print(f"   Asset: BTCUSDT")
-        print(f"   Exchange: Binance")
+        print(f"   Exchange: Binance.US")
         print(f"   Entry Price: ${trade['entry_price']:,.2f}")
         print(f"   Exit Price: ${trade['exit_price']:,.2f}")
         print(f"   Position Size: ${trade['position_size']:,.2f}")
         print(f"   Expected Profit: ${trade['position_size'] * ((trade['exit_price'] - trade['entry_price']) / trade['entry_price']):,.2f}")
         
-        # PLACE REAL BINANCE ORDER
+        # PLACE REAL BINANCE.US ORDER
         return self._place_real_binance_order(country, trade)
     
     def _place_real_binance_order(self, country: Dict, trade: Dict) -> Dict:
-        """Place a REAL order on Binance"""
+        """Place a REAL order on Binance.US"""
         try:
-            # ✅ Use BTCUSDT - a REAL trading pair on Binance
+            # ✅ Use BTCUSDT - a REAL trading pair on Binance.US
             symbol = "BTCUSDT"
             side = "BUY"
             
@@ -234,13 +232,13 @@ class AssetExecutor:
             btc_amount = trade['position_size'] / trade['entry_price']
             price = trade['entry_price']
             
-            print(f"\n📡 PLACING REAL BINANCE ORDER...")
+            print(f"\n📡 PLACING REAL BINANCE.US ORDER...")
             print(f"   Symbol: {symbol}")
             print(f"   Side: {side}")
             print(f"   Quantity: {btc_amount:.6f} BTC")
             print(f"   Price: ${price:,.2f}")
             
-            # ✅ THIS PLACES A REAL ORDER ON BINANCE
+            # ✅ THIS PLACES A REAL ORDER ON BINANCE.US
             order_result = self.exchange.place_order(
                 symbol=symbol,
                 side=side,
@@ -253,8 +251,8 @@ class AssetExecutor:
                 return {"status": "failed", "error": order_result['error']}
             
             print(f"✅ ORDER PLACED SUCCESSFULLY!")
-            print(f"   Order ID: {order_result.get('orderId', 'Check Binance')}")
-            print(f"   Status: {order_result.get('status', 'Check Binance')}")
+            print(f"   Order ID: {order_result.get('orderId', 'Check Binance.US')}")
+            print(f"   Status: {order_result.get('status', 'Check Binance.US')}")
             print(f"   Executed Qty: {order_result.get('executedQty', '0')}")
             
             return {
@@ -426,7 +424,7 @@ class CrisisArbitrageBot:
         print(f"   Size: ${position_size:,.2f}")
         print(f"   Expected Return: {expected['net_return']*100:.1f}%")
         
-        # FORCE CRYPTO FOR ALL TRADES - PLACE REAL BINANCE ORDER
+        # FORCE CRYPTO FOR ALL TRADES - PLACE REAL BINANCE.US ORDER
         result = self.executor.execute_crypto(country, trade)
         
         trade["status"] = result.get("status", "pending")
@@ -486,7 +484,7 @@ class CrisisArbitrageBot:
     
     def run(self, cycles: int = 1):
         print("\n" + "="*70)
-        print("🏦 CRISIS ARBITRAGE BOT - REAL BINANCE TRADING")
+        print("🏦 CRISIS ARBITRAGE BOT - BINANCE.US REAL TRADING")
         print("="*70)
         print(f"📊 Capital: ${self.config['initial_capital']:,.0f}")
         print(f"💰 Target Return: {self.config['target_return']*100:.0f}%")
