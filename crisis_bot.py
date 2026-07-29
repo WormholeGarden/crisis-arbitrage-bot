@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 🚀 CRISIS ARBITRAGE BOT - BINANCE.US REAL TRADING
-HONEST VERSION: Real orders, real exits, no fabricated P&L
+FIXED: LOT_SIZE and tick size filters
 """
 
 import time
@@ -19,12 +19,10 @@ import os
 # ========================================================================
 
 CONFIG = {
-    # --- CAPITAL ---
-    "initial_capital": 1000,  # ✅ Increased to meet minimum order size
+    "initial_capital": 1000,
     "max_positions": 2,
-    "risk_per_trade": 0.10,   # 10% of $1000 = $100 per trade
+    "risk_per_trade": 0.10,
     
-    # --- EXCHANGE API KEYS (BINANCE.US) ---
     "binance": {
         "api_key": "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn",
         "api_secret": "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0",
@@ -44,7 +42,7 @@ CONFIG = {
 }
 
 # ========================================================================
-# 📡 BINANCE.US API
+# 📡 BINANCE.US API - FULLY FIXED
 # ========================================================================
 
 class ExchangeConnector:
@@ -74,41 +72,53 @@ class BinanceAPI:
     
     def _format_quantity(self, amount: float) -> str:
         """Format BTC quantity to meet Binance.US LOT_SIZE filter"""
-        # Minimum BTC quantity for BTCUSDT on Binance.US is 0.0001
-        # Step size is 0.000001 (1 micro-BTC)
+        # BTCUSDT filters (from Binance.US):
+        # LOT_SIZE: minQty = 0.0001, stepSize = 0.000001
         MIN_QUANTITY = 0.0001
         STEP_SIZE = 0.000001
         
-        # ✅ Ensure minimum quantity
         if amount < MIN_QUANTITY:
-            print(f"⚠️ Quantity {amount:.8f} below minimum {MIN_QUANTITY}. Increasing to {MIN_QUANTITY}.")
+            print(f"⚠️ Quantity {amount:.8f} below minimum. Using {MIN_QUANTITY}.")
             amount = MIN_QUANTITY
         
-        # ✅ Round to step size
-        rounded = round(amount / STEP_SIZE) * STEP_SIZE
+        # Round DOWN to step size (to avoid going over)
+        rounded = int(amount / STEP_SIZE) * STEP_SIZE
         return f"{rounded:.8f}"
     
+    def _format_price(self, price: float) -> str:
+        """Format price to meet Binance.US tick size filter"""
+        # BTCUSDT tick size (from Binance.US): tickSize = 0.01
+        TICK_SIZE = 0.01
+        
+        # Round to tick size
+        rounded = round(price / TICK_SIZE) * TICK_SIZE
+        return f"{rounded:.2f}"
+    
     def place_order(self, symbol: str, side: str, amount: float, price: float) -> Dict:
-        """Place a REAL order on Binance.US with correct signature"""
+        """Place a REAL order on Binance.US with correct filters"""
         try:
             timestamp = int(time.time() * 1000)
             
-            # ✅ Format quantity to meet LOT_SIZE filter
+            # ✅ Format quantity and price
             quantity_str = self._format_quantity(amount)
+            price_str = self._format_price(price)
             
-            # ✅ Build params
+            print(f"📋 Formatted Order:")
+            print(f"   Quantity: {quantity_str}")
+            print(f"   Price: ${price_str}")
+            
             params = {
                 "symbol": symbol,
                 "side": side.upper(),
                 "type": "LIMIT",
                 "timeInForce": "GTC",
                 "quantity": quantity_str,
-                "price": str(price),
+                "price": price_str,
                 "timestamp": timestamp,
                 "recvWindow": 5000
             }
             
-            # ✅ Generate signature
+            # Generate signature
             query_string = "&".join([f"{k}={v}" for k, v in params.items()])
             signature = hmac.new(
                 self.api_secret.encode('utf-8'),
@@ -135,54 +145,52 @@ class BinanceAPI:
             return {"error": str(e)}
 
 # ========================================================================
-# 🧠 TRADING ENGINE - REAL EXECUTION, REAL EXITS
+# 🧠 TRADING ENGINE
 # ========================================================================
 
 class CrisisArbitrageBot:
     def __init__(self, config: Dict):
         self.config = config
         self.capital = config["initial_capital"]
-        self.positions = []  # Trades that are OPEN
-        self.trades = []     # Trades that are CLOSED
+        self.positions = []
+        self.trades = []
         self.total_profit = 0
         self.win_count = 0
         self.loss_count = 0
         self.exchange = ExchangeConnector(config)
         
-        # Real BTC price data
         self.btc_price = self._get_btc_price()
         self.fsi_data = self._load_fsi_data()
         self.wst_data = self._load_wst_data()
     
     def _get_btc_price(self) -> float:
-        """Get REAL BTC price from Binance.US"""
         try:
             response = requests.get("https://api.binance.us/api/v3/ticker/price?symbol=BTCUSDT")
             if response.status_code == 200:
                 return float(response.json()["price"])
         except Exception as e:
             print(f"⚠️ Could not fetch BTC price: {e}")
-        return 64000.0  # Fallback if API fails
+        return 64000.0
     
     def _load_fsi_data(self) -> Dict:
         return {
-            "SOM": {"name": "Somalia", "flag": "🇸🇴", "fsi_score": 111.3, "rank": 1},
-            "SDN": {"name": "Sudan", "flag": "🇸🇩", "fsi_score": 109.3, "rank": 2},
-            "SSD": {"name": "South Sudan", "flag": "🇸🇸", "fsi_score": 109.0, "rank": 3},
-            "SYR": {"name": "Syria", "flag": "🇸🇾", "fsi_score": 108.1, "rank": 4},
-            "COD": {"name": "Congo-Kinshasa", "flag": "🇨🇩", "fsi_score": 106.7, "rank": 5},
-            "YEM": {"name": "Yemen", "flag": "🇾🇪", "fsi_score": 106.6, "rank": 6},
-            "AFG": {"name": "Afghanistan", "flag": "🇦🇫", "fsi_score": 103.9, "rank": 7},
-            "HTI": {"name": "Haiti", "flag": "🇭🇹", "fsi_score": 103.5, "rank": 9},
-            "UKR": {"name": "Ukraine", "flag": "🇺🇦", "fsi_score": 93.1, "rank": 22},
-            "LBN": {"name": "Lebanon", "flag": "🇱🇧", "fsi_score": 92.7, "rank": 23},
-            "ETH": {"name": "Ethiopia", "flag": "🇪🇹", "fsi_score": 98.1, "rank": 12},
-            "VEN": {"name": "Venezuela", "flag": "🇻🇪", "fsi_score": 89.0, "rank": 30},
-            "LKA": {"name": "Sri Lanka", "flag": "🇱🇰", "fsi_score": 88.2, "rank": 33},
-            "PAK": {"name": "Pakistan", "flag": "🇵🇰", "fsi_score": 91.7, "rank": 27},
-            "NGA": {"name": "Nigeria", "flag": "🇳🇬", "fsi_score": 96.6, "rank": 15},
-            "RUS": {"name": "Russia", "flag": "🇷🇺", "fsi_score": 81.6, "rank": 48},
-            "ZWE": {"name": "Zimbabwe", "flag": "🇿🇼", "fsi_score": 95.7, "rank": 18},
+            "SOM": {"name": "Somalia", "flag": "🇸🇴", "fsi_score": 111.3},
+            "SDN": {"name": "Sudan", "flag": "🇸🇩", "fsi_score": 109.3},
+            "SSD": {"name": "South Sudan", "flag": "🇸🇸", "fsi_score": 109.0},
+            "SYR": {"name": "Syria", "flag": "🇸🇾", "fsi_score": 108.1},
+            "COD": {"name": "Congo-Kinshasa", "flag": "🇨🇩", "fsi_score": 106.7},
+            "YEM": {"name": "Yemen", "flag": "🇾🇪", "fsi_score": 106.6},
+            "AFG": {"name": "Afghanistan", "flag": "🇦🇫", "fsi_score": 103.9},
+            "HTI": {"name": "Haiti", "flag": "🇭🇹", "fsi_score": 103.5},
+            "UKR": {"name": "Ukraine", "flag": "🇺🇦", "fsi_score": 93.1},
+            "LBN": {"name": "Lebanon", "flag": "🇱🇧", "fsi_score": 92.7},
+            "ETH": {"name": "Ethiopia", "flag": "🇪🇹", "fsi_score": 98.1},
+            "VEN": {"name": "Venezuela", "flag": "🇻🇪", "fsi_score": 89.0},
+            "LKA": {"name": "Sri Lanka", "flag": "🇱🇰", "fsi_score": 88.2},
+            "PAK": {"name": "Pakistan", "flag": "🇵🇰", "fsi_score": 91.7},
+            "NGA": {"name": "Nigeria", "flag": "🇳🇬", "fsi_score": 96.6},
+            "RUS": {"name": "Russia", "flag": "🇷🇺", "fsi_score": 81.6},
+            "ZWE": {"name": "Zimbabwe", "flag": "🇿🇼", "fsi_score": 95.7},
         }
     
     def _load_wst_data(self) -> Dict:
@@ -199,12 +207,10 @@ class CrisisArbitrageBot:
         }
     
     def get_opportunities(self) -> List[Dict]:
-        """Find countries with high crisis scores"""
         countries = []
         for iso, data in self.fsi_data.items():
             wst = self.wst_data.get(iso, self.wst_data["default"])
             
-            # Higher FSI = more crisis = bigger discount
             base_score = min(99, max(1, round((data["fsi_score"] / 120) * 100)))
             
             class_modifier = 0
@@ -217,7 +223,6 @@ class CrisisArbitrageBot:
             
             score = min(99, max(1, base_score + class_modifier))
             
-            # Theoretical discount (not market price)
             discount = 0.15 + (score / 100) * 0.5
             if wst["class"] == "Periphery":
                 discount += 0.10
@@ -239,11 +244,7 @@ class CrisisArbitrageBot:
         return countries[:self.config["max_positions"]]
     
     def buy_crypto(self, country: Dict, position_size: float) -> Dict:
-        """Place a REAL BUY order on Binance.US"""
-        # Use real BTC price, not hardcoded values
-        entry_price = round(self.btc_price * (1 - country["discount"]), 2)
-        
-        # Calculate BTC quantity and ensure it meets minimums
+        entry_price = self.btc_price * (1 - country["discount"])
         btc_amount = position_size / entry_price
         
         print(f"\n📡 PLACING REAL BUY ORDER...")
@@ -269,10 +270,8 @@ class CrisisArbitrageBot:
         return result
     
     def sell_crypto(self, trade: Dict) -> Dict:
-        """Place a REAL SELL order on Binance.US"""
-        # Use the same quantity we bought
         btc_amount = trade["btc_quantity"]
-        exit_price = round(self.btc_price * (1 + (1 - trade["recovery_rate"]) * 0.6), 2)
+        exit_price = self.btc_price * (1 + (1 - trade["recovery_rate"]) * 0.6)
         
         print(f"\n📡 PLACING REAL SELL ORDER...")
         print(f"   Symbol: BTCUSDT")
@@ -296,7 +295,6 @@ class CrisisArbitrageBot:
         return result
     
     def run_cycle(self):
-        """Run ONE trading cycle - REAL buys and sells"""
         print("\n" + "="*70)
         print("🏦 CRISIS ARBITRAGE BOT - REAL BINANCE.US TRADING")
         print("="*70)
@@ -307,18 +305,16 @@ class CrisisArbitrageBot:
         opportunities = self.get_opportunities()
         print(f"📊 Found {len(opportunities)} opportunities")
         
-        for country in opportunities[:self.config["max_positions"]]:
+        for country in opportunities:
             position_size = self.capital * self.config["risk_per_trade"]
             print(f"\n🚀 EXECUTING TRADE: {country['flag']} {country['name']}")
             print(f"   Discount: {country['discount']*100:.0f}%")
             print(f"   Position Size: ${position_size:,.2f}")
             
-            # 1. REAL BUY ORDER
             buy_result = self.buy_crypto(country, position_size)
             if buy_result is None:
                 continue
             
-            # Store trade info
             trade = {
                 "country": country,
                 "btc_quantity": round(position_size / (self.btc_price * (1 - country["discount"])), 8),
@@ -328,9 +324,8 @@ class CrisisArbitrageBot:
                 "sell_order": None
             }
             
-            # 2. REAL SELL ORDER (after a short hold)
             print(f"\n⏳ Holding for recovery...")
-            time.sleep(5)  # In real life, you'd hold for days/weeks
+            time.sleep(5)
             
             sell_result = self.sell_crypto(trade)
             if sell_result is None:
@@ -339,8 +334,6 @@ class CrisisArbitrageBot:
             
             trade["sell_order"] = sell_result
             
-            # 3. Calculate REAL profit from the orders
-            # Use the actual execution prices from the orders
             entry_price = float(buy_result.get("price", trade["entry_price"]))
             exit_price = float(sell_result.get("price", self.btc_price * (1 + (1 - trade["recovery_rate"]) * 0.6)))
             
@@ -381,19 +374,9 @@ class CrisisArbitrageBot:
         print(f"✅ Wins: {self.win_count}")
         print(f"❌ Losses: {self.loss_count}")
         print("="*70)
-        
-        if self.trades:
-            print("\n📋 TRADE DETAILS:")
-            print("-"*70)
-            for trade in self.trades:
-                country = trade["country"]
-                status = "🟢" if trade["profit"] > 0 else "🔴"
-                print(f"{status} {country['flag']} {country['name']}: ${trade['profit']:,.2f} ({trade['profit_pct']*100:.1f}%)")
-        
-        print("\n⚠️ IMPORTANT: This P&L is REAL - it comes from the executed orders.")
 
 # ========================================================================
-# 🚀 MAIN EXECUTION
+# 🚀 MAIN
 # ========================================================================
 
 if __name__ == "__main__":
