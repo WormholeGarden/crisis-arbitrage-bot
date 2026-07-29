@@ -38,9 +38,9 @@ CONFIG = {
     
     # --- BANK/WIRE TRANSFER (Manual for now) ---
     "manual_execution": {
-        "enabled": True,  # True = prints instructions for manual trades
+        "enabled": False,  # True = prints instructions for manual trades
         "email_alerts": False,
-        "email": "your_email@example.com",
+        "email": “marino.montagno@gmail.com",
     },
     
     # --- ASSET CLASSES TO TRADE ---
