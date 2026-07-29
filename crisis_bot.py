@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 🚀 CRISIS ARBITRAGE BOT - REAL BINANCE.US TRADING
-RUNS 10 CYCLES - SCALED UP!
+WITH AUTO-CONVERT: Converts BTC to USDT automatically after each trade!
 """
 
 import time
@@ -15,11 +15,12 @@ from typing import Dict
 # ========================================================================
 
 CONFIG = {
-    "initial_capital": 100.00,  # ← CHANGE THIS
+    "initial_capital": 100.00,
     "test_mode": False,
-    "trade_percentage": 0.80,   # 80% = $80 trades
-    "cycles": 100,              # Start with 100 trades
+    "trade_percentage": 0.80,      # 80% = $80 trades
+    "cycles": 100,
     "hold_seconds": 10,
+    "auto_convert": True,          # ✅ AUTO-CONVERT ENABLED
     "binance": {
         "api_key": "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn",
         "api_secret": "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0",
@@ -37,6 +38,94 @@ class BinanceAPI:
         self.api_secret = api_secret
         self.base_url = "https://api.binance.us"
         self._filter_cache = {}
+
+    def get_balance(self, asset: str = "USDT") -> float:
+        """Get available balance for any asset"""
+        try:
+            timestamp = int(time.time() * 1000)
+            params = {"timestamp": timestamp}
+            query_string = f"timestamp={timestamp}"
+            signature = hmac.new(
+                self.api_secret.encode('utf-8'),
+                query_string.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
+            params["signature"] = signature
+            headers = {"X-MBX-APIKEY": self.api_key}
+            response = requests.get(
+                f"{self.base_url}/api/v3/account",
+                headers=headers,
+                params=params
+            )
+            if response.status_code == 200:
+                data = response.json()
+                for balance in data.get("balances", []):
+                    if balance["asset"] == asset:
+                        return float(balance["free"])
+            return 0.0
+        except Exception as e:
+            print(f"⚠️ Balance check failed: {e}")
+            return 0.0
+
+    def get_btc_price(self) -> float:
+        try:
+            response = requests.get(f"{self.base_url}/api/v3/ticker/price?symbol=BTCUSDT")
+            if response.status_code == 200:
+                return float(response.json()["price"])
+        except Exception as e:
+            print(f"⚠️ Could not fetch BTC price: {e}")
+        return 64000.0
+
+    def convert_btc_to_usdt(self) -> bool:
+        """Convert ALL BTC to USDT"""
+        try:
+            btc_balance = self.get_balance("BTC")
+            if btc_balance < 0.00001:
+                print("✅ No BTC to convert (balance < 0.00001)")
+                return True
+            
+            btc_price = self.get_btc_price()
+            amount_usdt = btc_balance * btc_price
+            
+            print(f"🔄 Converting {btc_balance:.8f} BTC (≈${amount_usdt:.2f}) to USDT...")
+            
+            # Place a market sell order for ALL BTC
+            params = {
+                "symbol": "BTCUSDT",
+                "side": "SELL",
+                "type": "MARKET",
+                "quantity": f"{btc_balance:.8f}",
+                "timestamp": int(time.time() * 1000),
+                "recvWindow": 5000
+            }
+            
+            query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+            signature = hmac.new(
+                self.api_secret.encode('utf-8'),
+                query_string.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
+            params["signature"] = signature
+            
+            headers = {"X-MBX-APIKEY": self.api_key}
+            response = requests.post(
+                f"{self.base_url}/api/v3/order",
+                headers=headers,
+                params=params
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                print(f"✅ Converted {btc_balance:.8f} BTC to USDT successfully!")
+                print(f"   USDT Received: ≈${float(result.get('price', btc_price)) * btc_balance:.2f}")
+                return True
+            else:
+                print(f"❌ Conversion failed: {response.text}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Conversion error: {e}")
+            return False
 
     def _get_symbol_filters(self, symbol: str) -> Dict:
         if symbol in self._filter_cache:
@@ -63,15 +152,6 @@ class BinanceAPI:
         step = float(step_str)
         return int(value / step) * step
 
-    def _get_btc_price(self) -> float:
-        try:
-            response = requests.get(f"{self.base_url}/api/v3/ticker/price?symbol=BTCUSDT")
-            if response.status_code == 200:
-                return float(response.json()["price"])
-        except Exception as e:
-            print(f"⚠️ Could not fetch BTC price: {e}")
-        return 64000.0
-
     def place_market_order(self, side: str, amount_usdt: float) -> Dict:
         """Place a REAL MARKET order on Binance.US"""
         try:
@@ -80,7 +160,7 @@ class BinanceAPI:
             min_qty = float(filters["minQty"])
             min_notional = float(filters["minNotional"])
 
-            btc_price = self._get_btc_price()
+            btc_price = self.get_btc_price()
             
             if amount_usdt < min_notional:
                 print(f"⚠️ Amount ${amount_usdt:.2f} below minimum ${min_notional:.2f}")
@@ -156,7 +236,7 @@ class BinanceAPI:
             return {"error": str(e)}
 
 # ========================================================================
-# 🧠 BOT ENGINE - 10 CYCLES
+# 🧠 BOT ENGINE
 # ========================================================================
 
 class CrisisArbitrageBot:
@@ -177,7 +257,7 @@ class CrisisArbitrageBot:
         print(f"\n🔄 CYCLE {self.cycle_count}/{self.config.get('cycles', 1)}")
         print("-"*50)
         
-        btc_price = self.api._get_btc_price()
+        btc_price = self.api.get_btc_price()
         trade_percentage = self.config.get("trade_percentage", 0.80)
         trade_amount = self.capital * trade_percentage
         
@@ -204,7 +284,7 @@ class CrisisArbitrageBot:
         time.sleep(hold_seconds)
         
         # 3. SELL BTC
-        current_price = self.api._get_btc_price()
+        current_price = self.api.get_btc_price()
         print(f"\n📡 SELLING at current market price...")
         sell_amount = trade["btc_amount"] * current_price
         sell_result = self.api.place_market_order("SELL", sell_amount)
@@ -240,11 +320,27 @@ class CrisisArbitrageBot:
         return True
     
     def run(self):
-        """Run ALL cycles"""
+        """Run ALL cycles with auto-convert"""
         print("\n" + "="*70)
-        print("🏦 CRISIS ARBITRAGE BOT - REAL TRADING (10 CYCLES)")
+        print("🏦 CRISIS ARBITRAGE BOT - REAL TRADING (AUTO-CONVERT)")
         print("="*70)
-        print(f"📊 Starting Capital: ${self.capital:,.2f}")
+        
+        # ✅ CHECK BALANCE AND AUTO-CONVERT BEFORE STARTING
+        auto_convert = self.config.get("auto_convert", True)
+        if auto_convert:
+            print("🔄 Auto-convert enabled: Converting any BTC to USDT...")
+            if not self.api.convert_btc_to_usdt():
+                print("⚠️ Could not convert BTC to USDT. Please check your wallet.")
+                return
+        
+        # Get actual USDT balance
+        actual_balance = self.api.get_balance("USDT")
+        if actual_balance > 0:
+            self.capital = actual_balance
+            print(f"💰 Available USDT: ${self.capital:,.2f}")
+        else:
+            print(f"⚠️ No USDT balance found. Using ${self.capital:,.2f}")
+        
         print(f"🔄 Cycles: {self.config.get('cycles', 1)}")
         print(f"⏱️ Hold Time: {self.config.get('hold_seconds', 10)} seconds")
         print("="*70)
@@ -260,7 +356,13 @@ class CrisisArbitrageBot:
                 print(f"⚠️ Cycle {cycle+1} failed, stopping...")
                 break
             
-            # Wait between cycles (except after the last one)
+            # ✅ AUTO-CONVERT AFTER EACH CYCLE
+            if auto_convert and self.api.get_balance("BTC") > 0:
+                print("\n🔄 Converting BTC to USDT before next cycle...")
+                self.api.convert_btc_to_usdt()
+                # Update capital after conversion
+                self.capital = self.api.get_balance("USDT")
+            
             if cycle < cycles - 1:
                 wait_time = 2
                 print(f"\n⏳ Waiting {wait_time} seconds before next cycle...")
@@ -283,7 +385,6 @@ class CrisisArbitrageBot:
         print(f"💵 Final Capital: ${self.capital:,.2f}")
         print("="*70)
         
-        # Show individual trade results
         if self.trades:
             print("\n📋 TRADE DETAILS:")
             print("-"*70)
