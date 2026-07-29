@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 🚀 CRISIS ARBITRAGE BOT - BINANCE.US REAL TRADING
-RUNNING WITH YOUR 9.33 USDT BALANCE
+FIXED: Uses MARKET orders for instant execution
 """
 
 import time
@@ -17,9 +17,9 @@ from datetime import datetime
 # ========================================================================
 
 CONFIG = {
-    "initial_capital": 9.33,  # Your actual balance
+    "initial_capital": 9.33,
     "max_positions": 1,
-    "risk_per_trade": 0.50,   # Use 50% = ~$4.66 per trade
+    "risk_per_trade": 0.50,
     
     "binance": {
         "api_key": "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn",
@@ -40,7 +40,7 @@ CONFIG = {
 }
 
 # ========================================================================
-# 📡 BINANCE.US API
+# 📡 BINANCE.US API - WITH MARKET ORDERS
 # ========================================================================
 
 class ExchangeConnector:
@@ -57,9 +57,9 @@ class ExchangeConnector:
             except Exception as e:
                 print(f"⚠️ Binance.US connection failed: {e}")
     
-    def place_order(self, symbol: str, side: str, amount: float, price: float) -> Dict:
+    def place_order(self, symbol: str, side: str, amount: float, price: float = None, order_type: str = "MARKET") -> Dict:
         if self.binance:
-            return self.binance.place_order(symbol, side, amount, price)
+            return self.binance.place_order(symbol, side, amount, price, order_type)
         return {"error": "No exchange connected"}
 
 class BinanceAPI:
@@ -106,7 +106,8 @@ class BinanceAPI:
         decimals = abs(tick.as_tuple().exponent)
         return f"{rounded:.{decimals}f}"
 
-    def place_order(self, symbol: str, side: str, amount: float, price: float) -> Dict:
+    def place_order(self, symbol: str, side: str, amount: float, price: float = None, order_type: str = "MARKET") -> Dict:
+        """Place a REAL order on Binance.US (MARKET or LIMIT)"""
         try:
             filters = self._get_symbol_filters(symbol)
 
@@ -116,28 +117,45 @@ class BinanceAPI:
                 amount = min_qty
 
             quantity_str = self._round_step(amount, filters["stepSize"])
-            price_str = self._round_price(price, filters["tickSize"])
 
             min_notional = float(filters.get("minNotional") or 0)
-            if min_notional and float(quantity_str) * float(price_str) < min_notional:
-                print(f"❌ Order notional ${float(quantity_str)*float(price_str):.2f} below minimum ${min_notional:.2f}")
-                return {"error": "Below MIN_NOTIONAL"}
-
-            print(f"📋 Formatted Order:")
-            print(f"   Quantity: {quantity_str}")
-            print(f"   Price: ${price_str}")
-
+            
             timestamp = int(time.time() * 1000)
-            params = {
-                "symbol": symbol,
-                "side": side.upper(),
-                "type": "LIMIT",
-                "timeInForce": "GTC",
-                "quantity": quantity_str,
-                "price": price_str,
-                "timestamp": timestamp,
-                "recvWindow": 5000
-            }
+            
+            # ✅ Build params based on order type
+            if order_type.upper() == "MARKET":
+                params = {
+                    "symbol": symbol,
+                    "side": side.upper(),
+                    "type": "MARKET",
+                    "quantity": quantity_str,
+                    "timestamp": timestamp,
+                    "recvWindow": 5000
+                }
+                print(f"📋 MARKET Order:")
+                print(f"   Quantity: {quantity_str}")
+                print(f"   (No limit price - buys at current market price)")
+            else:
+                # LIMIT order
+                price_str = self._round_price(price, filters["tickSize"])
+                
+                if min_notional and float(quantity_str) * float(price_str) < min_notional:
+                    print(f"❌ Order notional ${float(quantity_str)*float(price_str):.2f} below minimum ${min_notional:.2f}")
+                    return {"error": "Below MIN_NOTIONAL"}
+                
+                params = {
+                    "symbol": symbol,
+                    "side": side.upper(),
+                    "type": "LIMIT",
+                    "timeInForce": "GTC",
+                    "quantity": quantity_str,
+                    "price": price_str,
+                    "timestamp": timestamp,
+                    "recvWindow": 5000
+                }
+                print(f"📋 LIMIT Order:")
+                print(f"   Quantity: {quantity_str}")
+                print(f"   Price: ${price_str}")
 
             query_string = "&".join([f"{k}={v}" for k, v in params.items()])
             signature = hmac.new(
@@ -159,7 +177,7 @@ class BinanceAPI:
             return {"error": str(e)}
 
 # ========================================================================
-# 🧠 TRADING ENGINE
+# 🧠 TRADING ENGINE - WITH MARKET ORDERS
 # ========================================================================
 
 class CrisisArbitrageBot:
@@ -258,12 +276,14 @@ class CrisisArbitrageBot:
         return countries[:self.config["max_positions"]]
     
     def buy_crypto(self, country: Dict, position_size: float) -> Dict:
-        entry_price = self.btc_price * (1 - country["discount"])
+        """Buy crypto using MARKET order (instant)"""
+        # Use current BTC price (not discounted)
+        entry_price = self.btc_price
         btc_amount = position_size / entry_price
         
-        print(f"\n📡 PLACING REAL BUY ORDER...")
+        print(f"\n📡 PLACING REAL BUY ORDER (MARKET)...")
         print(f"   Symbol: BTCUSDT")
-        print(f"   Entry Price: ${entry_price:,.2f}")
+        print(f"   Current BTC Price: ${entry_price:,.2f}")
         print(f"   Position Size: ${position_size:,.2f}")
         print(f"   Quantity: {btc_amount:.8f} BTC")
         
@@ -271,7 +291,8 @@ class CrisisArbitrageBot:
             symbol="BTCUSDT",
             side="BUY",
             amount=btc_amount,
-            price=entry_price
+            price=None,  # No limit price for MARKET
+            order_type="MARKET"
         )
         
         if "error" in result:
@@ -280,23 +301,36 @@ class CrisisArbitrageBot:
         
         print(f"✅ BUY ORDER PLACED!")
         print(f"   Order ID: {result.get('orderId', 'N/A')}")
+        print(f"   Status: {result.get('status', 'N/A')}")
+        
+        # Check if it was filled
+        if result.get('status') == 'FILLED':
+            avg_price = float(result.get('price', entry_price))
+            print(f"   Average Price: ${avg_price:,.2f}")
+        else:
+            avg_price = entry_price
         
         return result
     
     def sell_crypto(self, trade: Dict) -> Dict:
+        """Sell crypto using MARKET order (instant)"""
         btc_amount = trade["btc_quantity"]
-        exit_price = self.btc_price * (1 + (1 - trade["recovery_rate"]) * 0.6)
+        current_price = self._get_btc_price()
         
-        print(f"\n📡 PLACING REAL SELL ORDER...")
+        # Use current price for exit
+        exit_price = current_price
+        
+        print(f"\n📡 PLACING REAL SELL ORDER (MARKET)...")
         print(f"   Symbol: BTCUSDT")
-        print(f"   Exit Price: ${exit_price:,.2f}")
+        print(f"   Current BTC Price: ${exit_price:,.2f}")
         print(f"   Quantity: {btc_amount:.8f} BTC")
         
         result = self.exchange.place_order(
             symbol="BTCUSDT",
             side="SELL",
             amount=btc_amount,
-            price=exit_price
+            price=None,  # No limit price for MARKET
+            order_type="MARKET"
         )
         
         if "error" in result:
@@ -305,6 +339,7 @@ class CrisisArbitrageBot:
         
         print(f"✅ SELL ORDER PLACED!")
         print(f"   Order ID: {result.get('orderId', 'N/A')}")
+        print(f"   Status: {result.get('status', 'N/A')}")
         
         return result
     
@@ -320,7 +355,6 @@ class CrisisArbitrageBot:
         print(f"📊 Found {len(opportunities)} opportunities")
         
         for country in opportunities:
-            # Use 50% of capital per trade
             position_size = self.capital * CONFIG["risk_per_trade"]
             
             if position_size < 1:
@@ -331,22 +365,29 @@ class CrisisArbitrageBot:
             print(f"   Discount: {country['discount']*100:.0f}%")
             print(f"   Position Size: ${position_size:,.2f}")
             
+            # 1. BUY with MARKET order (instant)
             buy_result = self.buy_crypto(country, position_size)
             if buy_result is None:
                 continue
             
+            # Get actual BTC quantity bought
+            btc_quantity = float(buy_result.get('executedQty', position_size / self.btc_price))
+            avg_entry_price = float(buy_result.get('price', self.btc_price))
+            
             trade = {
                 "country": country,
-                "btc_quantity": round(position_size / (self.btc_price * (1 - country["discount"])), 8),
-                "entry_price": self.btc_price * (1 - country["discount"]),
+                "btc_quantity": btc_quantity,
+                "entry_price": avg_entry_price,
                 "recovery_rate": country["recovery_rate"],
                 "buy_order": buy_result,
                 "sell_order": None
             }
             
+            # 2. Hold for recovery
             print(f"\n⏳ Holding for recovery...")
             time.sleep(5)
             
+            # 3. SELL with MARKET order (instant)
             sell_result = self.sell_crypto(trade)
             if sell_result is None:
                 print("⚠️ Sell failed - position remains open")
@@ -354,11 +395,12 @@ class CrisisArbitrageBot:
             
             trade["sell_order"] = sell_result
             
-            entry_price = float(buy_result.get("price", trade["entry_price"]))
-            exit_price = float(sell_result.get("price", self.btc_price * (1 + (1 - trade["recovery_rate"]) * 0.6)))
+            # Get actual exit price
+            avg_exit_price = float(sell_result.get('price', self.btc_price))
             
-            profit_pct = (exit_price - entry_price) / entry_price
-            profit = trade["btc_quantity"] * (exit_price - entry_price)
+            # Calculate REAL profit
+            profit_pct = (avg_exit_price - avg_entry_price) / avg_entry_price
+            profit = trade["btc_quantity"] * (avg_exit_price - avg_entry_price)
             
             trade["profit_pct"] = profit_pct
             trade["profit"] = profit
