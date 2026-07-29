@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 🚀 CRISIS ARBITRAGE BOT - SIMPLE MARKET TRADING
-Buys and sells at market price with your $9.33
+FIXED: Proper quantity formatting
 """
 
 import time
 import hashlib
 import hmac
 import requests
-from typing import Dict, List
+from typing import Dict
 
 # ========================================================================
 # 📊 CONFIGURATION
@@ -24,7 +24,7 @@ CONFIG = {
 }
 
 # ========================================================================
-# 📡 BINANCE.US API - MARKET ORDERS ONLY
+# 📡 BINANCE.US API
 # ========================================================================
 
 class BinanceAPI:
@@ -52,28 +52,31 @@ class BinanceAPI:
             # Calculate BTC quantity
             btc_amount = amount_usdt / btc_price
             
-            # Round to 8 decimal places
+            # ✅ ROUND TO 8 DECIMAL PLACES AND CONVERT TO STRING
             btc_amount = round(btc_amount, 8)
+            
+            # ✅ FORMAT AS STRING WITH EXACT 8 DECIMAL PLACES
+            quantity_str = f"{btc_amount:.8f}"
             
             # Ensure minimum quantity (0.00001 BTC minimum)
             if btc_amount < 0.00001:
-                print(f"⚠️ Quantity {btc_amount:.8f} BTC is too small.")
+                print(f"⚠️ Quantity {quantity_str} BTC is too small.")
                 print(f"   Minimum is 0.00001 BTC (≈${btc_price * 0.00001:.2f})")
                 return {"error": "Quantity too small"}
             
             print(f"\n📡 PLACING {side.upper()} MARKET ORDER...")
             print(f"   BTC Price: ${btc_price:,.2f}")
             print(f"   Amount: ${amount_usdt:,.2f}")
-            print(f"   Quantity: {btc_amount:.8f} BTC")
+            print(f"   Quantity: {quantity_str} BTC")
             
             timestamp = int(time.time() * 1000)
             
-            # ✅ MARKET ORDER - buys at current price
+            # ✅ MARKET ORDER with properly formatted quantity
             params = {
                 "symbol": "BTCUSDT",
                 "side": side.upper(),
                 "type": "MARKET",
-                "quantity": str(btc_amount),
+                "quantity": quantity_str,  # ✅ This is a STRING now
                 "timestamp": timestamp,
                 "recvWindow": 5000
             }
