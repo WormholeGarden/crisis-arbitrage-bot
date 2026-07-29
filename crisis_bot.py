@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 🚀 CRISIS ARBITRAGE BOT - REAL BINANCE.US TRADING
-YOUR BALANCE: $13.35 USDT - READY TO TRADE!
+SCALED UP: $10 TRADES!
 """
 
 import time
@@ -11,12 +11,13 @@ import requests
 from typing import Dict
 
 # ========================================================================
-# 📊 CONFIGURATION
+# 📊 CONFIGURATION - UPDATED FOR $10 TRADES
 # ========================================================================
 
 CONFIG = {
-    "initial_capital": 13.35,  # ✅ Your actual balance
-    "test_mode": False,        # ✅ REAL TRADES!
+    "initial_capital": 13.35,  # Your balance
+    "test_mode": False,
+    "trade_percentage": 0.80,   # ✅ 80% of capital = ~$10.68 per trade
     "binance": {
         "api_key": "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn",
         "api_secret": "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0",
@@ -155,7 +156,7 @@ class BinanceAPI:
             return {"error": str(e)}
 
 # ========================================================================
-# 🧠 BOT ENGINE
+# 🧠 BOT ENGINE - SCALED UP
 # ========================================================================
 
 class CrisisArbitrageBot:
@@ -171,7 +172,7 @@ class CrisisArbitrageBot:
     
     def run(self):
         print("\n" + "="*70)
-        print("🏦 CRISIS ARBITRAGE BOT - REAL TRADING")
+        print("🏦 CRISIS ARBITRAGE BOT - REAL TRADING (SCALED UP)")
         print("="*70)
         print(f"📊 Starting Capital: ${self.capital:,.2f}")
         
@@ -179,11 +180,13 @@ class CrisisArbitrageBot:
         print(f"📈 BTC Price: ${btc_price:,.2f}")
         print("="*70)
         
-        # ✅ Use 70% of capital (leave some for fees)
-        trade_amount = self.capital * 0.70
+        # ✅ Use 80% of capital = ~$10.68 per trade
+        trade_percentage = self.config.get("trade_percentage", 0.80)
+        trade_amount = self.capital * trade_percentage
         
         print(f"\n🚀 EXECUTING REAL TRADE...")
-        print(f"   Trade Amount: ${trade_amount:,.2f}")
+        print(f"   Trade Amount: ${trade_amount:,.2f} ({trade_percentage*100:.0f}% of capital)")
+        print(f"   Left for fees: ${self.capital * (1 - trade_percentage):,.2f}")
         
         # 1. BUY BTC
         buy_result = self.api.place_market_order("BUY", trade_amount)
