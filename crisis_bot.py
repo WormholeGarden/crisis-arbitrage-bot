@@ -37,12 +37,11 @@ CONFIG = {
     },
     
     # --- BANK/WIRE TRANSFER (Manual for now) ---
-    "manual_execution": {
-        "enabled": False,  # True = prints instructions for manual trades
-        "email_alerts": False,
-        "email": “marino.montagno@gmail.com",
-    },
-    
+"manual_execution": {
+    "enabled": False,  # True = prints instructions for manual trades
+    "email_alerts": False,
+    "email": "marino.montagno@gmail.com",  # ← FIXED
+},
     # --- ASSET CLASSES TO TRADE ---
     "assets": {
         "crypto": {"enabled": True, "max_per_trade": 5000},
