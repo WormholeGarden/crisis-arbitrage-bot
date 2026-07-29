@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 🚀 CRISIS ARBITRAGE BOT - SIMPLE MARKET TRADING
-FIXED: Proper quantity formatting
+FIXED: Proper LOT_SIZE rounding
 """
 
 import time
@@ -32,9 +32,36 @@ class BinanceAPI:
         self.api_key = api_key
         self.api_secret = api_secret
         self.base_url = "https://api.binance.us"
+        self._filter_cache = {}
+
+    def _get_symbol_filters(self, symbol: str) -> Dict:
+        """Fetch LOT_SIZE and PRICE_FILTER values from Binance.US"""
+        if symbol in self._filter_cache:
+            return self._filter_cache[symbol]
+
+        resp = requests.get(f"{self.base_url}/api/v3/exchangeInfo", params={"symbol": symbol})
+        resp.raise_for_status()
+        info = resp.json()["symbols"][0]
+
+        lot_size = next(f for f in info["filters"] if f["filterType"] == "LOT_SIZE")
+        price_filter = next(f for f in info["filters"] if f["filterType"] == "PRICE_FILTER")
+        notional = next((f for f in info["filters"] if f["filterType"] in ("MIN_NOTIONAL", "NOTIONAL")), None)
+
+        filters = {
+            "stepSize": lot_size["stepSize"],
+            "minQty": lot_size["minQty"],
+            "tickSize": price_filter["tickSize"],
+            "minNotional": notional.get("minNotional") or notional.get("minNotionalValue") if notional else "0",
+        }
+        self._filter_cache[symbol] = filters
+        return filters
+
+    def _round_to_step(self, value: float, step_str: str) -> float:
+        """Round value DOWN to the nearest step size"""
+        step = float(step_str)
+        return int(value / step) * step
 
     def _get_btc_price(self) -> float:
-        """Get current BTC price"""
         try:
             response = requests.get(f"{self.base_url}/api/v3/ticker/price?symbol=BTCUSDT")
             if response.status_code == 200:
@@ -46,37 +73,50 @@ class BinanceAPI:
     def place_market_order(self, side: str, amount_usdt: float) -> Dict:
         """Place a MARKET order (buys/sells at current price)"""
         try:
+            # Get filters
+            filters = self._get_symbol_filters("BTCUSDT")
+            step_size = float(filters["stepSize"])
+            min_qty = float(filters["minQty"])
+            min_notional = float(filters["minNotional"])
+
             # Get current BTC price
             btc_price = self._get_btc_price()
             
             # Calculate BTC quantity
             btc_amount = amount_usdt / btc_price
             
-            # ✅ ROUND TO 8 DECIMAL PLACES AND CONVERT TO STRING
-            btc_amount = round(btc_amount, 8)
+            # ✅ ROUND DOWN TO STEP SIZE
+            btc_amount = self._round_to_step(btc_amount, filters["stepSize"])
             
-            # ✅ FORMAT AS STRING WITH EXACT 8 DECIMAL PLACES
+            # ✅ ENSURE MINIMUM QUANTITY
+            if btc_amount < min_qty:
+                print(f"⚠️ Quantity {btc_amount:.8f} below minimum {min_qty}. Using minimum.")
+                btc_amount = min_qty
+            
+            # ✅ CHECK MINIMUM NOTIONAL (price * quantity)
+            if btc_amount * btc_price < min_notional:
+                print(f"⚠️ Order value ${btc_amount * btc_price:.2f} below minimum ${min_notional:.2f}")
+                btc_amount = min_notional / btc_price
+                btc_amount = self._round_to_step(btc_amount, filters["stepSize"])
+                print(f"   Adjusted to {btc_amount:.8f} BTC (${btc_amount * btc_price:.2f})")
+            
+            # ✅ FORMAT AS STRING WITH 8 DECIMAL PLACES
             quantity_str = f"{btc_amount:.8f}"
-            
-            # Ensure minimum quantity (0.00001 BTC minimum)
-            if btc_amount < 0.00001:
-                print(f"⚠️ Quantity {quantity_str} BTC is too small.")
-                print(f"   Minimum is 0.00001 BTC (≈${btc_price * 0.00001:.2f})")
-                return {"error": "Quantity too small"}
             
             print(f"\n📡 PLACING {side.upper()} MARKET ORDER...")
             print(f"   BTC Price: ${btc_price:,.2f}")
             print(f"   Amount: ${amount_usdt:,.2f}")
             print(f"   Quantity: {quantity_str} BTC")
+            print(f"   Min Qty: {min_qty:.8f} BTC")
+            print(f"   Step Size: {step_size:.8f} BTC")
             
             timestamp = int(time.time() * 1000)
             
-            # ✅ MARKET ORDER with properly formatted quantity
             params = {
                 "symbol": "BTCUSDT",
                 "side": side.upper(),
                 "type": "MARKET",
-                "quantity": quantity_str,  # ✅ This is a STRING now
+                "quantity": quantity_str,
                 "timestamp": timestamp,
                 "recvWindow": 5000
             }
@@ -102,7 +142,7 @@ class BinanceAPI:
                 print(f"✅ ORDER FILLED!")
                 print(f"   Order ID: {result.get('orderId', 'N/A')}")
                 print(f"   Avg Price: ${float(result.get('price', btc_price)):,.2f}")
-                print(f"   Quantity: {float(result.get('executedQty', btc_amount)):.8f} BTC")
+                print(f"   Executed Qty: {float(result.get('executedQty', btc_amount)):.8f} BTC")
                 return result
             else:
                 return {"error": f"HTTP {response.status_code}: {response.text}"}
