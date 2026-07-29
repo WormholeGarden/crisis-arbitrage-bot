@@ -21,7 +21,7 @@ import os
 CONFIG = {
     "initial_capital": 1000,
     "max_positions": 2,
-    "risk_per_trade": 0.10,
+    "risk_per_trade": 0.01,
     
     "binance": {
         "api_key": "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn",
