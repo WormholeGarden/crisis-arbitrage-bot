@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 🚀 CRISIS ARBITRAGE BOT - SIMPLE MARKET TRADING
-FIXED: Uses 100% of capital to meet MIN_NOTIONAL
+FIXED: Handles ZeroDivisionError and proper price extraction
 """
 
 import time
@@ -35,7 +35,6 @@ class BinanceAPI:
         self._filter_cache = {}
 
     def _get_symbol_filters(self, symbol: str) -> Dict:
-        """Fetch LOT_SIZE and PRICE_FILTER values from Binance.US"""
         if symbol in self._filter_cache:
             return self._filter_cache[symbol]
 
@@ -57,7 +56,6 @@ class BinanceAPI:
         return filters
 
     def _round_to_step(self, value: float, step_str: str) -> float:
-        """Round value DOWN to the nearest step size"""
         step = float(step_str)
         return int(value / step) * step
 
@@ -71,35 +69,26 @@ class BinanceAPI:
         return 64000.0
 
     def place_market_order(self, side: str, amount_usdt: float) -> Dict:
-        """Place a MARKET order (buys/sells at current price)"""
         try:
-            # Get filters
             filters = self._get_symbol_filters("BTCUSDT")
             step_size = float(filters["stepSize"])
             min_qty = float(filters["minQty"])
             min_notional = float(filters["minNotional"])
 
-            # Get current BTC price
             btc_price = self._get_btc_price()
             
-            # ✅ CHECK MINIMUM NOTIONAL FIRST
             if amount_usdt < min_notional:
                 print(f"⚠️ Amount ${amount_usdt:.2f} below minimum ${min_notional:.2f}")
                 amount_usdt = min_notional
                 print(f"   Adjusted to ${amount_usdt:.2f}")
             
-            # Calculate BTC quantity
             btc_amount = amount_usdt / btc_price
-            
-            # Round down to step size
             btc_amount = self._round_to_step(btc_amount, filters["stepSize"])
             
-            # Ensure minimum quantity
             if btc_amount < min_qty:
                 print(f"⚠️ Quantity {btc_amount:.8f} below minimum {min_qty}. Using minimum.")
                 btc_amount = min_qty
             
-            # Format as string with 8 decimal places
             quantity_str = f"{btc_amount:.8f}"
             
             print(f"\n📡 PLACING {side.upper()} MARKET ORDER...")
@@ -118,7 +107,6 @@ class BinanceAPI:
                 "recvWindow": 5000
             }
             
-            # Sign request
             query_string = "&".join([f"{k}={v}" for k, v in params.items()])
             signature = hmac.new(
                 self.api_secret.encode('utf-8'),
@@ -138,9 +126,25 @@ class BinanceAPI:
                 result = response.json()
                 print(f"✅ ORDER FILLED!")
                 print(f"   Order ID: {result.get('orderId', 'N/A')}")
-                print(f"   Avg Price: ${float(result.get('price', btc_price)):,.2f}")
-                print(f"   Executed Qty: {float(result.get('executedQty', btc_amount)):.8f} BTC")
-                return result
+                
+                # ✅ EXTRACT PRICE (use market price if price is 0)
+                order_price = float(result.get('price', 0))
+                if order_price == 0:
+                    order_price = btc_price
+                    print(f"   Avg Price: Using market price ${order_price:,.2f}")
+                else:
+                    print(f"   Avg Price: ${order_price:,.2f}")
+                
+                executed_qty = float(result.get('executedQty', btc_amount))
+                print(f"   Executed Qty: {executed_qty:.8f} BTC")
+                
+                return {
+                    "order_id": result.get('orderId'),
+                    "price": order_price,
+                    "executed_qty": executed_qty,
+                    "status": result.get('status'),
+                    "full_response": result
+                }
             else:
                 return {"error": f"HTTP {response.status_code}: {response.text}"}
                 
@@ -172,7 +176,7 @@ class CrisisArbitrageBot:
         print(f"📈 BTC Price: ${btc_price:,.2f}")
         print("="*70)
         
-        # ✅ USE ALL CAPITAL (Binance.US minimum is ~$10)
+        # ✅ Use ALL capital
         trade_amount = self.capital
         
         print(f"\n🚀 EXECUTING TRADE...")
@@ -184,11 +188,14 @@ class CrisisArbitrageBot:
             print(f"❌ Buy failed: {buy_result['error']}")
             return
         
-        # Store trade info
+        # ✅ Store trade info with safe price extraction
+        btc_amount = buy_result.get('executed_qty', 0)
+        buy_price = buy_result.get('price', btc_price)
+        
         trade = {
             "buy_order": buy_result,
-            "btc_amount": float(buy_result.get('executedQty', 0)),
-            "buy_price": float(buy_result.get('price', btc_price))
+            "btc_amount": btc_amount,
+            "buy_price": buy_price
         }
         
         print(f"\n⏳ Holding for 10 seconds...")
@@ -199,15 +206,25 @@ class CrisisArbitrageBot:
         
         # 2. SELL BTC
         print(f"\n📡 SELLING at current market price...")
-        sell_result = self.api.place_market_order("SELL", trade["btc_amount"] * current_price)
+        sell_amount = trade["btc_amount"] * current_price
+        sell_result = self.api.place_market_order("SELL", sell_amount)
         if "error" in sell_result:
             print(f"❌ Sell failed: {sell_result['error']}")
             return
         
-        trade["sell_order"] = sell_result
-        trade["sell_price"] = float(sell_result.get('price', current_price))
+        # ✅ Extract sell price safely
+        sell_price = sell_result.get('price', current_price)
+        sell_qty = sell_result.get('executed_qty', 0)
         
-        # Calculate REAL profit
+        trade["sell_order"] = sell_result
+        trade["sell_price"] = sell_price
+        trade["sell_qty"] = sell_qty
+        
+        # ✅ Safely calculate profit (avoid division by zero)
+        if trade["buy_price"] == 0:
+            print("⚠️ Buy price was zero, using current market price for calculation")
+            trade["buy_price"] = btc_price
+        
         profit_pct = (trade["sell_price"] - trade["buy_price"]) / trade["buy_price"]
         profit = trade["btc_amount"] * (trade["sell_price"] - trade["buy_price"])
         
