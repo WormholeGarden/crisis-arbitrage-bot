@@ -15,11 +15,11 @@ from typing import Dict
 # ========================================================================
 
 CONFIG = {
-    "initial_capital": 13.35,  # Your balance
+    "initial_capital": 100.00,  # ← CHANGE THIS
     "test_mode": False,
-    "trade_percentage": 0.80,   # 80% of capital = ~$10.68 per trade
-    "cycles": 100,               # ✅ RUN 10 CYCLES
-    "hold_seconds": 10,         # Hold time per trade
+    "trade_percentage": 0.80,   # 80% = $80 trades
+    "cycles": 100,              # Start with 100 trades
+    "hold_seconds": 10,
     "binance": {
         "api_key": "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn",
         "api_secret": "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0",
