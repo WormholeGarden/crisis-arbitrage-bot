@@ -77,20 +77,22 @@ class BinanceAPI:
         try:
             timestamp = int(time.time() * 1000)
             
+            # ✅ Format quantity to 8 decimal places (BTC precision)
+            quantity_str = f"{amount:.8f}"
+            
             # ✅ Build params in the EXACT order Binance expects
             params = {
                 "symbol": symbol,
                 "side": side.upper(),
                 "type": "LIMIT",
                 "timeInForce": "GTC",
-                "quantity": str(amount),
+                "quantity": quantity_str,
                 "price": str(price),
                 "timestamp": timestamp,
                 "recvWindow": 5000
             }
             
-            # ✅ Generate signature from the query string (NOT from sorted params)
-            # The query string MUST match what we send
+            # ✅ Generate signature from the query string
             query_string = "&".join([f"{k}={v}" for k, v in params.items()])
             signature = hmac.new(
                 self.api_secret.encode('utf-8'),
@@ -98,7 +100,6 @@ class BinanceAPI:
                 hashlib.sha256
             ).hexdigest()
             
-            # ✅ Add signature to params
             params["signature"] = signature
             
             headers = {"X-MBX-APIKEY": self.api_key}
@@ -145,7 +146,7 @@ class CrisisArbitrageBot:
                 return float(response.json()["price"])
         except Exception as e:
             print(f"⚠️ Could not fetch BTC price: {e}")
-        return 28000.0  # Fallback if API fails
+        return 64000.0  # Fallback if API fails
     
     def _load_fsi_data(self) -> Dict:
         return {
@@ -224,15 +225,16 @@ class CrisisArbitrageBot:
     def buy_crypto(self, country: Dict, position_size: float) -> Dict:
         """Place a REAL BUY order on Binance.US"""
         # Use real BTC price, not hardcoded values
-        entry_price = self.btc_price * (1 - country["discount"])
+        entry_price = round(self.btc_price * (1 - country["discount"]), 2)
         
-        btc_amount = position_size / entry_price
+        # ✅ ROUND BTC QUANTITY TO 8 DECIMAL PLACES
+        btc_amount = round(position_size / entry_price, 8)
         
         print(f"\n📡 PLACING REAL BUY ORDER...")
         print(f"   Symbol: BTCUSDT")
         print(f"   Entry Price: ${entry_price:,.2f}")
         print(f"   Position Size: ${position_size:,.2f}")
-        print(f"   Quantity: {btc_amount:.6f} BTC")
+        print(f"   Quantity: {btc_amount:.8f} BTC")
         
         result = self.exchange.place_order(
             symbol="BTCUSDT",
@@ -254,12 +256,12 @@ class CrisisArbitrageBot:
         """Place a REAL SELL order on Binance.US"""
         # Use the same quantity we bought
         btc_amount = trade["btc_quantity"]
-        exit_price = self.btc_price * (1 + (1 - trade["recovery_rate"]) * 0.6)
+        exit_price = round(self.btc_price * (1 + (1 - trade["recovery_rate"]) * 0.6), 2)
         
         print(f"\n📡 PLACING REAL SELL ORDER...")
         print(f"   Symbol: BTCUSDT")
         print(f"   Exit Price: ${exit_price:,.2f}")
-        print(f"   Quantity: {btc_amount:.6f} BTC")
+        print(f"   Quantity: {btc_amount:.8f} BTC")
         
         result = self.exchange.place_order(
             symbol="BTCUSDT",
@@ -303,7 +305,7 @@ class CrisisArbitrageBot:
             # Store trade info
             trade = {
                 "country": country,
-                "btc_quantity": position_size / (self.btc_price * (1 - country["discount"])),
+                "btc_quantity": round(position_size / (self.btc_price * (1 - country["discount"])), 8),
                 "entry_price": self.btc_price * (1 - country["discount"]),
                 "recovery_rate": country["recovery_rate"],
                 "buy_order": buy_result,
