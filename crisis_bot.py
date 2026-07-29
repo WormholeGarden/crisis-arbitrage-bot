@@ -114,7 +114,11 @@ class BinanceAPI:
         self.base_url = "https://api.binance.us"  # ✅ FIXED: .US endpoint
     
     def _sign_request(self, params: Dict) -> str:
+        """Sign the request with HMAC-SHA256"""
+        # ✅ Build query string from sorted params
         query_string = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
+        
+        # ✅ Generate HMAC-SHA256 signature
         signature = hmac.new(
             self.api_secret.encode('utf-8'),
             query_string.encode('utf-8'),
@@ -127,6 +131,7 @@ class BinanceAPI:
             headers = {"X-MBX-APIKEY": self.api_key}
             params = {"timestamp": int(time.time() * 1000)}
             params["signature"] = self._sign_request(params)
+            
             response = requests.get(
                 f"{self.base_url}/api/v3/account",
                 headers=headers,
@@ -146,18 +151,22 @@ class BinanceAPI:
         """Place a REAL order on Binance.US"""
         try:
             headers = {"X-MBX-APIKEY": self.api_key}
+            
+            # ✅ Build params with proper types
             params = {
                 "symbol": symbol,
                 "side": side.upper(),
                 "type": "LIMIT",
                 "timeInForce": "GTC",
-                "quantity": amount,
-                "price": price,
+                "quantity": str(amount),  # ✅ Convert to string
+                "price": str(price),      # ✅ Convert to string
                 "timestamp": int(time.time() * 1000)
             }
+            
+            # ✅ Generate signature from ALL params
             params["signature"] = self._sign_request(params)
             
-            # ✅ Uses .us endpoint
+            # ✅ Send request with ALL params
             response = requests.post(
                 f"{self.base_url}/api/v3/order",
                 headers=headers,
