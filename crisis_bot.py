@@ -26,9 +26,9 @@ CONFIG = {
     
     # --- EXCHANGE API KEYS (GET THESE FROM YOUR EXCHANGE) ---
     "binance": {
-        "api_key": "YOUR_BINANCE_API_KEY",
-        "api_secret": "YOUR_BINANCE_API_SECRET",
-        "enabled": False,  # Set to True when you have keys
+        "api_key": "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn",
+        "api_secret": "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0",
+        "enabled": True,  # Set to True when you have keys
     },
     "bybit": {
         "api_key": "YOUR_BYBIT_API_KEY",
