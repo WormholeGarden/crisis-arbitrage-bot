@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 🚀 CRISIS ARBITRAGE BOT - BINANCE.US REAL TRADING
-FIXED: $5 minimum balance version
+FIXED: Uses actual USDT balance from Binance.US
 """
 
 import time
@@ -15,16 +15,14 @@ import random
 import os
 
 # ========================================================================
-# 📊 CONFIGURATION - UPDATED FOR $5 BALANCE
+# 📊 CONFIGURATION
 # ========================================================================
 
 CONFIG = {
-    # --- CAPITAL (YOUR ACTUAL BALANCE) ---
-    "initial_capital": 5,  # ✅ $5 USD balance
-    "max_positions": 1,    # Only 1 position at a time
-    "risk_per_trade": 1.0, # 100% of capital = $5 per trade
+    "initial_capital": 5,  # Will be overridden by actual balance
+    "max_positions": 1,
+    "risk_per_trade": 1.0,
     
-    # --- EXCHANGE API KEYS ---
     "binance": {
         "api_key": "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn",
         "api_secret": "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0",
@@ -44,7 +42,7 @@ CONFIG = {
 }
 
 # ========================================================================
-# 📡 BINANCE.US API - FULLY FIXED
+# 📡 BINANCE.US API
 # ========================================================================
 
 class ExchangeConnector:
@@ -74,7 +72,6 @@ class BinanceAPI:
         self._filter_cache = {}
 
     def _get_symbol_filters(self, symbol: str) -> Dict:
-        """Fetch and cache real LOT_SIZE / PRICE_FILTER values from Binance.US"""
         if symbol in self._filter_cache:
             return self._filter_cache[symbol]
 
@@ -96,7 +93,6 @@ class BinanceAPI:
         return filters
 
     def _round_step(self, value: float, step_str: str) -> str:
-        """Round value down to the nearest step"""
         from decimal import Decimal, ROUND_DOWN
         step = Decimal(step_str)
         val = Decimal(str(value))
@@ -113,7 +109,6 @@ class BinanceAPI:
         return f"{rounded:.{decimals}f}"
 
     def place_order(self, symbol: str, side: str, amount: float, price: float) -> Dict:
-        """Place a REAL order on Binance.US"""
         try:
             filters = self._get_symbol_filters(symbol)
 
@@ -127,8 +122,7 @@ class BinanceAPI:
 
             min_notional = float(filters.get("minNotional") or 0)
             if min_notional and float(quantity_str) * float(price_str) < min_notional:
-                print(f"❌ Order notional ${float(quantity_str)*float(price_str):.2f} "
-                      f"below exchange minimum ${min_notional:.2f}")
+                print(f"❌ Order notional ${float(quantity_str)*float(price_str):.2f} below minimum ${min_notional:.2f}")
                 return {"error": "Below MIN_NOTIONAL"}
 
             print(f"📋 Formatted Order:")
@@ -193,6 +187,40 @@ class CrisisArbitrageBot:
         except Exception as e:
             print(f"⚠️ Could not fetch BTC price: {e}")
         return 64000.0
+    
+    def _get_usdt_balance(self) -> float:
+        """Get actual USDT balance from Binance.US"""
+        try:
+            api_key = self.config["binance"]["api_key"]
+            api_secret = self.config["binance"]["api_secret"]
+            
+            timestamp = int(time.time() * 1000)
+            params = {"timestamp": timestamp}
+            
+            query_string = f"timestamp={timestamp}"
+            signature = hmac.new(
+                api_secret.encode('utf-8'),
+                query_string.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
+            params["signature"] = signature
+            
+            headers = {"X-MBX-APIKEY": api_key}
+            response = requests.get(
+                "https://api.binance.us/api/v3/account",
+                headers=headers,
+                params=params
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                for balance in data.get("balances", []):
+                    if balance["asset"] == "USDT":
+                        return float(balance["free"])
+            return 0.0
+        except Exception as e:
+            print(f"⚠️ Could not fetch balance: {e}")
+            return 0.0
     
     def _load_fsi_data(self) -> Dict:
         return {
@@ -317,6 +345,17 @@ class CrisisArbitrageBot:
         return result
     
     def run_cycle(self):
+        # ✅ GET ACTUAL BALANCE FIRST
+        actual_balance = self._get_usdt_balance()
+        if actual_balance > 0:
+            self.capital = actual_balance
+            print(f"💰 Found USDT balance: ${self.capital:,.2f}")
+        else:
+            print(f"⚠️ No USDT balance found. Check your Binance.US wallet.")
+            print(f"   Your $9.60 is likely in USD, not USDT.")
+            print(f"   Convert USD to USDT in Binance.US first.")
+            return
+        
         print("\n" + "="*70)
         print("🏦 CRISIS ARBITRAGE BOT - REAL BINANCE.US TRADING")
         print("="*70)
@@ -324,16 +363,19 @@ class CrisisArbitrageBot:
         print(f"📈 BTC Price: ${self.btc_price:,.2f}")
         print("="*70)
         
+        if self.capital < 5:
+            print(f"⚠️ Balance ${self.capital:.2f} is too low. Minimum $5 recommended.")
+            return
+        
         opportunities = self.get_opportunities()
         print(f"📊 Found {len(opportunities)} opportunities")
         
         for country in opportunities:
-            # ✅ Use ALL capital for one trade (with $5 balance)
-            position_size = self.capital  # Use all available capital
+            # Use 50% of capital for safer trading
+            position_size = self.capital * 0.5
             
-            # ✅ Skip if position is too small
             if position_size < 1:
-                print(f"⚠️ Position size ${position_size:.2f} is too small. Minimum $1 recommended.")
+                print(f"⚠️ Position size ${position_size:.2f} is too small.")
                 continue
             
             print(f"\n🚀 EXECUTING TRADE: {country['flag']} {country['name']}")
