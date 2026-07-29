@@ -69,44 +69,74 @@ class BinanceAPI:
         self.api_key = api_key
         self.api_secret = api_secret
         self.base_url = "https://api.binance.us"
-    
-    def _format_quantity(self, amount: float) -> str:
-        """Format BTC quantity to meet Binance.US LOT_SIZE filter"""
-        # BTCUSDT filters (from Binance.US):
-        # LOT_SIZE: minQty = 0.0001, stepSize = 0.000001
-        MIN_QUANTITY = 0.0001
-        STEP_SIZE = 0.000001
-        
-        if amount < MIN_QUANTITY:
-            print(f"⚠️ Quantity {amount:.8f} below minimum. Using {MIN_QUANTITY}.")
-            amount = MIN_QUANTITY
-        
-        # Round DOWN to step size (to avoid going over)
-        rounded = int(amount / STEP_SIZE) * STEP_SIZE
-        return f"{rounded:.8f}"
-    
-    def _format_price(self, price: float) -> str:
-        """Format price to meet Binance.US tick size filter"""
-        # BTCUSDT tick size (from Binance.US): tickSize = 0.01
-        TICK_SIZE = 0.01
-        
-        # Round to tick size
-        rounded = round(price / TICK_SIZE) * TICK_SIZE
-        return f"{rounded:.2f}"
-    
+        self._filter_cache = {}
+
+    def _get_symbol_filters(self, symbol: str) -> Dict:
+        """Fetch and cache real LOT_SIZE / PRICE_FILTER values from Binance.US"""
+        if symbol in self._filter_cache:
+            return self._filter_cache[symbol]
+
+        resp = requests.get(f"{self.base_url}/api/v3/exchangeInfo", params={"symbol": symbol})
+        resp.raise_for_status()
+        info = resp.json()["symbols"][0]
+
+        lot_size = next(f for f in info["filters"] if f["filterType"] == "LOT_SIZE")
+        price_filter = next(f for f in info["filters"] if f["filterType"] == "PRICE_FILTER")
+        # MIN_NOTIONAL / NOTIONAL naming varies by exchange version
+        notional = next((f for f in info["filters"] if f["filterType"] in ("MIN_NOTIONAL", "NOTIONAL")), None)
+
+        filters = {
+            "stepSize": lot_size["stepSize"],
+            "minQty": lot_size["minQty"],
+            "tickSize": price_filter["tickSize"],
+            "minNotional": notional.get("minNotional") or notional.get("minNotionalValue") if notional else "0",
+        }
+        self._filter_cache[symbol] = filters
+        return filters
+
+    def _round_step(self, value: float, step_str: str) -> str:
+        """Round value down to the nearest step, using Decimal to avoid float drift"""
+        from decimal import Decimal, ROUND_DOWN
+        step = Decimal(step_str)
+        val = Decimal(str(value))
+        rounded = (val // step) * step
+        # format with the same number of decimal places as step_str
+        decimals = abs(step.as_tuple().exponent)
+        return f"{rounded:.{decimals}f}"
+
+    def _round_price(self, value: float, tick_str: str) -> str:
+        from decimal import Decimal, ROUND_HALF_UP
+        tick = Decimal(tick_str)
+        val = Decimal(str(value))
+        rounded = (val / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * tick
+        decimals = abs(tick.as_tuple().exponent)
+        return f"{rounded:.{decimals}f}"
+
     def place_order(self, symbol: str, side: str, amount: float, price: float) -> Dict:
-        """Place a REAL order on Binance.US with correct filters"""
+        """Place a REAL order on Binance.US using live exchange filters"""
         try:
-            timestamp = int(time.time() * 1000)
-            
-            # ✅ Format quantity and price
-            quantity_str = self._format_quantity(amount)
-            price_str = self._format_price(price)
-            
-            print(f"📋 Formatted Order:")
+            filters = self._get_symbol_filters(symbol)
+
+            min_qty = float(filters["minQty"])
+            if amount < min_qty:
+                print(f"⚠️ Quantity {amount:.8f} below minimum {min_qty}. Using minimum.")
+                amount = min_qty
+
+            quantity_str = self._round_step(amount, filters["stepSize"])
+            price_str = self._round_price(price, filters["tickSize"])
+
+            # Guard against MIN_NOTIONAL rejection too, since that's the next common failure
+            min_notional = float(filters.get("minNotional") or 0)
+            if min_notional and float(quantity_str) * float(price_str) < min_notional:
+                print(f"❌ Order notional ${float(quantity_str)*float(price_str):.2f} "
+                      f"below exchange minimum ${min_notional:.2f}")
+                return {"error": "Below MIN_NOTIONAL"}
+
+            print(f"📋 Formatted Order (live filters: step={filters['stepSize']}, tick={filters['tickSize']}):")
             print(f"   Quantity: {quantity_str}")
             print(f"   Price: ${price_str}")
-            
+
+            timestamp = int(time.time() * 1000)
             params = {
                 "symbol": symbol,
                 "side": side.upper(),
@@ -117,30 +147,23 @@ class BinanceAPI:
                 "timestamp": timestamp,
                 "recvWindow": 5000
             }
-            
-            # Generate signature
+
             query_string = "&".join([f"{k}={v}" for k, v in params.items()])
             signature = hmac.new(
                 self.api_secret.encode('utf-8'),
                 query_string.encode('utf-8'),
                 hashlib.sha256
             ).hexdigest()
-            
             params["signature"] = signature
-            
+
             headers = {"X-MBX-APIKEY": self.api_key}
-            
-            response = requests.post(
-                f"{self.base_url}/api/v3/order",
-                headers=headers,
-                params=params
-            )
-            
+            response = requests.post(f"{self.base_url}/api/v3/order", headers=headers, params=params)
+
             if response.status_code == 200:
                 return response.json()
             else:
                 return {"error": f"HTTP {response.status_code}: {response.text}"}
-                
+
         except Exception as e:
             return {"error": str(e)}
 
