@@ -2,6 +2,7 @@
 """
 🚀 CRISIS ARBITRAGE BOT - REAL BINANCE.US TRADING
 WITH AUTO-CONVERT: Converts BTC to USDT automatically after each trade!
+FIXED: LOT_SIZE filter failure
 """
 
 import time
@@ -38,6 +39,49 @@ class BinanceAPI:
         self.api_secret = api_secret
         self.base_url = "https://api.binance.us"
         self._filter_cache = {}
+
+    def _get_symbol_filters(self, symbol: str) -> Dict:
+        """Fetch and cache LOT_SIZE and PRICE_FILTER values from Binance.US"""
+        if symbol in self._filter_cache:
+            return self._filter_cache[symbol]
+
+        resp = requests.get(f"{self.base_url}/api/v3/exchangeInfo", params={"symbol": symbol})
+        resp.raise_for_status()
+        info = resp.json()["symbols"][0]
+
+        lot_size = next(f for f in info["filters"] if f["filterType"] == "LOT_SIZE")
+        price_filter = next(f for f in info["filters"] if f["filterType"] == "PRICE_FILTER")
+        notional = next((f for f in info["filters"] if f["filterType"] in ("MIN_NOTIONAL", "NOTIONAL")), None)
+
+        filters = {
+            "stepSize": lot_size["stepSize"],
+            "minQty": lot_size["minQty"],
+            "tickSize": price_filter["tickSize"],
+            "minNotional": notional.get("minNotional") or notional.get("minNotionalValue") if notional else "0",
+        }
+        self._filter_cache[symbol] = filters
+        return filters
+
+    def _round_to_step(self, value: float, step_str: str) -> float:
+        """Round value DOWN to the nearest step size"""
+        step = float(step_str)
+        return int(value / step) * step
+
+    def _format_quantity(self, value: float) -> str:
+        """Format BTC quantity to meet LOT_SIZE filter"""
+        filters = self._get_symbol_filters("BTCUSDT")
+        step_size = float(filters["stepSize"])
+        min_qty = float(filters["minQty"])
+        
+        # Round down to step size
+        rounded = self._round_to_step(value, filters["stepSize"])
+        
+        # Ensure minimum quantity
+        if rounded < min_qty:
+            rounded = min_qty
+        
+        # Format with 8 decimal places
+        return f"{rounded:.8f}"
 
     def get_balance(self, asset: str = "USDT") -> float:
         """Get available balance for any asset"""
@@ -77,24 +121,26 @@ class BinanceAPI:
         return 64000.0
 
     def convert_btc_to_usdt(self) -> bool:
-        """Convert ALL BTC to USDT"""
+        """Convert ALL BTC to USDT with proper formatting"""
         try:
             btc_balance = self.get_balance("BTC")
             if btc_balance < 0.00001:
                 print("✅ No BTC to convert (balance < 0.00001)")
                 return True
             
+            # ✅ FORMAT THE QUANTITY PROPERLY
+            quantity_str = self._format_quantity(btc_balance)
             btc_price = self.get_btc_price()
-            amount_usdt = btc_balance * btc_price
+            amount_usdt = float(quantity_str) * btc_price
             
-            print(f"🔄 Converting {btc_balance:.8f} BTC (≈${amount_usdt:.2f}) to USDT...")
+            print(f"🔄 Converting {quantity_str} BTC (≈${amount_usdt:.2f}) to USDT...")
             
             # Place a market sell order for ALL BTC
             params = {
                 "symbol": "BTCUSDT",
                 "side": "SELL",
                 "type": "MARKET",
-                "quantity": f"{btc_balance:.8f}",
+                "quantity": quantity_str,
                 "timestamp": int(time.time() * 1000),
                 "recvWindow": 5000
             }
@@ -116,8 +162,7 @@ class BinanceAPI:
             
             if response.status_code == 200:
                 result = response.json()
-                print(f"✅ Converted {btc_balance:.8f} BTC to USDT successfully!")
-                print(f"   USDT Received: ≈${float(result.get('price', btc_price)) * btc_balance:.2f}")
+                print(f"✅ Converted {quantity_str} BTC to USDT successfully!")
                 return True
             else:
                 print(f"❌ Conversion failed: {response.text}")
@@ -126,31 +171,6 @@ class BinanceAPI:
         except Exception as e:
             print(f"❌ Conversion error: {e}")
             return False
-
-    def _get_symbol_filters(self, symbol: str) -> Dict:
-        if symbol in self._filter_cache:
-            return self._filter_cache[symbol]
-
-        resp = requests.get(f"{self.base_url}/api/v3/exchangeInfo", params={"symbol": symbol})
-        resp.raise_for_status()
-        info = resp.json()["symbols"][0]
-
-        lot_size = next(f for f in info["filters"] if f["filterType"] == "LOT_SIZE")
-        price_filter = next(f for f in info["filters"] if f["filterType"] == "PRICE_FILTER")
-        notional = next((f for f in info["filters"] if f["filterType"] in ("MIN_NOTIONAL", "NOTIONAL")), None)
-
-        filters = {
-            "stepSize": lot_size["stepSize"],
-            "minQty": lot_size["minQty"],
-            "tickSize": price_filter["tickSize"],
-            "minNotional": notional.get("minNotional") or notional.get("minNotionalValue") if notional else "0",
-        }
-        self._filter_cache[symbol] = filters
-        return filters
-
-    def _round_to_step(self, value: float, step_str: str) -> float:
-        step = float(step_str)
-        return int(value / step) * step
 
     def place_market_order(self, side: str, amount_usdt: float) -> Dict:
         """Place a REAL MARKET order on Binance.US"""
@@ -331,7 +351,7 @@ class CrisisArbitrageBot:
             print("🔄 Auto-convert enabled: Converting any BTC to USDT...")
             if not self.api.convert_btc_to_usdt():
                 print("⚠️ Could not convert BTC to USDT. Please check your wallet.")
-                return
+                # Continue anyway - user can manually convert
         
         # Get actual USDT balance
         actual_balance = self.api.get_balance("USDT")
