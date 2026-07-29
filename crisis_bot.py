@@ -71,6 +71,22 @@ class BinanceAPI:
         self.base_url = "https://api.binance.us"
         self._filter_cache = {}
 
+    def get_account_balance(self) -> Dict:
+        timestamp = int(time.time() * 1000)
+        params = {"timestamp": timestamp, "recvWindow": 5000}
+        query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+        signature = hmac.new(
+            self.api_secret.encode('utf-8'),
+            query_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        params["signature"] = signature
+        headers = {"X-MBX-APIKEY": self.api_key}
+        resp = requests.get(f"{self.base_url}/api/v3/account", headers=headers, params=params)
+        if resp.status_code != 200:
+            return {"error": f"HTTP {resp.status_code}: {resp.text}"}
+        return [b for b in resp.json()["balances"] if float(b["free"]) > 0]
+
     def _get_symbol_filters(self, symbol: str) -> Dict:
         """Fetch and cache real LOT_SIZE / PRICE_FILTER values from Binance.US"""
         if symbol in self._filter_cache:
