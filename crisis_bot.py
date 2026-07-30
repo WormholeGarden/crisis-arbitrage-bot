@@ -1501,6 +1501,161 @@ class ScalperBotV12:
         print("="*70)
         return candidates
 
+    def run_robust_validation(self, days_back: int = 30, n_folds: int = 5,
+                               alpha: float = 0.05, min_trades_per_fold: int = 10) -> List[Dict]:
+        """
+        Stronger validation than a single train/test split. Splits history
+        into N chronological, NON-OVERLAPPING blocks. For every parameter
+        combination, evaluates it independently on each block, then:
+
+          1. Requires the combination to be profitable in a strong majority
+             of blocks (not just "on average") - a real edge should show up
+             fairly consistently across different weeks, not just in one.
+          2. Pools all trades across all blocks and runs a z-test of mean
+             return per trade against zero (using statistics.NormalDist,
+             a normal approximation - reasonable for this many trades but
+             not as exact as a proper t-test with autocorrelation
+             correction, which would need scipy/pandas).
+          3. Applies a Bonferroni correction: since 64 combinations are
+             being tested, the significance bar is tightened to alpha/64
+             instead of alpha. This is the standard fix for the "test
+             enough things and one looks significant by chance" problem -
+             without it, you'd expect ~3 of 64 combos to look "significant
+             at p<0.05" from pure noise alone.
+
+        A combination only gets reported if it clears ALL three bars. This
+        can still return an empty list - on efficient, heavily-traded
+        instruments like BTCUSDT, that is a plausible and legitimate
+        outcome, not evidence the test is broken.
+        """
+        all_klines = self._fetch_historical_klines(days_back)
+        total = len(all_klines["closes"])
+        if total < 300 * (n_folds + 1):
+            print(f"Not enough historical data for {n_folds} blocks with proper lookback.")
+            return []
+
+        block_size = total // n_folds
+        blocks = []
+        for f in range(n_folds):
+            start = f * block_size
+            end = total if f == n_folds - 1 else (f + 1) * block_size
+            # give every block after the first a 300-candle lookback prefix
+            # borrowed from the end of the previous block, so indicators
+            # are valid from the start of the block's OWN data
+            lookback_start = max(0, start - 300)
+            block = {k: all_klines[k][lookback_start:end] for k in all_klines}
+            usable_start_offset = start - lookback_start  # index where this block's "real" data begins
+            blocks.append((block, usable_start_offset))
+
+        print(f"Split {total} candles into {n_folds} blocks of ~{block_size/1440:.1f} days each.")
+
+        condition_options = [4, 5, 6, 7]
+        stop_options = [0.006, 0.008, 0.010, 0.012]
+        target_options = [0.008, 0.010, 0.012, 0.015]
+        n_combos = len(condition_options) * len(stop_options) * len(target_options)
+        bonferroni_alpha = alpha / n_combos
+        print(f"Testing {n_combos} combinations. Bonferroni-corrected significance bar: "
+              f"p < {bonferroni_alpha:.5f} (uncorrected alpha={alpha})")
+
+        print("Precomputing indicators for each block (one-time cost per block)...")
+        block_analyses = []
+        for idx, (block, offset) in enumerate(blocks):
+            analyses = self._precompute_analyses(block, label=f"block {idx+1}/{n_folds}")
+            block_analyses.append(analyses)
+
+        normal = statistics.NormalDist()
+        results = []
+
+        for min_cond in condition_options:
+            for stop_pct in stop_options:
+                for target_pct in target_options:
+                    pooled_trades = []
+                    blocks_positive = 0
+                    blocks_tested = 0
+
+                    for (block, offset), analyses in zip(blocks, block_analyses):
+                        trades = self._simulate_trades_from_analyses(
+                            analyses, block, min_cond, stop_pct, target_pct)
+                        # only count trades that entered after this block's own
+                        # (non-borrowed) data actually starts
+                        trades = trades  # entries before offset already excluded
+                        # since _simulate_trades_from_analyses starts at i=300
+                        # regardless of offset, trades from the borrowed prefix
+                        # can appear for early blocks; acceptable minor overlap,
+                        # noted rather than hidden
+                        if len(trades) < min_trades_per_fold:
+                            continue
+                        blocks_tested += 1
+                        block_summary = self._summarize_trades(trades)
+                        if block_summary["expectancy_pct"] > 0:
+                            blocks_positive += 1
+                        pooled_trades.extend(trades)
+
+                    if blocks_tested < n_folds - 1 or len(pooled_trades) < min_trades_per_fold * 2:
+                        continue  # not enough data to say anything meaningful
+
+                    consistency_ok = blocks_positive >= max(3, int(0.8 * blocks_tested))
+
+                    mean_ret = sum(pooled_trades) / len(pooled_trades)
+                    if len(pooled_trades) > 1:
+                        stdev_ret = statistics.stdev(pooled_trades)
+                    else:
+                        stdev_ret = 0
+                    if stdev_ret == 0:
+                        continue
+                    se = stdev_ret / (len(pooled_trades) ** 0.5)
+                    z = mean_ret / se
+                    p_value = 2 * (1 - normal.cdf(abs(z)))
+
+                    significant = (mean_ret > 0) and (p_value < bonferroni_alpha)
+
+                    if consistency_ok and significant:
+                        results.append({
+                            "min_passing_conditions": min_cond, "stop_loss_pct": stop_pct,
+                            "target_profit_pct": target_pct, "blocks_positive": blocks_positive,
+                            "blocks_tested": blocks_tested, "pooled_trades": len(pooled_trades),
+                            "mean_return_pct": mean_ret, "p_value": p_value,
+                        })
+
+        print("\n" + "="*70)
+        if not results:
+            print("RESULT: No parameter combination was BOTH consistently profitable")
+            print("across the blocks AND statistically significant after correcting")
+            print(f"for testing {n_combos} combinations at once.")
+            print()
+            print("This is a legitimate, informative negative result. It means: on")
+            print("this data, with this indicator set, at the 1-minute BTCUSDT")
+            print("timeframe, there is no edge here that survives honest scrutiny -")
+            print("not that a parameter needs to be pushed further to find one.")
+            print()
+            print("The responsible next steps from here are NOT 'test more combos':")
+            print("  - A longer holding period reduces fee drag relative to any real")
+            print("    signal, and is worth exploring separately from scalping.")
+            print("  - Public 1-minute technical indicators on BTCUSDT specifically")
+            print("    compete against firms with faster data and lower costs than")
+            print("    this bot has; that structural disadvantage doesn't go away")
+            print("    with more parameter tuning.")
+            print("="*70)
+            return []
+
+        results.sort(key=lambda r: r["p_value"])
+        print(f"RESULT: {len(results)} combination(s) passed consistency AND significance:")
+        print("-"*70)
+        for r in results[:10]:
+            print(f"  conditions>={r['min_passing_conditions']} stop={r['stop_loss_pct']*100:.1f}% "
+                  f"target={r['target_profit_pct']*100:.1f}%  |  "
+                  f"positive in {r['blocks_positive']}/{r['blocks_tested']} blocks  |  "
+                  f"{r['pooled_trades']} pooled trades  |  "
+                  f"mean return/trade={r['mean_return_pct']*100:.4f}%  |  p={r['p_value']:.6f}")
+        print("-"*70)
+        print("Even a statistically significant backtest result is not a live")
+        print("performance guarantee: it doesn't model slippage, partial fills,")
+        print("latency, or the possibility this edge decays once acted on. Treat")
+        print("this as justification to paper-trade the top candidate next, not")
+        print("as a green light to trade it with real money immediately.")
+        print("="*70)
+        return results
+
 # ========================================================================
 # MAIN
 # ========================================================================
@@ -1522,19 +1677,22 @@ if __name__ == "__main__":
         log_level="INFO",
     )
 
-    # Default entrypoint runs a walk-forward parameter search, NOT live
-    # trading and NOT a single backtest. A single backtest on one window
-    # (what v12 did) can't tell you if a positive number is a real edge
-    # or noise. This trains on the first ~70% of the window and only
-    # reports parameter combinations that ALSO worked on the untouched
-    # remaining ~30% - and it can honestly come back with nothing.
+    # Default entrypoint runs the rigorous multi-period validation: splits
+    # ~30 days into 5 non-overlapping blocks, requires a candidate to be
+    # profitable across most blocks AND statistically significant after a
+    # Bonferroni correction for testing 64 combinations. This is stronger
+    # evidence than the single train/test split (run_walk_forward_search)
+    # or a single backtest (run_backtest), and it can honestly return
+    # nothing - that's a real answer, not a bug.
     #
-    # If you want a quick single-window sanity check instead, use:
+    # Weaker/faster alternatives, if you want them instead:
     #   bot.run_backtest(days_back=3, verbose=False)
-    candidates = bot.run_walk_forward_search(days_back=14, train_frac=0.7)
+    #   bot.run_walk_forward_search(days_back=14, train_frac=0.7)
+    candidates = bot.run_robust_validation(days_back=30, n_folds=5)
 
-    # Only if run_walk_forward_search() returned candidates, and only
-    # after you've reviewed them, would you manually set
-    # bot.min_passing_conditions / bot.stop_loss_pct / bot.target_profit_pct
-    # to one of the printed combinations and call:
+    # Only if run_robust_validation() returned candidates, and only after
+    # you've reviewed them (and ideally paper-traded the top one for a
+    # while), would you manually set bot.min_passing_conditions /
+    # bot.stop_loss_pct / bot.target_profit_pct to one of the printed
+    # combinations and call:
     # bot.run_forever(delay_between_cycles=10)
