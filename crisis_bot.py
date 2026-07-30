@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v4.2 - $50 BALANCE OPTIMIZED - FINAL FIX
+🚀 CRISIS ARBITRAGE SCALPER v4.2 - $50 BALANCE OPTIMIZED - FINAL
+- Increased max drawdown to 40% for small accounts
+- Better position sizing for volatility
 - Fixed quantity formatting (no scientific notation)
-- Fixed 'price' key error handling
 - Optimized for small account ($50 USDT)
-- Conservative position sizing ($5-10 per trade)
 """
 
 import hashlib
@@ -139,7 +139,7 @@ class CrisisScoringEngine:
         return opportunities[:limit]
 
 # ========================================================================
-# 🤖 SCALPER BOT - FULLY FIXED
+# 🤖 SCALPER BOT - FULLY FIXED WITH BETTER DRAWDOWN MANAGEMENT
 # ========================================================================
 
 class ScalperBotV40:
@@ -180,15 +180,15 @@ class ScalperBotV40:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 OPTIMIZED FOR $50 BALANCE
+        # 💰 OPTIMIZED FOR $50 BALANCE - MORE FORGIVING DRAWDOWN
         self.total_balance_usdt = 50.0
-        self.max_risk_per_trade = 0.15
-        self.trade_amount_usdt = 7.50
+        self.max_risk_per_trade = 0.10  # Reduced from 15% to 10%
+        self.trade_amount_usdt = 5.00   # Reduced from $7.50
         
-        # Conservative risk parameters
-        self.target_profit_pct = 0.008
-        self.stop_loss_pct = 0.006
-        self.max_drawdown_pct = 0.20
+        # Conservative risk parameters for small account
+        self.target_profit_pct = 0.005  # 0.5% (lower target for small account)
+        self.stop_loss_pct = 0.004      # 0.4% stop loss (tighter)
+        self.max_drawdown_pct = 0.40    # Increased to 40% for small accounts
         
         self.max_chase_attempts = 5
         self.chase_timeout_sec = 300
@@ -214,6 +214,8 @@ class ScalperBotV40:
         self.running_pnl = 0.0
         self.peak_balance = self.total_balance_usdt
         self.current_balance = self.total_balance_usdt
+        self.consecutive_losses = 0
+        self.max_consecutive_losses = 5  # Stop if 5 losses in a row
 
         # Statistics tracking
         self.cycle_stats = {
@@ -230,7 +232,7 @@ class ScalperBotV40:
 
         self.country_performance = {}
 
-        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v4.2 - $50 BALANCE OPTIMIZED")
+        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v4.2 - $50 BALANCE")
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Exchange: {self.base_url}")
         self.logger.info(f"   Mode: {'🧪 PAPER TRADING' if test_mode else '💰 LIVE TRADING'}")
@@ -238,6 +240,8 @@ class ScalperBotV40:
         self.logger.info(f"   Trade Amount: ${self.trade_amount_usdt:.2f} ({self.max_risk_per_trade*100:.0f}% of balance)")
         self.logger.info(f"   Target Profit: {self.target_profit_pct*100:.1f}% per cycle")
         self.logger.info(f"   Stop Loss: {self.stop_loss_pct*100:.1f}%")
+        self.logger.info(f"   Max Drawdown: {self.max_drawdown_pct*100:.0f}%")
+        self.logger.info(f"   Max Consecutive Losses: {self.max_consecutive_losses}")
         self.logger.info("="*60)
 
         if not test_mode:
@@ -258,6 +262,9 @@ class ScalperBotV40:
                 self.current_balance * self.max_risk_per_trade,
                 self.trade_amount_usdt
             )
+            # Ensure minimum trade amount
+            if self.trade_amount_usdt < 2.0:
+                self.trade_amount_usdt = 2.0
             self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
             self.logger.info(f"💰 Trade Amount: ${self.trade_amount_usdt:.2f}")
 
@@ -554,15 +561,26 @@ class ScalperBotV40:
         self.logger.info(f"🔄 CYCLE {cycle_number}/100")
         self.logger.info(f"{'='*60}")
 
-        # Check balance
+        # Check balance and risk limits
         if not self.test_mode:
             self._update_balance()
+            
+            # Check max drawdown (now 40%)
             drawdown = (self.peak_balance - self.current_balance) / self.peak_balance if self.peak_balance > 0 else 0
             if drawdown > self.max_drawdown_pct:
                 self.logger.error(f"❌ Max drawdown exceeded: {drawdown*100:.1f}% > {self.max_drawdown_pct*100:.0f}%")
+                self.logger.error(f"   Current Balance: ${self.current_balance:.2f}")
+                self.logger.error(f"   Peak Balance: ${self.peak_balance:.2f}")
+                self.logger.error("   Stopping trading to preserve capital")
                 return {"success": False, "error": "Max drawdown exceeded"}
             
-            if self.current_balance < 10:
+            # Check for too many consecutive losses
+            if self.consecutive_losses >= self.max_consecutive_losses:
+                self.logger.error(f"❌ Too many consecutive losses: {self.consecutive_losses}")
+                self.logger.error("   Stopping trading to prevent further losses")
+                return {"success": False, "error": "Too many consecutive losses"}
+            
+            if self.current_balance < 5.0:
                 self.logger.error("❌ Balance too low to continue trading")
                 return {"success": False, "error": "Balance too low"}
 
@@ -742,13 +760,19 @@ class ScalperBotV40:
         realized_pnl = (exit_price - self.buy_price) * self.buy_qty
         self.logger.info(f"💰 P&L: ${realized_pnl:.4f}" + (" (stop-loss exit)" if stopped_out else ""))
         
-        # Update balance
+        # Update balance and track consecutive losses
         self.running_pnl += realized_pnl
         self.current_balance = self.total_balance_usdt + self.running_pnl
         if self.current_balance > self.peak_balance:
             self.peak_balance = self.current_balance
+            self.consecutive_losses = 0  # Reset on new peak
+        elif realized_pnl < 0:
+            self.consecutive_losses += 1
+        else:
+            self.consecutive_losses = 0  # Reset on win
         
         self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
+        self.logger.info(f"📊 Consecutive Losses: {self.consecutive_losses}")
         self.logger.info("=== Cycle Complete ===")
 
         # Update country performance
@@ -787,6 +811,7 @@ class ScalperBotV40:
             "profit_percent": (realized_pnl / (self.buy_price * self.buy_qty)) * 100,
             "stopped_out": stopped_out,
             "balance_after": self.current_balance,
+            "consecutive_losses": self.consecutive_losses,
             "timestamp": datetime.now().isoformat()
         }
 
@@ -822,6 +847,16 @@ class ScalperBotV40:
 
         for cycle_num in range(1, 101):
             try:
+                # Check if we should continue
+                if not self.test_mode:
+                    if self.cycle_stats.get("failed_cycles", 0) > 50:
+                        self.logger.error("❌ Too many failed cycles, stopping")
+                        break
+                    
+                    if self.current_balance < 5.0:
+                        self.logger.error("❌ Balance critically low, stopping")
+                        break
+
                 country_idx = (cycle_num - 1) % len(top_countries)
                 selected_country = top_countries[country_idx]["iso"]
 
@@ -865,6 +900,7 @@ class ScalperBotV40:
         self.logger.info(f"   Failed: {stats['failed_cycles']}")
         self.logger.info(f"   Net Profit: ${stats['net_profit']:.4f}")
         self.logger.info(f"   Current Balance: ${self.current_balance:.2f}")
+        self.logger.info(f"   Consecutive Losses: {self.consecutive_losses}")
         if stats['total_cycles'] > 0:
             win_rate = (stats['successful_cycles'] / stats['total_cycles']) * 100
             self.logger.info(f"   Win Rate: {win_rate:.1f}%")
@@ -899,6 +935,9 @@ class ScalperBotV40:
             self.logger.info(f"📊 Avg Profit/Cycle:   ${avg_profit:.4f}")
             roi = (stats['net_profit'] / self.total_balance_usdt) * 100
             self.logger.info(f"📊 ROI:                {roi:.1f}%")
+        
+        self.logger.info(f"📊 Max Drawdown:       {(self.peak_balance - self.current_balance) / self.peak_balance * 100:.1f}%")
+        self.logger.info(f"📊 Consecutive Losses: {self.consecutive_losses}")
 
         self.logger.info("\n🌍 COUNTRY PERFORMANCE:")
         self.logger.info("-"*70)
@@ -920,7 +959,8 @@ class ScalperBotV40:
         with open(filename, 'a', newline='') as csvfile:
             fieldnames = ['cycle', 'timestamp', 'country', 'country_name', 'fsi_score',
                          'wst_class', 'entry_price', 'exit_price', 'quantity',
-                         'profit', 'profit_percent', 'stopped_out', 'balance_after', 'success']
+                         'profit', 'profit_percent', 'stopped_out', 'balance_after', 
+                         'consecutive_losses', 'success']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
             if not file_exists:
@@ -941,6 +981,7 @@ class ScalperBotV40:
                 'profit_percent': f"{latest['profit_percent']:.2f}",
                 'stopped_out': latest.get('stopped_out', False),
                 'balance_after': f"{latest.get('balance_after', 0):.2f}",
+                'consecutive_losses': latest.get('consecutive_losses', 0),
                 'success': latest['success']
             })
 
@@ -948,6 +989,9 @@ class ScalperBotV40:
         report = {
             "starting_balance": self.total_balance_usdt,
             "final_balance": self.current_balance,
+            "peak_balance": self.peak_balance,
+            "max_drawdown_percent": ((self.peak_balance - self.current_balance) / self.peak_balance * 100) if self.peak_balance > 0 else 0,
+            "consecutive_losses": self.consecutive_losses,
             "roi_percent": ((self.current_balance - self.total_balance_usdt) / self.total_balance_usdt) * 100,
             "summary": self.cycle_stats,
             "country_performance": self.country_performance,
