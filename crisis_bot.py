@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v5.0 - PROFITABLE EDITION
-- Positive expectancy math (win rate > breakeven)
-- Dynamic position sizing
-- Trend following integration
-- Multiple exit strategies
-- Risk:Reward ratio optimized for profitability
+🚀 CRISIS ARBITRAGE SCALPER v6.0 - ULTRA SELECTIVE EDITION
+- Only trades when ALL conditions align (90%+ win rate target)
+- Multiple confirmation filters before entry
+- Adaptive profit targets based on market strength
+- Smart stop-loss placement
+- Designed for 7+ consecutive wins
 """
 
 import hashlib
@@ -140,12 +140,12 @@ class CrisisScoringEngine:
         return opportunities[:limit]
 
 # ========================================================================
-# 📈 TREND ANALYSIS - NEW!
+# 📈 ULTRA SELECTIVE TREND ANALYSIS
 # ========================================================================
 
 class TrendAnalyzer:
     @staticmethod
-    def get_price_history(symbol: str, base_url: str, limit: int = 50) -> Optional[List[float]]:
+    def get_price_history(symbol: str, base_url: str, limit: int = 100) -> Optional[List[float]]:
         """Fetch recent price history for trend analysis"""
         try:
             url = f"{base_url}/api/v3/klines"
@@ -165,54 +165,189 @@ class TrendAnalyzer:
     
     @staticmethod
     def calculate_trend(closes: List[float]) -> Dict:
-        """Determine trend strength and direction"""
-        if not closes or len(closes) < 10:
-            return {"direction": "neutral", "strength": 0.0}
+        """Ultra-selective trend analysis - ONLY trades in strong trends"""
+        if not closes or len(closes) < 20:
+            return {"direction": "neutral", "strength": 0.0, "confidence": 0.0}
         
-        # Simple moving averages
-        short_ma = sum(closes[-10:]) / 10
-        long_ma = sum(closes[-30:]) / 30 if len(closes) >= 30 else short_ma
+        # Multiple timeframe analysis
+        sma_5 = sum(closes[-5:]) / 5
+        sma_10 = sum(closes[-10:]) / 10
+        sma_20 = sum(closes[-20:]) / 20
+        sma_50 = sum(closes[-50:]) / 50 if len(closes) >= 50 else sma_20
         current_price = closes[-1]
         
-        # Trend direction
-        if current_price > short_ma > long_ma:
+        # RSI calculation
+        gains = []
+        losses = []
+        for i in range(1, len(closes)):
+            diff = closes[i] - closes[i-1]
+            if diff > 0:
+                gains.append(diff)
+                losses.append(0)
+            else:
+                gains.append(0)
+                losses.append(abs(diff))
+        
+        avg_gain = sum(gains[-14:]) / 14 if len(gains) >= 14 else sum(gains) / len(gains) if gains else 0
+        avg_loss = sum(losses[-14:]) / 14 if len(losses) >= 14 else sum(losses) / len(losses) if losses else 1
+        rsi = 100 - (100 / (1 + (avg_gain / avg_loss))) if avg_loss > 0 else 100
+        
+        # MACD approximation
+        ema_12 = sum(closes[-12:]) / 12
+        ema_26 = sum(closes[-26:]) / 26 if len(closes) >= 26 else sma_20
+        macd = ema_12 - ema_26
+        
+        # Bollinger Bands
+        bb_period = 20
+        bb_sma = sum(closes[-bb_period:]) / bb_period
+        bb_std = (sum([(x - bb_sma) ** 2 for x in closes[-bb_period:]]) / bb_period) ** 0.5
+        bb_upper = bb_sma + (bb_std * 2)
+        bb_lower = bb_sma - (bb_std * 2)
+        
+        # Position in Bollinger Band (0 = lower, 1 = upper)
+        bb_position = (current_price - bb_lower) / (bb_upper - bb_lower) if bb_upper != bb_lower else 0.5
+        
+        # MULTIPLE CONFIRMATIONS REQUIRED
+        bullish_signals = 0
+        bearish_signals = 0
+        
+        # Signal 1: SMA alignment
+        if current_price > sma_5 > sma_10 > sma_20:
+            bullish_signals += 1
+        elif current_price < sma_5 < sma_10 < sma_20:
+            bearish_signals += 1
+        
+        # Signal 2: Price above/below SMAs
+        if current_price > sma_20 and current_price > sma_50:
+            bullish_signals += 1
+        elif current_price < sma_20 and current_price < sma_50:
+            bearish_signals += 1
+        
+        # Signal 3: RSI
+        if rsi > 50 and rsi < 70:  # Not overbought
+            bullish_signals += 1
+        elif rsi < 50 and rsi > 30:
+            bearish_signals += 1
+        
+        # Signal 4: MACD
+        if macd > 0 and closes[-1] > closes[-2]:
+            bullish_signals += 1
+        elif macd < 0 and closes[-1] < closes[-2]:
+            bearish_signals += 1
+        
+        # Signal 5: Bollinger Band position
+        if bb_position > 0.5 and bb_position < 0.8:  # Mid to upper but not overextended
+            bullish_signals += 1
+        elif bb_position < 0.5 and bb_position > 0.2:
+            bearish_signals += 1
+        
+        # Signal 6: Volume/momentum
+        momentum = (closes[-1] - closes[-3]) / closes[-3] if len(closes) >= 3 else 0
+        if momentum > 0.001:  # Positive momentum
+            bullish_signals += 1
+        elif momentum < -0.001:
+            bearish_signals += 1
+        
+        # Signal 7: Recent price action
+        recent_high = max(closes[-10:])
+        recent_low = min(closes[-10:])
+        if current_price > (recent_high + recent_low) / 2:
+            bullish_signals += 1
+        else:
+            bearish_signals += 1
+        
+        # ULTRA SELECTIVE: Require 5+ bullish signals
+        if bullish_signals >= 5 and bullish_signals > bearish_signals * 2:
+            direction = "strong_bullish"
+            strength = min(1.0, bullish_signals / 7)
+            confidence = min(1.0, (bullish_signals - bearish_signals) / 7)
+        elif bullish_signals >= 4 and bullish_signals > bearish_signals:
             direction = "bullish"
-            strength = min(1.0, (current_price - long_ma) / long_ma * 10)
-        elif current_price < short_ma < long_ma:
+            strength = min(1.0, bullish_signals / 7)
+            confidence = min(1.0, (bullish_signals - bearish_signals) / 7)
+        elif bearish_signals >= 5:
             direction = "bearish"
-            strength = min(1.0, (long_ma - current_price) / long_ma * 10)
+            strength = min(1.0, bearish_signals / 7)
+            confidence = min(1.0, (bearish_signals - bullish_signals) / 7)
         else:
             direction = "neutral"
             strength = 0.0
+            confidence = 0.0
         
-        # Volatility (for position sizing)
+        # Volatility calculation
         returns = [((closes[i] - closes[i-1]) / closes[i-1]) for i in range(1, len(closes))]
-        volatility = sum([abs(r) for r in returns[-10:]]) / 10 if returns else 0.001
+        volatility = sum([abs(r) for r in returns[-20:]]) / 20 if returns else 0.001
+        
+        # Advanced metrics
+        atr = max(closes[-20:]) - min(closes[-20:]) if len(closes) >= 20 else volatility * current_price * 20
         
         return {
             "direction": direction,
             "strength": strength,
+            "confidence": confidence,
+            "bullish_signals": bullish_signals,
+            "bearish_signals": bearish_signals,
             "volatility": volatility,
             "current_price": current_price,
-            "short_ma": short_ma,
-            "long_ma": long_ma
+            "sma_5": sma_5,
+            "sma_10": sma_10,
+            "sma_20": sma_20,
+            "sma_50": sma_50,
+            "rsi": rsi,
+            "macd": macd,
+            "bb_position": bb_position,
+            "atr": atr
         }
+    
+    @staticmethod
+    def get_market_phase(closes: List[float]) -> Dict:
+        """Identify market phase: accumulation, markup, distribution, markdown"""
+        if not closes or len(closes) < 50:
+            return {"phase": "unknown", "score": 0}
+        
+        # Identify swings
+        highs = []
+        lows = []
+        for i in range(5, len(closes) - 5):
+            if closes[i] > max(closes[i-5:i] + closes[i+1:i+6]):
+                highs.append((i, closes[i]))
+            if closes[i] < min(closes[i-5:i] + closes[i+1:i+6]):
+                lows.append((i, closes[i]))
+        
+        if len(highs) < 3 or len(lows) < 3:
+            return {"phase": "ranging", "score": 0.3}
+        
+        # Check if making higher highs and higher lows (markup)
+        hh = all(highs[i][1] > highs[i-1][1] for i in range(1, len(highs)))
+        hl = all(lows[i][1] > lows[i-1][1] for i in range(1, len(lows)))
+        
+        # Check if making lower highs and lower lows (markdown)
+        lh = all(highs[i][1] < highs[i-1][1] for i in range(1, len(highs)))
+        ll = all(lows[i][1] < lows[i-1][1] for i in range(1, len(lows)))
+        
+        if hh and hl:
+            return {"phase": "markup", "score": 0.9}
+        elif lh and ll:
+            return {"phase": "markdown", "score": 0.1}
+        elif hh and not hl:
+            return {"phase": "distribution", "score": 0.4}
+        elif not hh and hl:
+            return {"phase": "accumulation", "score": 0.6}
+        else:
+            return {"phase": "ranging", "score": 0.3}
 
 # ========================================================================
-# 🤖 SCALPER BOT - PROFITABLE VERSION
+# 🤖 SCALPER BOT - 7 WINS IN A ROW VERSION
 # ========================================================================
 
-class ScalperBotV50:
+class ScalperBotV60:
 
     def __init__(self, api_key: str, api_secret: str, symbol: str = "BTCUSDT",
                  test_mode: bool = True, exchange_region: str = "us",
                  log_level: str = "INFO"):
         """
-        PROFITABLE VERSION: Positive expectancy through:
-        - Better risk:reward (1:2 ratio)
-        - Trend following
-        - Dynamic position sizing
-        - Multiple exit strategies
+        ULTRA SELECTIVE VERSION: Only trades when all conditions align
+        Target: 7+ consecutive wins with high confidence
         """
         self.api_key = api_key
         self.api_secret = api_secret
@@ -229,7 +364,6 @@ class ScalperBotV50:
         )
         self.logger = logging.getLogger(__name__)
         
-        # Also log to console
         console = logging.StreamHandler()
         console.setLevel(logging.INFO)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -243,33 +377,40 @@ class ScalperBotV50:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 PROFITABLE RISK PARAMETERS - FIXED MATH
+        # 💰 ULTRA CONSERVATIVE RISK PARAMETERS
         self.total_balance_usdt = 50.0
         
-        # KEY FIX: Better risk:reward ratio (1:2)
-        # Now you only need ~33% win rate to break even
-        self.target_profit_pct = 0.015      # 1.5% profit target (was 0.8%)
-        self.stop_loss_pct = 0.0075         # 0.75% stop loss (was 0.5%)
-        self.risk_reward_ratio = 2.0        # Risk:Reward = 1:2
+        # SMALL PROFITS, HIGH WIN RATE - THE KEY TO 7 WINS
+        self.target_profit_pct = 0.008      # 0.8% profit target
+        self.stop_loss_pct = 0.012          # 1.2% stop loss (WIDE)
+        self.risk_reward_ratio = 0.67       # Risk:Reward = 1.5:1 (but high win rate)
         
-        # Dynamic position sizing based on volatility
-        self.base_risk_per_trade = 0.03     # 3% base risk (was 5%)
-        self.max_risk_per_trade = 0.05      # 5% max risk
-        self.min_risk_per_trade = 0.01      # 1% min risk
+        # Position sizing - SMALL
+        self.risk_per_trade = 0.01          # 1% risk per trade
+        
+        # Entry conditions - VERY STRICT
+        self.min_confidence = 0.7           # Minimum confidence to enter
+        self.min_bullish_signals = 5        # Need 5+ bullish signals
+        self.max_bearish_signals = 2        # Can't have more than 2 bearish signals
+        self.min_bb_position = 0.4          # Must be above lower BB
+        self.max_bb_position = 0.85         # Can't be too overbought
+        self.min_rsi = 45                   # RSI must be above 45
+        self.max_rsi = 72                   # RSI must be below 72
         
         # Safety limits
-        self.max_drawdown_pct = 0.15        # 15% max drawdown (SAFE)
-        self.max_consecutive_losses = 7     # Stop after 7 losses
+        self.max_drawdown_pct = 0.10        # 10% max drawdown (STRICT)
+        self.max_consecutive_losses = 3     # Stop after 3 losses (was 7)
+        self.consecutive_wins_target = 7    # Target for consecutive wins
         
         # Trade management
-        self.chase_timeout_sec = 45         # Longer timeout for better fills
+        self.chase_timeout_sec = 60
         self.stop_loss_poll_sec = 2
         self.maker_fee_rate = 0.001
         
         # Price cache
         self._price_cache = {}
         self._price_cache_time = 0
-        self._price_cache_ttl = 2
+        self._price_cache_ttl = 1
 
         # Exchange info cache
         self._min_qty = 0.00001
@@ -288,6 +429,7 @@ class ScalperBotV50:
         self.peak_balance = 0.0
         self.starting_balance = 0.0
         self.consecutive_losses = 0
+        self.consecutive_wins = 0
         self.balance_fetched = False
         self.stopped = False
         self.initialized = False
@@ -297,12 +439,14 @@ class ScalperBotV50:
         self.win_count = 0
         self.loss_count = 0
         self.total_trades = 0
+        self.skipped_trades = 0
 
         # Statistics tracking
         self.cycle_stats = {
             "total_cycles": 0,
             "successful_cycles": 0,
             "failed_cycles": 0,
+            "skipped_cycles": 0,
             "total_profit": 0.0,
             "total_loss": 0.0,
             "net_profit": 0.0,
@@ -313,14 +457,15 @@ class ScalperBotV50:
 
         self.country_performance = {}
 
-        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v5.0 - PROFITABLE EDITION")
+        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v6.0 - 7 WINS EDITION")
         self.logger.info(f"   Symbol: {symbol}")
-        self.logger.info(f"   Exchange: {self.base_url}")
         self.logger.info(f"   Mode: {'🧪 PAPER TRADING' if test_mode else '💰 LIVE TRADING'}")
         self.logger.info(f"   Target Profit: {self.target_profit_pct*100:.1f}%")
         self.logger.info(f"   Stop Loss: {self.stop_loss_pct*100:.1f}%")
-        self.logger.info(f"   Risk:Reward: 1:{self.risk_reward_ratio:.1f}")
+        self.logger.info(f"   Min Confidence: {self.min_confidence*100:.0f}%")
+        self.logger.info(f"   Min Bullish Signals: {self.min_bullish_signals}")
         self.logger.info(f"   Max Drawdown: {self.max_drawdown_pct*100:.0f}%")
+        self.logger.info(f"   Target: {self.consecutive_wins_target} consecutive wins")
         self.logger.info("="*60)
 
         if not test_mode:
@@ -341,10 +486,9 @@ class ScalperBotV50:
                 self.initialized = True
                     
                 self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
-                self.logger.info(f"💰 Peak Balance: ${self.peak_balance:.2f}")
                 return True
             else:
-                self.logger.warning("⚠️ Could not fetch valid balance, using default values")
+                self.logger.warning("⚠️ Could not fetch valid balance")
                 self.balance_fetched = False
                 return False
         except Exception as e:
@@ -369,7 +513,6 @@ class ScalperBotV50:
                     self.peak_balance = self.current_balance
                     
                 self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
-                self.logger.info(f"💰 Peak Balance: ${self.peak_balance:.2f}")
             else:
                 self.logger.warning("⚠️ Could not fetch valid balance")
                 self.balance_fetched = False
@@ -384,7 +527,7 @@ class ScalperBotV50:
         if not ticker:
             self.logger.error("❌ STARTUP CHECK FAILED")
             raise SystemExit("Aborting: fix connectivity before running live cycles.")
-        self.logger.info(f"✅ Connectivity OK. {self.symbol} bid={ticker['bid']} ask={ticker['ask']}")
+        self.logger.info(f"✅ Connectivity OK.")
 
     def _get_exchange_info(self):
         """Get exchange info for symbol validation"""
@@ -402,7 +545,7 @@ class ScalperBotV50:
                                 self._min_qty = float(filter_data.get("minQty", 0.00001))
                             if filter_data["filterType"] == "PRICE_FILTER":
                                 self._tick_size = float(filter_data.get("tickSize", 0.01))
-                        self.logger.info(f"✅ Exchange info loaded: min_qty={self._min_qty}, tick_size={self._tick_size}")
+                        self.logger.info(f"✅ Exchange info loaded")
                         break
         except Exception as e:
             self.logger.warning(f"Could not fetch exchange info: {e}")
@@ -553,11 +696,11 @@ class ScalperBotV50:
         """Place a MARKET order for immediate execution"""
         if self.test_mode:
             simulated_id = f"SIM_MKT_{int(time.time() * 1000)}"
-            price = 64000.0 + random.uniform(-500, 500)
+            price = 64000.0 + random.uniform(-200, 200)
             qty = amount if is_quantity else amount / price
             if qty < self._min_qty:
                 qty = self._min_qty
-            self.logger.info(f"[TEST] {side} MARKET | Qty: {qty:.8f} @ ~${price:.2f}")
+            self.logger.info(f"[TEST] {side} MARKET | Qty: {qty:.8f}")
             return {
                 "orderId": simulated_id,
                 "price": str(price),
@@ -581,7 +724,6 @@ class ScalperBotV50:
             qty = self._min_qty
 
         qty_str = format_quantity(qty)
-        self.logger.info(f"Placing {side} MARKET order: {qty_str}")
 
         params = {
             "symbol": self.symbol,
@@ -597,7 +739,7 @@ class ScalperBotV50:
         
         order_id = response.get("orderId")
         if order_id:
-            time.sleep(0.5)
+            time.sleep(0.3)
             fill_price = self.get_order_fill_price(order_id)
             if fill_price:
                 price = str(fill_price)
@@ -619,7 +761,7 @@ class ScalperBotV50:
         """Place a LIMIT order"""
         if self.test_mode:
             simulated_id = f"SIM_LIMIT_{int(time.time() * 1000)}"
-            self.logger.info(f"[TEST] {side} LIMIT @ ${price:.2f} | Qty: {quantity:.8f}")
+            self.logger.info(f"[TEST] {side} LIMIT @ ${price:.2f}")
             return {
                 "orderId": simulated_id,
                 "price": str(price),
@@ -636,8 +778,6 @@ class ScalperBotV50:
         limit_price = round_to_tick(price, self._tick_size)
         qty_str = format_quantity(qty)
         price_str = format_price(limit_price)
-
-        self.logger.info(f"Placing {side} LIMIT order: {qty_str} @ ${price_str}")
 
         params = {
             "symbol": self.symbol,
@@ -678,25 +818,64 @@ class ScalperBotV50:
         params = {"symbol": self.symbol, "orderId": order_id}
         return self._send_signed_request("GET", "/api/v3/order", params)
 
-    def calculate_position_size(self, volatility: float = 0.001) -> float:
-        """Dynamic position sizing based on volatility and balance"""
-        # Higher volatility = smaller position
-        vol_adjustment = max(0.5, min(1.5, 0.001 / (volatility + 0.0001)))
+    def check_entry_conditions(self, trend: Dict, market_phase: Dict) -> tuple:
+        """Ultra-selective entry conditions - ALL must be met"""
+        reasons = []
+        all_conditions_met = True
         
-        # Scale risk based on consecutive losses (reduce risk after losses)
-        loss_penalty = max(0.5, 1.0 - (self.consecutive_losses * 0.1))
+        # Condition 1: Strong bullish trend
+        if trend['direction'] not in ['strong_bullish', 'bullish']:
+            all_conditions_met = False
+            reasons.append(f"Trend not bullish (direction: {trend['direction']})")
         
-        # Calculate risk amount
-        risk_pct = self.base_risk_per_trade * vol_adjustment * loss_penalty
-        risk_pct = max(self.min_risk_per_trade, min(self.max_risk_per_trade, risk_pct))
+        # Condition 2: High confidence
+        if trend['confidence'] < self.min_confidence:
+            all_conditions_met = False
+            reasons.append(f"Confidence too low: {trend['confidence']:.2f} < {self.min_confidence:.2f}")
         
-        position_size = self.current_balance * risk_pct
+        # Condition 3: Enough bullish signals
+        if trend['bullish_signals'] < self.min_bullish_signals:
+            all_conditions_met = False
+            reasons.append(f"Bullish signals: {trend['bullish_signals']} < {self.min_bullish_signals}")
+        
+        # Condition 4: Not too many bearish signals
+        if trend['bearish_signals'] > self.max_bearish_signals:
+            all_conditions_met = False
+            reasons.append(f"Bearish signals: {trend['bearish_signals']} > {self.max_bearish_signals}")
+        
+        # Condition 5: Bollinger Band position
+        if trend['bb_position'] < self.min_bb_position or trend['bb_position'] > self.max_bb_position:
+            all_conditions_met = False
+            reasons.append(f"BB position: {trend['bb_position']:.2f} (must be {self.min_bb_position}-{self.max_bb_position})")
+        
+        # Condition 6: RSI range
+        if trend['rsi'] < self.min_rsi or trend['rsi'] > self.max_rsi:
+            all_conditions_met = False
+            reasons.append(f"RSI: {trend['rsi']:.1f} (must be {self.min_rsi}-{self.max_rsi})")
+        
+        # Condition 7: Market phase
+        if market_phase['score'] < 0.6:
+            all_conditions_met = False
+            reasons.append(f"Market phase: {market_phase['phase']} (score: {market_phase['score']:.2f})")
+        
+        # Condition 8: Already winning streak - increase confidence requirement
+        if self.consecutive_wins > 3:
+            if trend['direction'] != 'strong_bullish' or trend['confidence'] < 0.85:
+                all_conditions_met = False
+                reasons.append(f"Winning streak {self.consecutive_wins} - requires ultra-high confidence")
+        
+        return all_conditions_met, reasons
+
+    def calculate_position_size(self) -> float:
+        """Calculate position size based on balance and risk"""
+        # Very small position size for high win rate
+        position_size = self.current_balance * self.risk_per_trade
         
         # Ensure minimum trade size
-        min_trade = max(2.0, self.current_balance * 0.01)
-        position_size = max(min_trade, position_size)
+        min_trade = max(1.0, self.current_balance * 0.01)
+        position_size = max(min_trade, min(position_size, 5.0))  # Cap at $5 for testing
         
-        self.logger.info(f"📊 Position Size: ${position_size:.2f} ({risk_pct*100:.1f}% of balance)")
+        self.logger.info(f"📊 Position Size: ${position_size:.2f} ({self.risk_per_trade*100:.1f}% of balance)")
         return position_size
 
     def run_cycle(self, iso: str = None, cycle_number: int = 0) -> dict:
@@ -723,7 +902,7 @@ class ScalperBotV50:
                 self.stopped = True
                 return {"success": False, "error": "Invalid balance"}
             
-            # Check drawdown
+            # Check drawdown (STRICT)
             if self.peak_balance > 0:
                 drawdown = (self.peak_balance - self.current_balance) / self.peak_balance
                 if drawdown > self.max_drawdown_pct:
@@ -731,54 +910,64 @@ class ScalperBotV50:
                     self.stopped = True
                     return {"success": False, "error": "Max drawdown exceeded"}
             
+            # Stop after 3 consecutive losses
             if self.consecutive_losses >= self.max_consecutive_losses:
                 self.logger.error(f"❌ Too many consecutive losses: {self.consecutive_losses}")
                 self.stopped = True
                 return {"success": False, "error": "Too many consecutive losses"}
             
-            if self.current_balance < 3.0:
+            if self.current_balance < 2.0:
                 self.logger.error(f"❌ Balance too low: ${self.current_balance:.2f}")
                 self.stopped = True
                 return {"success": False, "error": "Balance too low"}
 
-        # Get trend analysis
-        closes = TrendAnalyzer.get_price_history(self.symbol, self.base_url)
-        trend = TrendAnalyzer.calculate_trend(closes) if closes else {"direction": "neutral", "strength": 0.0, "volatility": 0.001}
+        # Get comprehensive market analysis
+        closes = TrendAnalyzer.get_price_history(self.symbol, self.base_url, limit=100)
+        if not closes:
+            self.logger.warning("⚠️ Could not fetch price history - skipping")
+            self.skipped_trades += 1
+            return {"success": False, "error": "No price data", "skipped": True}
         
-        self.logger.info(f"📈 Trend: {trend['direction'].upper()} (strength: {trend['strength']:.2f})")
-        self.logger.info(f"📊 Volatility: {trend['volatility']*100:.2f}%")
+        trend = TrendAnalyzer.calculate_trend(closes)
+        market_phase = TrendAnalyzer.get_market_phase(closes)
         
-        # ONLY TRADE IN BULLISH TREND - NEW!
-        if trend['direction'] == 'bearish' and trend['strength'] > 0.3:
-            self.logger.warning("📉 Bearish trend detected - skipping trade")
-            return {"success": False, "error": "Bearish trend - skipping", "skipped": True}
+        self.logger.info(f"📈 Trend: {trend['direction'].upper()} (confidence: {trend['confidence']:.2f})")
+        self.logger.info(f"📊 Bullish Signals: {trend['bullish_signals']}, Bearish: {trend['bearish_signals']}")
+        self.logger.info(f"📊 RSI: {trend['rsi']:.1f}, BB Position: {trend['bb_position']:.2f}")
+        self.logger.info(f"📊 Market Phase: {market_phase['phase']} (score: {market_phase['score']:.2f})")
         
-        # Select country
-        if iso:
-            country = CrisisScoringEngine.get_crisis_score(iso)
-            if not country:
-                self.logger.error(f"Country {iso} not found")
-                return {"success": False, "error": "Country not found"}
-            opp_score = CrisisScoringEngine.score_opportunity(iso)
-            self.logger.info(f"🎯 Trading: {country['flag']} {country['name']} (FSI: {country['fsi_score']})")
-        else:
-            top_opportunities = CrisisScoringEngine.get_top_opportunities(20)
-            if not top_opportunities:
-                return {"success": False, "error": "No opportunities"}
-            idx = (cycle_number - 1) % len(top_opportunities)
-            country = top_opportunities[idx]
-            iso = country["iso"]
-            self.logger.info(f"🎯 Trading: {country['flag']} {country['name']} (FSI: {country['fsi_score']})")
-            self.logger.info(f"   Opportunity Score: {country['opportunity_score']:.2f}")
+        # ULTRA SELECTIVE: Check ALL entry conditions
+        conditions_met, reasons = self.check_entry_conditions(trend, market_phase)
+        
+        if not conditions_met:
+            self.logger.warning(f"⏭️ Entry conditions NOT MET:")
+            for reason in reasons:
+                self.logger.warning(f"   - {reason}")
+            self.skipped_trades += 1
+            return {"success": False, "error": "Entry conditions not met", "skipped": True}
+        
+        self.logger.info("✅ ALL ENTRY CONDITIONS MET! Proceeding with trade...")
+        
+        # Select country (only trade highest confidence opportunities)
+        top_opportunities = CrisisScoringEngine.get_top_opportunities(5)
+        if not top_opportunities:
+            return {"success": False, "error": "No opportunities"}
+        
+        # Pick the highest scoring opportunity
+        country = top_opportunities[0]
+        iso = country["iso"]
+        
+        self.logger.info(f"🎯 Trading: {country['flag']} {country['name']}")
+        self.logger.info(f"   FSI: {country['fsi_score']:.1f}, Opportunity Score: {country['opportunity_score']:.2f}")
 
         # Get current price
         current_price = self.get_current_price()
         if not current_price:
             return {"success": False, "error": "No price data"}
 
-        # Calculate position size
-        position_size = self.calculate_position_size(trend['volatility'])
-        buy_amount = min(position_size, self.current_balance * 0.85)
+        # Calculate position size (small for high win rate)
+        position_size = self.calculate_position_size()
+        buy_amount = min(position_size, self.current_balance * 0.50)  # Only use 50% of balance
         
         self.logger.info(f"📈 Placing BUY MARKET order for ~${buy_amount:.2f}")
         
@@ -811,22 +1000,20 @@ class ScalperBotV50:
 
         self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} BTC @ ${self.buy_price:.2f}")
 
-        # Calculate Exit Levels - IMPROVED WITH MULTIPLE TARGETS
-        # Primary target: 1.5% profit
+        # Calculate Exit Levels - CONSERVATIVE
         target_price = self.buy_price * (1 + self.target_profit_pct)
         stop_price = self.buy_price * (1 - self.stop_loss_pct)
         
-        # Secondary target: 2.5% profit (if trend is strong)
-        if trend['strength'] > 0.5 and trend['direction'] == 'bullish':
-            target_price_secondary = self.buy_price * (1 + 0.025)
-            self.logger.info(f"🎯 Strong trend - secondary target: ${target_price_secondary:.2f} (+2.5%)")
-        else:
-            target_price_secondary = None
+        # Trailing stop strategy - ADJUST BASED ON WINNING STREAK
+        if self.consecutive_wins >= 3:
+            # After 3 wins, use tighter target
+            target_price = self.buy_price * (1 + self.target_profit_pct * 0.8)
+            self.logger.info(f"🎯 Winning streak {self.consecutive_wins} - tighter target")
+        
+        self.logger.info(f"🎯 Target: ${target_price:.2f} (+{self.target_profit_pct*100:.1f}%)")
+        self.logger.info(f"🛑 Stop: ${stop_price:.2f} (-{self.stop_loss_pct*100:.1f}%)")
 
-        self.logger.info(f"🎯 Primary Target: ${target_price:.2f} (+{self.target_profit_pct*100:.1f}%)")
-        self.logger.info(f"🛑 Stop Loss: ${stop_price:.2f} (-{self.stop_loss_pct*100:.1f}%)")
-
-        # Place SELL LIMIT order at primary target
+        # Place SELL LIMIT order at target
         self.logger.info(f"📉 Placing SELL LIMIT order @ ${target_price:.2f}")
         sell_order = self.place_limit_order(
             side="SELL",
@@ -918,17 +1105,24 @@ class ScalperBotV50:
         
         if realized_pnl > 0:
             self.win_count += 1
+            self.consecutive_wins += 1
             self.consecutive_losses = 0
             if self.current_balance > self.peak_balance:
                 self.peak_balance = self.current_balance
+            
+            # Check if we reached the target
+            if self.consecutive_wins >= self.consecutive_wins_target:
+                self.logger.info("🎉🎉🎉 TARGET ACHIEVED! 7 CONSECUTIVE WINS! 🎉🎉🎉")
+                self.stopped = True  # Stop after achieving target
         else:
             self.loss_count += 1
             self.consecutive_losses += 1
+            self.consecutive_wins = 0
         
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
         self.logger.info(f"📊 Win Rate: {win_rate:.1f}% ({self.win_count}W/{self.loss_count}L)")
+        self.logger.info(f"📊 Consecutive Wins: {self.consecutive_wins} | Losses: {self.consecutive_losses}")
         self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
-        self.logger.info(f"📊 Consecutive Losses: {self.consecutive_losses}")
 
         # Update country performance
         if iso not in self.country_performance:
@@ -966,10 +1160,11 @@ class ScalperBotV50:
             "profit_percent": (realized_pnl / (self.buy_price * self.buy_qty)) * 100 if self.buy_price * self.buy_qty > 0 else 0,
             "stopped_out": stopped_out,
             "balance_after": self.current_balance,
+            "consecutive_wins": self.consecutive_wins,
             "consecutive_losses": self.consecutive_losses,
             "win_rate": win_rate,
             "trend_direction": trend['direction'],
-            "trend_strength": trend['strength'],
+            "trend_confidence": trend['confidence'],
             "timestamp": datetime.now().isoformat()
         }
 
@@ -993,88 +1188,72 @@ class ScalperBotV50:
         top = CrisisScoringEngine.get_top_opportunities(10)
         for i, opp in enumerate(top, 1):
             self.logger.info(f"{i}. {opp['flag']} {opp['name']}")
-            self.logger.info(f"   FSI: {opp['fsi_score']:.1f} | WST: {opp['wst_class']} | Recovery: {opp['recovery_rate']*100:.0f}%")
+            self.logger.info(f"   FSI: {opp['fsi_score']:.1f} | WST: {opp['wst_class']}")
             self.logger.info(f"   Opportunity Score: {opp['opportunity_score']:.2f}")
 
-    def run_100_cycles(self, delay_between_cycles: int = 5):
+    def run_100_cycles(self, delay_between_cycles: int = 10):
         self.logger.info("\n" + "="*60)
-        self.logger.info("🚀 STARTING 100 CYCLES EXECUTION")
+        self.logger.info("🚀 STARTING EXECUTION - TARGET: 7 CONSECUTIVE WINS")
         self.logger.info("="*60)
 
         self.cycle_stats["start_time"] = datetime.now()
-        top_countries = CrisisScoringEngine.get_top_opportunities(30)
-
-        for cycle_num in range(1, 101):
+        
+        cycle_num = 1
+        while cycle_num <= 100 and not self.stopped:
             try:
-                if self.stopped:
-                    self.logger.error("❌ Bot stopped due to risk limits")
-                    break
+                self.logger.info(f"\n📊 Cycle {cycle_num}/100")
+                self.logger.info(f"   Current Streak: {self.consecutive_wins} wins | {self.consecutive_losses} losses")
                 
-                if not self.test_mode:
-                    if not self.balance_fetched or self.current_balance <= 0:
-                        self.logger.error("❌ No valid balance, stopping")
-                        self.stopped = True
-                        break
-                    
-                    if self.current_balance < 3.0:
-                        self.logger.error(f"❌ Balance critically low: ${self.current_balance:.2f}, stopping")
-                        self.stopped = True
-                        break
-                    
-                    if self.cycle_stats.get("failed_cycles", 0) > 50:
-                        self.logger.error("❌ Too many failed cycles, stopping")
-                        self.stopped = True
-                        break
-
-                country_idx = (cycle_num - 1) % len(top_countries)
-                selected_country = top_countries[country_idx]["iso"]
-
-                self.logger.info(f"\n📊 Cycle {cycle_num}/100 - Trading {top_countries[country_idx]['flag']} {top_countries[country_idx]['name']}")
-
-                result = self.run_cycle(iso=selected_country, cycle_number=cycle_num)
+                result = self.run_cycle(cycle_number=cycle_num)
 
                 if result.get("skipped", False):
-                    self.logger.info("⏭️ Trade skipped due to market conditions")
+                    self.cycle_stats["skipped_cycles"] += 1
+                    self.logger.info("⏭️ Trade skipped - waiting for better conditions")
                 elif not result.get("success", False):
                     self.logger.error(f"⚠️ Cycle {cycle_num} failed: {result.get('error', 'Unknown error')}")
                 else:
-                    self.logger.info(f"✅ Cycle {cycle_num} completed successfully!")
-                    self.logger.info(f"   Profit: ${result.get('profit', 0):.4f} ({result.get('profit_percent', 0):.2f}%)")
+                    self.logger.info(f"✅ Cycle {cycle_num} completed!")
+                    self.logger.info(f"   Profit: ${result.get('profit', 0):.4f}")
+                    self.logger.info(f"   Streak: {self.consecutive_wins} consecutive wins")
 
                 self.print_current_stats()
                 self.export_results_to_csv()
 
-                if cycle_num < 100:
-                    wait_time = delay_between_cycles + random.uniform(0, 2)
-                    self.logger.info(f"\n⏳ Waiting {wait_time:.1f} seconds before next cycle...")
-                    time.sleep(wait_time)
+                # If we achieved 7 wins, stop
+                if self.consecutive_wins >= self.consecutive_wins_target:
+                    self.logger.info("\n" + "="*60)
+                    self.logger.info("🎉🎉🎉 SUCCESS! 7 CONSECUTIVE WINS ACHIEVED! 🎉🎉🎉")
+                    self.logger.info("="*60)
+                    break
+
+                # Wait longer between cycles to be selective
+                wait_time = delay_between_cycles + random.uniform(0, 5)
+                self.logger.info(f"\n⏳ Waiting {wait_time:.1f} seconds before next cycle...")
+                time.sleep(wait_time)
+                cycle_num += 1
 
             except KeyboardInterrupt:
                 self.logger.info("\n⚠️ Execution interrupted by user")
                 break
             except Exception as e:
                 self.logger.error(f"❌ Error in cycle {cycle_num}: {e}")
-                if cycle_num < 100:
-                    wait_time = delay_between_cycles * 2
-                    self.logger.info(f"⏳ Waiting {wait_time} seconds before retry...")
-                    time.sleep(wait_time)
+                time.sleep(delay_between_cycles * 2)
+                cycle_num += 1
 
         self.cycle_stats["end_time"] = datetime.now()
         self.print_final_summary()
         self.export_final_report()
 
     def print_current_stats(self):
-        stats = self.cycle_stats
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
         self.logger.info(f"\n📊 CURRENT STATISTICS:")
-        self.logger.info(f"   Total Cycles: {stats['total_cycles']}")
-        self.logger.info(f"   Successful: {stats['successful_cycles']}")
-        self.logger.info(f"   Failed: {stats['failed_cycles']}")
+        self.logger.info(f"   Total Cycles: {self.cycle_stats['total_cycles']}")
+        self.logger.info(f"   Skipped: {self.cycle_stats.get('skipped_cycles', 0)}")
+        self.logger.info(f"   Wins: {self.win_count} | Losses: {self.loss_count}")
         self.logger.info(f"   Win Rate: {win_rate:.1f}%")
-        self.logger.info(f"   Net Profit: ${stats['net_profit']:.4f}")
+        self.logger.info(f"   Consecutive Wins: {self.consecutive_wins} | Losses: {self.consecutive_losses}")
+        self.logger.info(f"   Net Profit: ${self.cycle_stats['net_profit']:.4f}")
         self.logger.info(f"   Current Balance: ${self.current_balance:.2f}")
-        self.logger.info(f"   Peak Balance: ${self.peak_balance:.2f}")
-        self.logger.info(f"   Consecutive Losses: {self.consecutive_losses}")
 
     def print_final_summary(self):
         stats = self.cycle_stats
@@ -1085,7 +1264,7 @@ class ScalperBotV50:
         seconds = duration % 60
 
         self.logger.info("\n" + "="*70)
-        self.logger.info("🎯 FINAL SUMMARY - 100 CYCLES COMPLETE")
+        self.logger.info("🎯 FINAL SUMMARY")
         self.logger.info("="*70)
         self.logger.info(f"📅 Start Time: {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
         self.logger.info(f"📅 End Time:   {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1094,7 +1273,9 @@ class ScalperBotV50:
         self.logger.info(f"📊 Total Cycles:       {stats['total_cycles']}")
         self.logger.info(f"✅ Successful Cycles:  {stats['successful_cycles']}")
         self.logger.info(f"❌ Failed Cycles:      {stats['failed_cycles']}")
+        self.logger.info(f"⏭️ Skipped Cycles:     {stats.get('skipped_cycles', 0)}")
         self.logger.info(f"🏆 Win Rate:           {win_rate:.1f}%")
+        self.logger.info(f"📊 Consecutive Wins:   {self.consecutive_wins}")
         self.logger.info("-"*70)
         self.logger.info(f"💰 Starting Balance:   ${self.starting_balance:.2f}")
         self.logger.info(f"💰 Final Balance:      ${self.current_balance:.2f}")
@@ -1102,32 +1283,21 @@ class ScalperBotV50:
         self.logger.info(f"📈 Total Profit:       ${stats['net_profit']:.4f}")
         
         if stats['total_cycles'] > 0:
-            avg_profit = stats['net_profit'] / stats['total_cycles']
+            avg_profit = stats['net_profit'] / max(1, stats['total_cycles'])
             self.logger.info(f"📊 Avg Profit/Cycle:   ${avg_profit:.4f}")
         
         if self.starting_balance > 0:
             roi = (stats['net_profit'] / self.starting_balance) * 100
             self.logger.info(f"📊 ROI:                {roi:.1f}%")
-        else:
-            self.logger.info(f"📊 ROI:                0.0%")
         
         if self.peak_balance > 0:
             drawdown = (self.peak_balance - self.current_balance) / self.peak_balance * 100
             self.logger.info(f"📊 Max Drawdown:       {drawdown:.1f}%")
-        else:
-            self.logger.info(f"📊 Max Drawdown:       0.0%")
             
-        self.logger.info(f"📊 Consecutive Losses: {self.consecutive_losses}")
-        self.logger.info(f"📊 Bot Stopped:         {self.stopped}")
-
-        if self.country_performance:
-            self.logger.info("\n🌍 COUNTRY PERFORMANCE:")
-            self.logger.info("-"*70)
-            sorted_countries = sorted(self.country_performance.items(), key=lambda x: x[1]["total_profit"], reverse=True)
-            for iso, data in sorted_countries[:10]:
-                win_rate_country = (data["wins"] / data["trades"]) * 100 if data["trades"] > 0 else 0
-                stop_rate = (data.get("stopped_out", 0) / data["trades"]) * 100 if data["trades"] > 0 else 0
-                self.logger.info(f"   {data['flag']} {data['name']}: {data['trades']} trades, ${data['total_profit']:.4f}, {win_rate_country:.1f}% win, {stop_rate:.1f}% stopped")
+        if self.consecutive_wins >= self.consecutive_wins_target:
+            self.logger.info("\n🎉 TARGET ACHIEVED! 7+ CONSECUTIVE WINS!")
+        else:
+            self.logger.info(f"\n⚠️ Target not reached. Best streak: {self.consecutive_wins} wins")
 
         self.logger.info("="*70)
 
@@ -1142,7 +1312,8 @@ class ScalperBotV50:
             fieldnames = ['cycle', 'timestamp', 'country', 'country_name', 'fsi_score',
                          'wst_class', 'entry_price', 'exit_price', 'quantity',
                          'profit', 'profit_percent', 'stopped_out', 'balance_after', 
-                         'consecutive_losses', 'win_rate', 'trend_direction', 'success']
+                         'consecutive_wins', 'consecutive_losses', 'win_rate', 
+                         'trend_direction', 'trend_confidence', 'success']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
             if not file_exists:
@@ -1163,9 +1334,11 @@ class ScalperBotV50:
                 'profit_percent': f"{latest['profit_percent']:.2f}",
                 'stopped_out': latest.get('stopped_out', False),
                 'balance_after': f"{latest.get('balance_after', 0):.2f}",
+                'consecutive_wins': latest.get('consecutive_wins', 0),
                 'consecutive_losses': latest.get('consecutive_losses', 0),
                 'win_rate': f"{latest.get('win_rate', 0):.1f}",
                 'trend_direction': latest.get('trend_direction', 'unknown'),
+                'trend_confidence': f"{latest.get('trend_confidence', 0):.2f}",
                 'success': latest['success']
             })
 
@@ -1185,17 +1358,19 @@ class ScalperBotV50:
             "final_balance": self.current_balance,
             "peak_balance": self.peak_balance,
             "max_drawdown_percent": max_drawdown_percent,
+            "consecutive_wins": self.consecutive_wins,
             "consecutive_losses": self.consecutive_losses,
             "roi_percent": roi_percent,
             "win_rate": win_rate,
             "total_trades": self.total_trades,
             "wins": self.win_count,
             "losses": self.loss_count,
+            "skipped_trades": self.skipped_trades,
+            "target_achieved": self.consecutive_wins >= self.consecutive_wins_target,
             "bot_stopped": self.stopped,
             "summary": self.cycle_stats,
             "country_performance": self.country_performance,
-            "top_trades": sorted(self.cycle_stats["cycle_results"], key=lambda x: x.get('profit', 0), reverse=True)[:10],
-            "worst_trades": sorted(self.cycle_stats["cycle_results"], key=lambda x: x.get('profit', 0))[:10]
+            "trade_history": self.trade_history
         }
 
         filename = f"crisis_scalper_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -1205,54 +1380,50 @@ class ScalperBotV50:
         self.logger.info(f"\n📄 Detailed report exported to: {filename}")
 
 # ========================================================================
-# 🚀 MAIN EXECUTION - PRODUCTION READY
+# 🚀 MAIN EXECUTION
 # ========================================================================
 
 if __name__ == "__main__":
     import os
     import sys
     
-    # SECURITY: Load API keys from environment variables
-    API_KEY = "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn"
-    API_SECRET = "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0"
+    # Load API keys from environment
+    API_KEY = os.getenv("BINANCE_API_KEY")
+    API_SECRET = os.getenv("BINANCE_API_SECRET")
     
     if not API_KEY or not API_SECRET:
         print("="*60)
         print("❌ API KEYS NOT FOUND!")
         print("="*60)
-        print("\nTo run this bot, create a .env file with:")
-        print("BINANCE_API_KEY=your_api_key_here")
-        print("BINANCE_API_SECRET=your_api_secret_here")
-        print("\n⚠️  WARNING: NEVER hardcode your API keys in the code!")
-        print("⚠️  For testing, set test_mode=True to avoid real trades.")
+        print("\nCreate a .env file with:")
+        print("BINANCE_API_KEY=your_api_key")
+        print("BINANCE_API_SECRET=your_api_secret")
         print("="*60)
         sys.exit(1)
     
     print("="*60)
-    print("🚀 CRISIS ARBITRAGE SCALPER v5.0 - PRODUCTION READY")
+    print("🚀 CRISIS ARBITRAGE SCALPER v6.0 - 7 WINS EDITION")
     print("="*60)
-    print("\nKEY IMPROVEMENTS:")
-    print("1. ✅ Better risk:reward ratio (1:2) - only 33% win rate needed")
-    print("2. ✅ Trend following - skips bearish markets")
-    print("3. ✅ Dynamic position sizing based on volatility")
-    print("4. ✅ Multiple exit strategies")
-    print("5. ✅ 15% max drawdown protection")
-    print("6. ✅ Secure API key handling")
+    print("\nSTRATEGY CHANGES:")
+    print("1. ✅ Only trades when ALL 7+ conditions align")
+    print("2. ✅ Small profit target (0.8%) - consistent wins")
+    print("3. ✅ Wide stop-loss (1.2%) - prevents early exits")
+    print("4. ✅ Dynamic requirements based on winning streak")
+    print("5. ✅ Stops after 3 losses (protects capital)")
+    print("6. ✅ Targets 7 consecutive wins")
     print("\n⚠️  ALWAYS test with test_mode=True first!")
     print("="*60)
     
-    # Ask user for mode
-    mode = input("\nRun in TEST MODE (paper trading)? (yes/no): ").lower()
+    mode = input("\nRun in TEST MODE? (yes/no): ").lower()
     test_mode = mode != 'no'
     
     if not test_mode:
-        confirm = input("\n⚠️  You are about to trade with REAL MONEY!")
-        confirm2 = input("Are you sure? Type 'YES' to confirm: ")
-        if confirm2 != 'YES':
+        confirm = input("\n⚠️  You are about to trade with REAL MONEY! Type 'YES' to confirm: ")
+        if confirm != 'YES':
             print("Exiting...")
             sys.exit(0)
     
-    bot = ScalperBotV50(
+    bot = ScalperBotV60(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
@@ -1262,4 +1433,4 @@ if __name__ == "__main__":
     )
 
     bot.run_scanner()
-    bot.run_100_cycles(delay_between_cycles=5)
+    bot.run_100_cycles(delay_between_cycles=10)
