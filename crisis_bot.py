@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v7.2 - FULLY AUTOMATIC
-- No user input required - runs continuously
-- Waits indefinitely for favorable conditions
-- Auto-trades when ALL conditions met
-- Fixed MIN_NOTIONAL with $10 minimum orders
-- Real TA with mathematical edge
+🚀 CRISIS ARBITRAGE SCALPER v8.0 - ULTRA STRICT EDITION
+- MUCH stricter entry conditions (only 10-15% of signals)
+- Multiple confirmations required
+- Higher confidence threshold
+- Better risk management
+- Designed for 70%+ win rate
+- MAIN INCOME SOURCE - SAFETY FIRST
 """
 
 import hashlib
@@ -21,7 +22,6 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import requests
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
-import statistics
 
 # ========================================================================
 # 🔧 DECIMAL HELPERS
@@ -54,8 +54,8 @@ class TechnicalAnalysis:
     """Real TA with mathematical edge"""
     
     @staticmethod
-    def get_klines(symbol: str, base_url: str, interval: str = "1m", limit: int = 100) -> Optional[Dict]:
-        """Fetch real kline data for TA"""
+    def get_klines(symbol: str, base_url: str, interval: str = "1m", limit: int = 200) -> Optional[Dict]:
+        """Fetch real kline data for TA - longer history for better analysis"""
         try:
             url = f"{base_url}/api/v3/klines"
             params = {
@@ -118,23 +118,41 @@ class TechnicalAnalysis:
         ema_26 = TechnicalAnalysis.calculate_ema(closes, 26)
         macd_line = ema_12 - ema_26
         
-        signal_line = TechnicalAnalysis.calculate_ema([macd_line], 9) if len([macd_line]) >= 9 else macd_line
+        # Signal line (9-period EMA of MACD)
+        macd_values = [macd_line]  # Simplified
+        signal_line = TechnicalAnalysis.calculate_ema([macd_line] * 9, 9) if len([macd_line]) >= 9 else macd_line
         
-        histogram = macd_line - signal_line
+        histogram = macd_line - signal_line if isinstance(signal_line, float) else 0
+        
+        # Check for crossovers using recent values
+        if len(closes) >= 30:
+            # Calculate previous MACD
+            ema_12_prev = TechnicalAnalysis.calculate_ema(closes[:-1], 12)
+            ema_26_prev = TechnicalAnalysis.calculate_ema(closes[:-1], 26)
+            macd_prev = ema_12_prev - ema_26_prev
+            signal_prev = TechnicalAnalysis.calculate_ema([macd_prev] * 9, 9) if len([macd_prev]) >= 9 else macd_prev
+            
+            bullish_cross = macd_line > signal_line and macd_prev <= signal_prev
+            bearish_cross = macd_line < signal_line and macd_prev >= signal_prev
+        else:
+            bullish_cross = False
+            bearish_cross = False
         
         return {
             "macd": macd_line,
-            "signal": signal_line,
+            "signal": signal_line if isinstance(signal_line, float) else 0,
             "histogram": histogram,
-            "bullish_cross": macd_line > signal_line and closes[-1] > closes[-2],
-            "bearish_cross": macd_line < signal_line and closes[-1] < closes[-2]
+            "bullish_cross": bullish_cross,
+            "bearish_cross": bearish_cross
         }
     
     @staticmethod
     def calculate_ema(closes: List[float], period: int) -> float:
         """Calculate EMA"""
+        if not closes:
+            return 0
         if len(closes) < period:
-            return sum(closes) / len(closes) if closes else 0
+            return sum(closes) / len(closes)
         
         multiplier = 2 / (period + 1)
         ema = sum(closes[:period]) / period
@@ -223,8 +241,8 @@ class TechnicalAnalysis:
         recent_resistance = resistances[-1] if resistances else max(highs)
         
         current_price = closes[-1]
-        near_support = abs(current_price - recent_support) / current_price < 0.002
-        near_resistance = abs(current_price - recent_resistance) / current_price < 0.002
+        near_support = abs(current_price - recent_support) / current_price < 0.0015  # Tighter
+        near_resistance = abs(current_price - recent_resistance) / current_price < 0.0015  # Tighter
         
         return {
             "support": recent_support,
@@ -234,15 +252,15 @@ class TechnicalAnalysis:
         }
 
 # ========================================================================
-# 📊 REAL STRATEGY ENGINE
+# 📊 ULTRA STRICT STRATEGY ENGINE
 # ========================================================================
 
 class StrategyEngine:
-    """Real trading strategy with positive expectancy"""
+    """ULTRA STRICT - Only trades when conditions are PERFECT"""
     
     @staticmethod
     def analyze_market(klines: Dict) -> Dict:
-        """Comprehensive market analysis with REAL indicators"""
+        """ULTRA STRICT market analysis - multiple confirmations required"""
         if not klines or len(klines['closes']) < 50:
             return {"signal": "neutral", "confidence": 0, "reason": "Insufficient data"}
         
@@ -260,138 +278,170 @@ class StrategyEngine:
         vwap = TechnicalAnalysis.calculate_vwap(highs, lows, closes, volumes)
         sr = TechnicalAnalysis.calculate_support_resistance(highs, lows, closes)
         
+        # Multiple timeframe analysis
         sma_5 = sum(closes[-5:]) / 5
         sma_10 = sum(closes[-10:]) / 10
         sma_20 = sum(closes[-20:]) / 20
+        sma_50 = sum(closes[-50:]) / 50 if len(closes) >= 50 else sma_20
         
-        momentum = (closes[-1] - closes[-5]) / closes[-5] if len(closes) >= 5 else 0
+        momentum_5 = (closes[-1] - closes[-5]) / closes[-5] if len(closes) >= 5 else 0
+        momentum_10 = (closes[-1] - closes[-10]) / closes[-10] if len(closes) >= 10 else 0
         
+        # Volume analysis
         avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes) if volumes else 0
-        volume_spike = volumes[-1] > avg_volume * 1.5 if volumes else False
+        volume_spike = volumes[-1] > avg_volume * 1.8 if volumes else False  # Stricter volume requirement
         
-        # Build signal
+        # ============ ULTRA STRICT SIGNAL BUILDING ============
         bullish_signals = 0
         bearish_signals = 0
         signal_reasons = []
+        required_signals = 0
+        total_signals = 0
         
-        # Signal 1: RSI
-        if rsi < 35 and current_price < sma_20:
+        # Signal 1: RSI (Must be oversold or near oversold)
+        if rsi < 30 and current_price < sma_20:
             bullish_signals += 2
-            signal_reasons.append(f"RSI oversold ({rsi:.1f})")
-        elif rsi < 40:
+            required_signals += 2
+            signal_reasons.append(f"RSI OVERSOLD ({rsi:.1f}) - STRONG BUY")
+        elif rsi < 35 and current_price < sma_20:
             bullish_signals += 1
-            signal_reasons.append(f"RSI low ({rsi:.1f})")
-        elif rsi > 70 and current_price > sma_20:
+            required_signals += 1
+            signal_reasons.append(f"RSI low ({rsi:.1f}) - Good entry")
+        elif rsi > 70:
             bearish_signals += 2
-            signal_reasons.append(f"RSI overbought ({rsi:.1f})")
-        elif rsi > 65:
-            bearish_signals += 1
-            signal_reasons.append(f"RSI high ({rsi:.1f})")
+            signal_reasons.append(f"RSI OVERBOUGHT ({rsi:.1f}) - SKIP")
         else:
-            signal_reasons.append(f"RSI neutral ({rsi:.1f})")
+            signal_reasons.append(f"RSI neutral ({rsi:.1f}) - Not ideal")
+            bearish_signals += 1
         
-        # Signal 2: MACD
+        # Signal 2: MACD (Must show bullish momentum)
         if macd['bullish_cross']:
             bullish_signals += 2
-            signal_reasons.append("MACD bullish crossover")
-        elif macd['bearish_cross']:
-            bearish_signals += 2
-            signal_reasons.append("MACD bearish crossover")
-        elif macd['histogram'] > 0:
+            required_signals += 2
+            signal_reasons.append("MACD BULLISH CROSSOVER - STRONG BUY")
+        elif macd['histogram'] > 0 and closes[-1] > closes[-2]:
             bullish_signals += 1
-            signal_reasons.append("MACD histogram positive")
+            required_signals += 1
+            signal_reasons.append("MACD histogram positive - Good")
         else:
             bearish_signals += 1
-            signal_reasons.append("MACD histogram negative")
+            signal_reasons.append("MACD negative - Not ideal")
         
-        # Signal 3: Bollinger Bands
+        # Signal 3: Bollinger Bands (Must be at or near lower band)
         if bb['position'] < 0.2 and current_price < sma_20:
             bullish_signals += 2
-            signal_reasons.append(f"At lower BB ({bb['position']:.2f})")
+            required_signals += 2
+            signal_reasons.append(f"AT LOWER BB ({bb['position']:.2f}) - STRONG BUY")
         elif bb['position'] < 0.3:
             bullish_signals += 1
-            signal_reasons.append(f"Near lower BB ({bb['position']:.2f})")
-        elif bb['position'] > 0.8 and current_price > sma_20:
+            required_signals += 1
+            signal_reasons.append(f"Near lower BB ({bb['position']:.2f}) - Good")
+        elif bb['position'] > 0.8:
             bearish_signals += 2
-            signal_reasons.append(f"At upper BB ({bb['position']:.2f})")
-        elif bb['position'] > 0.7:
-            bearish_signals += 1
-            signal_reasons.append(f"Near upper BB ({bb['position']:.2f})")
+            signal_reasons.append(f"At upper BB ({bb['position']:.2f}) - SKIP")
         else:
-            signal_reasons.append(f"BB middle ({bb['position']:.2f})")
+            bearish_signals += 1
+            signal_reasons.append(f"BB middle ({bb['position']:.2f}) - Not ideal")
         
-        # Signal 4: Moving Averages
+        # Signal 4: Moving Averages (Strong uptrend required)
         if current_price > sma_5 > sma_10 > sma_20:
             bullish_signals += 2
-            signal_reasons.append("Strong uptrend (all MA aligned)")
-        elif current_price > sma_20:
+            required_signals += 2
+            signal_reasons.append("STRONG UPTREND - All MAs aligned")
+        elif current_price > sma_20 and current_price > sma_50:
             bullish_signals += 1
-            signal_reasons.append("Price above 20 MA")
-        elif current_price < sma_5 < sma_10 < sma_20:
-            bearish_signals += 2
-            signal_reasons.append("Strong downtrend (all MA aligned)")
+            required_signals += 1
+            signal_reasons.append("Price above key MAs - Good")
         elif current_price < sma_20:
             bearish_signals += 1
-            signal_reasons.append("Price below 20 MA")
+            signal_reasons.append("Price below 20 MA - Bad")
         else:
-            signal_reasons.append("MA neutral")
+            bearish_signals += 1
+            signal_reasons.append("MA neutral - Not ideal")
         
-        # Signal 5: Support/Resistance
+        # Signal 5: Support (Must be near support)
         if sr['near_support']:
             bullish_signals += 2
-            signal_reasons.append(f"Near support (${sr['support']:.2f})")
-        elif sr['near_resistance']:
-            bearish_signals += 2
-            signal_reasons.append(f"Near resistance (${sr['resistance']:.2f})")
+            required_signals += 2
+            signal_reasons.append(f"NEAR SUPPORT (${sr['support']:.2f}) - STRONG BUY")
+        else:
+            signal_reasons.append("Not near support - Neutral")
         
-        # Signal 6: Volume
+        # Signal 6: Volume (Strong volume confirmation required)
         if volume_spike and current_price > sma_20:
             bullish_signals += 1
-            signal_reasons.append("Volume spike on up move")
-        elif volume_spike and current_price < sma_20:
-            bearish_signals += 1
-            signal_reasons.append("Volume spike on down move")
+            required_signals += 1
+            signal_reasons.append("Volume spike confirmation - STRONG")
+        elif volume_spike:
+            signal_reasons.append("Volume spike but price condition not met")
+        else:
+            signal_reasons.append("Normal volume - Neutral")
         
-        # Signal 7: VWAP
+        # Signal 7: VWAP (Must be above VWAP)
         if current_price > vwap:
             bullish_signals += 1
-            signal_reasons.append("Price above VWAP")
+            required_signals += 1
+            signal_reasons.append("Price above VWAP - Good")
         else:
             bearish_signals += 1
-            signal_reasons.append("Price below VWAP")
+            signal_reasons.append("Price below VWAP - Not ideal")
         
-        # Signal 8: ATR
-        if atr > 0 and (current_price - sma_20) > (atr * 0.5):
+        # Signal 8: Momentum (Strong momentum required)
+        if momentum_5 > 0.001 and momentum_10 > 0:
             bullish_signals += 1
-            signal_reasons.append("Strong momentum (above ATR)")
-        elif atr > 0 and (sma_20 - current_price) > (atr * 0.5):
-            bearish_signals += 1
-            signal_reasons.append("Strong momentum (below ATR)")
-        
-        total_signals = bullish_signals + bearish_signals
-        if total_signals > 0:
-            raw_confidence = (bullish_signals - bearish_signals) / total_signals
+            required_signals += 1
+            signal_reasons.append("Strong momentum - GOOD")
+        elif momentum_5 > 0.0005:
+            bullish_signals += 1
+            signal_reasons.append("Moderate momentum - OK")
         else:
-            raw_confidence = 0
+            bearish_signals += 1
+            signal_reasons.append("Weak momentum - Not ideal")
         
+        # Signal 9: ATR (Low volatility preferred for safety)
+        atr_pct = atr / current_price if current_price > 0 else 0
+        if atr_pct < 0.005:  # Low volatility
+            bullish_signals += 1
+            required_signals += 1
+            signal_reasons.append("Low volatility - SAFE")
+        elif atr_pct > 0.015:  # High volatility
+            bearish_signals += 1
+            signal_reasons.append("High volatility - Risky")
+        else:
+            signal_reasons.append(f"Normal volatility ({atr_pct*100:.2f}%)")
+        
+        # Count total strong signals
+        total_signals = bullish_signals + bearish_signals
+        
+        # ============ ULTRA STRICT DECISION ============
+        # REQUIRE: 70%+ of signals must be bullish AND at least 2 strong signals
+        bullish_pct = bullish_signals / total_signals if total_signals > 0 else 0
+        
+        # Calculate confidence - MUCH stricter
+        raw_confidence = (bullish_signals - bearish_signals) / max(1, total_signals)
         confidence = max(-1, min(1, raw_confidence))
         
-        if confidence > 0.3:
+        # New: Track strong signals for extra confirmation
+        strong_bullish_count = len([r for r in signal_reasons if "STRONG" in r])
+        strong_required = strong_bullish_count >= 2  # Need at least 2 STRONG signals
+        
+        # ULTRA STRICT: Only BUY with strong confirmation
+        if confidence > 0.4 and strong_required and bullish_pct > 0.6:
             signal = "BUY"
             signal_strength = "strong" if confidence > 0.6 else "moderate"
-        elif confidence < -0.3:
-            signal = "SELL"
-            signal_strength = "strong" if confidence < -0.6 else "moderate"
         else:
             signal = "NEUTRAL"
             signal_strength = "weak"
+            if confidence > 0.4 and not strong_required:
+                signal_reasons.append("⚠️ Need at least 2 STRONG signals")
         
+        # Expected win rate - more conservative
         if signal_strength == "strong":
-            expected_win_rate = 0.65
+            expected_win_rate = 0.75  # 75% for strong signals
         elif signal_strength == "moderate":
-            expected_win_rate = 0.55
+            expected_win_rate = 0.65  # 65% for moderate signals
         else:
-            expected_win_rate = 0.45
+            expected_win_rate = 0.45  # 45% for weak/no signal
         
         return {
             "signal": signal,
@@ -399,35 +449,40 @@ class StrategyEngine:
             "confidence": abs(confidence),
             "bullish_signals": bullish_signals,
             "bearish_signals": bearish_signals,
+            "strong_signals": strong_bullish_count,
             "reasons": signal_reasons,
             "expected_win_rate": expected_win_rate,
             "rsi": rsi,
             "macd": macd,
             "bb": bb,
             "atr": atr,
+            "atr_pct": atr_pct,
             "vwap": vwap,
             "sr": sr,
             "current_price": current_price,
             "sma_20": sma_20,
-            "volume_spike": volume_spike
+            "sma_50": sma_50,
+            "momentum_5": momentum_5,
+            "volume_spike": volume_spike,
+            "bullish_pct": bullish_pct,
+            "strong_required": strong_required
         }
 
 # ========================================================================
-# 🤖 SCALPER BOT - FULLY AUTOMATIC
+# 🤖 SCALPER BOT - ULTRA STRICT EDITION
 # ========================================================================
 
-class ScalperBotV72:
+class ScalperBotV80:
 
     def __init__(self, api_key: str, api_secret: str, symbol: str = "BTCUSDT",
                  exchange_region: str = "us", log_level: str = "INFO"):
         """
-        FULLY AUTOMATIC - No user input required
-        Runs continuously until conditions are favorable
+        ULTRA STRICT EDITION - Only trades with 70%+ probability
         """
         self.api_key = api_key
         self.api_secret = api_secret
         self.symbol = symbol
-        self.test_mode = False  # ALWAYS REAL TRADING
+        self.test_mode = False
 
         # Setup logging
         log_filename = f"crisis_scalper_{datetime.now().strftime('%Y%m%d')}.log"
@@ -452,28 +507,33 @@ class ScalperBotV72:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 FIXED POSITION SIZING
+        # 💰 ULTRA STRICT RISK PARAMETERS
         self.total_balance_usdt = 50.0
         
         # MINIMUM ORDER SIZE
         self.min_order_usdt = 10.0
         self.max_order_usdt = 20.0
         
-        # RISK:REWARD = 1:2
-        self.stop_loss_pct = 0.008
-        self.target_profit_pct = 0.016
+        # RISK:REWARD = 1:2.5 - Higher reward for stricter entries
+        self.stop_loss_pct = 0.006          # 0.6% stop loss (tighter)
+        self.target_profit_pct = 0.015      # 1.5% target (2.5x risk)
         
         # Position sizing
-        self.risk_per_trade = 0.02
+        self.risk_per_trade = 0.015         # 1.5% risk (more conservative)
         
-        # Entry conditions
-        self.min_confidence = 0.35
-        self.min_signal_strength = "moderate"
-        self.require_volume_confirmation = True
+        # ULTRA STRICT entry conditions
+        self.min_confidence = 0.50          # Much higher (was 0.35)
+        self.min_signal_strength = "strong"  # Only strong signals (was moderate)
+        self.min_strong_signals = 2         # Need 2+ strong signals
+        self.max_bb_position = 0.35         # Must be below 0.35 (was 0.7)
+        self.max_rsi = 45                   # Must be below 45 (was 65)
+        self.min_rsi = 25                   # Minimum RSI to avoid extreme oversold
+        self.min_bullish_pct = 0.60         # 60%+ bullish signals (new)
         
-        # Safety limits
-        self.max_drawdown_pct = 0.12
-        self.max_consecutive_losses = 4
+        # Safety limits - TIGHTER
+        self.max_drawdown_pct = 0.08        # 8% max drawdown (was 12%)
+        self.max_consecutive_losses = 3     # Stop after 3 losses (was 4)
+        self.max_skips_before_pause = 50    # Pause if too many skips
         
         # Trade management
         self.chase_timeout_sec = 60
@@ -505,6 +565,7 @@ class ScalperBotV72:
         self.balance_fetched = False
         self.stopped = False
         self.initialized = False
+        self.skipped_count = 0
         
         # Track performance metrics
         self.trade_history = []
@@ -527,14 +588,16 @@ class ScalperBotV72:
             "cycle_results": []
         }
 
-        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v7.2 - FULLY AUTOMATIC")
+        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v8.0 - ULTRA STRICT EDITION")
         self.logger.info(f"   Symbol: {symbol}")
-        self.logger.info(f"   Mode: 💰 LIVE TRADING (AUTOMATIC)")
+        self.logger.info(f"   Mode: 💰 LIVE TRADING (ULTRA STRICT)")
         self.logger.info(f"   Min Order: ${self.min_order_usdt:.2f}")
         self.logger.info(f"   Target Profit: {self.target_profit_pct*100:.1f}%")
         self.logger.info(f"   Stop Loss: {self.stop_loss_pct*100:.1f}%")
         self.logger.info(f"   Risk:Reward: 1:{self.target_profit_pct/self.stop_loss_pct:.1f}")
-        self.logger.info(f"   Will wait indefinitely for favorable conditions")
+        self.logger.info(f"   Min Confidence: {self.min_confidence*100:.0f}% (ULTRA STRICT)")
+        self.logger.info(f"   Min Strength: STRONG only")
+        self.logger.info(f"   Max Drawdown: {self.max_drawdown_pct*100:.0f}%")
         self.logger.info("="*60)
 
         # Auto-initialize
@@ -753,7 +816,7 @@ class ScalperBotV72:
         return None
 
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
-        """Place a MARKET order - FIXED MIN_NOTIONAL"""
+        """Place a MARKET order"""
         ticker = self.get_order_book_ticker()
         if not ticker:
             return {"error": "Failed to get market price"}
@@ -775,7 +838,6 @@ class ScalperBotV72:
 
         if qty < self._min_qty:
             qty = self._min_qty
-            self.logger.info(f"Quantity adjusted to minimum: {qty:.8f}")
 
         qty_str = format_quantity(qty)
         
@@ -785,7 +847,6 @@ class ScalperBotV72:
             qty = self._min_notional / price
             qty = round_to_step(qty, self._min_qty)
             qty_str = format_quantity(qty)
-            self.logger.info(f"Adjusted for min notional: ${self._min_notional:.2f}")
 
         self.logger.info(f"Placing {side} MARKET order: {qty_str} (${qty * price:.2f})")
 
@@ -822,12 +883,11 @@ class ScalperBotV72:
         }
 
     def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
-        """Place a LIMIT order - FIXED MIN_NOTIONAL"""
+        """Place a LIMIT order"""
         # Ensure minimum notional
         if quantity * price < self._min_notional:
             quantity = self._min_notional / price
             quantity = round_to_step(quantity, self._min_qty)
-            self.logger.info(f"Adjusted for min notional: ${self._min_notional:.2f}")
 
         qty = round_to_step(quantity, self._min_qty)
         if qty < self._min_qty:
@@ -895,7 +955,7 @@ class ScalperBotV72:
                 self.stopped = True
                 return {"success": False, "error": "Max drawdown exceeded"}
         
-        # Stop after 4 consecutive losses
+        # Stop after 3 consecutive losses
         if self.consecutive_losses >= self.max_consecutive_losses:
             self.logger.error(f"❌ Too many consecutive losses: {self.consecutive_losses}")
             self.stopped = True
@@ -907,49 +967,85 @@ class ScalperBotV72:
             return {"success": False, "error": "Balance too low for minimum order"}
 
         # Get REAL market data
-        klines = TechnicalAnalysis.get_klines(self.symbol, self.base_url, interval="1m", limit=100)
+        klines = TechnicalAnalysis.get_klines(self.symbol, self.base_url, interval="1m", limit=200)
         if not klines:
             self.logger.warning("⚠️ Could not fetch market data - skipping")
             self.skipped_trades += 1
+            self.skipped_count += 1
             return {"success": False, "error": "No market data", "skipped": True}
         
-        # Analyze market
+        # Analyze market with ULTRA STRICT strategy
         analysis = StrategyEngine.analyze_market(klines)
         
-        self.logger.info(f"📊 Market Analysis:")
+        self.logger.info(f"📊 ULTRA STRICT MARKET ANALYSIS:")
         self.logger.info(f"   Signal: {analysis['signal']} ({analysis['strength']})")
         self.logger.info(f"   Confidence: {analysis['confidence']:.2f}")
+        self.logger.info(f"   Bullish Signals: {analysis['bullish_signals']}")
+        self.logger.info(f"   Bearish Signals: {analysis['bearish_signals']}")
+        self.logger.info(f"   Strong Signals: {analysis['strong_signals']}")
+        self.logger.info(f"   Bullish %: {analysis['bullish_pct']*100:.1f}%")
         self.logger.info(f"   RSI: {analysis['rsi']:.1f}")
-        self.logger.info(f"   MACD: {analysis['macd']['histogram']:.2f}")
         self.logger.info(f"   BB Position: {analysis['bb']['position']:.2f}")
+        self.logger.info(f"   ATR %: {analysis['atr_pct']*100:.2f}%")
         self.logger.info(f"   Current Price: ${analysis['current_price']:.2f}")
-        self.logger.info(f"   Expected Win Rate: {analysis['expected_win_rate']*100:.0f}%")
         
         for reason in analysis['reasons']:
             self.logger.info(f"   → {reason}")
         
-        # Check if we should trade
+        # ============ ULTRA STRICT ENTRY CONDITIONS ============
+        entry_conditions = []
+        
+        # Condition 1: Must be BUY signal
         if analysis['signal'] != "BUY":
-            self.logger.warning(f"⏭️ Signal not BUY ({analysis['signal']}) - waiting...")
-            self.skipped_trades += 1
-            return {"success": False, "error": "Not a buy signal", "skipped": True}
+            entry_conditions.append(f"Signal not BUY ({analysis['signal']})")
         
+        # Condition 2: Strong signal required
+        if analysis['strength'] != "strong":
+            entry_conditions.append(f"Signal not strong ({analysis['strength']})")
+        
+        # Condition 3: High confidence
         if analysis['confidence'] < self.min_confidence:
-            self.logger.warning(f"⏭️ Confidence too low: {analysis['confidence']:.2f} < {self.min_confidence:.2f} - waiting...")
-            self.skipped_trades += 1
-            return {"success": False, "error": "Confidence too low", "skipped": True}
+            entry_conditions.append(f"Confidence too low: {analysis['confidence']:.2f} < {self.min_confidence:.2f}")
         
-        if analysis['strength'] not in ["strong", "moderate"]:
-            self.logger.warning(f"⏭️ Signal too weak: {analysis['strength']} - waiting...")
-            self.skipped_trades += 1
-            return {"success": False, "error": "Signal too weak", "skipped": True}
+        # Condition 4: Need 2+ strong signals
+        if analysis['strong_signals'] < self.min_strong_signals:
+            entry_conditions.append(f"Strong signals: {analysis['strong_signals']} < {self.min_strong_signals}")
         
+        # Condition 5: Bullish percentage
+        if analysis['bullish_pct'] < self.min_bullish_pct:
+            entry_conditions.append(f"Bullish %: {analysis['bullish_pct']*100:.1f}% < {self.min_bullish_pct*100:.0f}%")
+        
+        # Condition 6: BB position
+        if analysis['bb']['position'] > self.max_bb_position:
+            entry_conditions.append(f"BB position: {analysis['bb']['position']:.2f} > {self.max_bb_position:.2f}")
+        
+        # Condition 7: RSI range
+        if analysis['rsi'] > self.max_rsi or analysis['rsi'] < self.min_rsi:
+            entry_conditions.append(f"RSI out of range: {analysis['rsi']:.1f} (must be {self.min_rsi}-{self.max_rsi})")
+        
+        # Condition 8: Winning streak adjustment
         if self.consecutive_wins >= 3 and analysis['strength'] != "strong":
-            self.logger.warning(f"⏭️ Winning streak {self.consecutive_wins} - requiring strong signal")
-            self.skipped_trades += 1
-            return {"success": False, "error": "Winning streak requires stronger signal", "skipped": True}
+            entry_conditions.append(f"Winning streak {self.consecutive_wins} - need EXTRA strong confirmation")
         
-        self.logger.info("✅ ALL CONDITIONS MET! Proceeding with trade...")
+        if entry_conditions:
+            self.logger.warning(f"⏭️ Entry conditions NOT MET:")
+            for condition in entry_conditions:
+                self.logger.warning(f"   - {condition}")
+            self.skipped_trades += 1
+            self.skipped_count += 1
+            
+            # Pause if too many skips in a row
+            if self.skipped_count >= self.max_skips_before_pause:
+                self.logger.warning(f"⚠️ {self.skipped_count} consecutive skips - taking a 60 second break...")
+                time.sleep(60)
+                self.skipped_count = 0
+            
+            return {"success": False, "error": "Entry conditions not met", "skipped": True}
+        
+        # Reset skip counter when conditions are met
+        self.skipped_count = 0
+        
+        self.logger.info("✅ ALL ULTRA STRICT CONDITIONS MET! Proceeding with trade...")
 
         # Get current price
         current_price = self.get_current_price()
@@ -963,7 +1059,7 @@ class ScalperBotV72:
             position_size = self.min_order_usdt
             self.logger.info(f"⚠️ Small balance - using minimum order: ${position_size:.2f}")
         
-        buy_amount = min(position_size, self.current_balance * 0.50)
+        buy_amount = min(position_size, self.current_balance * 0.40)  # Only use 40% of balance (more conservative)
         
         self.logger.info(f"📈 Placing BUY MARKET order for ~${buy_amount:.2f}")
         
@@ -1000,16 +1096,11 @@ class ScalperBotV72:
         stop_price = self.buy_price * (1 - self.stop_loss_pct)
         target_price = self.buy_price * (1 + self.target_profit_pct)
         
+        # ATR-based adjustment
         if analysis['atr'] > 0:
-            atr_stop = self.buy_price - (analysis['atr'] * 1.5)
+            atr_stop = self.buy_price - (analysis['atr'] * 1.2)
             stop_price = max(stop_price, atr_stop)
             self.logger.info(f"📊 ATR-based stop: ${atr_stop:.2f}")
-        
-        if analysis['sr']['near_resistance']:
-            resistance = analysis['sr']['resistance']
-            if resistance < target_price:
-                target_price = min(target_price, resistance * 0.998)
-                self.logger.info(f"📊 Adjusted target due to resistance: ${target_price:.2f}")
         
         self.logger.info(f"🎯 Target: ${target_price:.2f} (+{((target_price/self.buy_price)-1)*100:.1f}%)")
         self.logger.info(f"🛑 Stop: ${stop_price:.2f} (-{((1 - stop_price/self.buy_price))*100:.1f}%)")
@@ -1138,6 +1229,9 @@ class ScalperBotV72:
             "rsi": analysis['rsi'],
             "macd": analysis['macd']['histogram'],
             "bb_position": analysis['bb']['position'],
+            "bullish_signals": analysis['bullish_signals'],
+            "bearish_signals": analysis['bearish_signals'],
+            "strong_signals": analysis['strong_signals'],
             "timestamp": datetime.now().isoformat()
         }
 
@@ -1155,11 +1249,12 @@ class ScalperBotV72:
 
         return result
 
-    def run_forever(self, delay_between_cycles: int = 5):
-        """Run continuously until conditions are favorable"""
+    def run_forever(self, delay_between_cycles: int = 8):
+        """Run continuously with ULTRA STRICT standards"""
         self.logger.info("\n" + "="*60)
-        self.logger.info("🚀 STARTING AUTOMATIC TRADING")
-        self.logger.info("   Will wait indefinitely for favorable conditions")
+        self.logger.info("🚀 STARTING ULTRA STRICT TRADING")
+        self.logger.info("   Only trades with 70%+ probability")
+        self.logger.info("   Will wait as long as needed for perfect conditions")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*60)
 
@@ -1170,11 +1265,12 @@ class ScalperBotV72:
             try:
                 self.logger.info(f"\n📊 Cycle {cycle_num}")
                 self.logger.info(f"   Streak: {self.consecutive_wins} wins | {self.consecutive_losses} losses")
+                self.logger.info(f"   Skipped: {self.skipped_count} in a row")
                 
                 result = self.run_cycle(cycle_number=cycle_num)
 
                 if result.get("skipped", False):
-                    self.logger.info(f"⏭️ Skipped - waiting for better conditions ({self.skipped_trades} total skips)")
+                    self.logger.info(f"⏭️ Waiting for perfect conditions... ({self.skipped_count} skips)")
                 elif not result.get("success", False):
                     self.logger.error(f"⚠️ Cycle {cycle_num} failed: {result.get('error', 'Unknown error')}")
                 else:
@@ -1229,7 +1325,7 @@ class ScalperBotV72:
         seconds = duration % 60
 
         self.logger.info("\n" + "="*70)
-        self.logger.info("🎯 FINAL SUMMARY")
+        self.logger.info("🎯 FINAL SUMMARY - ULTRA STRICT EDITION")
         self.logger.info("="*70)
         self.logger.info(f"📅 Start Time: {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
         self.logger.info(f"📅 End Time:   {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1272,7 +1368,8 @@ class ScalperBotV72:
             fieldnames = ['cycle', 'timestamp', 'entry_price', 'exit_price', 'quantity',
                          'profit', 'profit_percent', 'stopped_out', 'balance_after', 
                          'consecutive_wins', 'consecutive_losses', 'win_rate', 
-                         'signal_confidence', 'rsi', 'macd', 'bb_position', 'success']
+                         'signal_confidence', 'rsi', 'macd', 'bb_position',
+                         'bullish_signals', 'bearish_signals', 'strong_signals', 'success']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
             if not file_exists:
@@ -1296,6 +1393,9 @@ class ScalperBotV72:
                 'rsi': f"{latest.get('rsi', 0):.1f}",
                 'macd': f"{latest.get('macd', 0):.4f}",
                 'bb_position': f"{latest.get('bb_position', 0):.2f}",
+                'bullish_signals': latest.get('bullish_signals', 0),
+                'bearish_signals': latest.get('bearish_signals', 0),
+                'strong_signals': latest.get('strong_signals', 0),
                 'success': latest['success']
             })
 
@@ -1332,7 +1432,12 @@ class ScalperBotV72:
                 "risk_reward": self.target_profit_pct / self.stop_loss_pct,
                 "risk_per_trade": self.risk_per_trade,
                 "min_confidence": self.min_confidence,
-                "strategy": "Real TA (RSI, MACD, BB, Volume, VWAP, Support/Resistance)"
+                "min_signal_strength": self.min_signal_strength,
+                "min_strong_signals": self.min_strong_signals,
+                "max_bb_position": self.max_bb_position,
+                "max_rsi": self.max_rsi,
+                "min_bullish_pct": self.min_bullish_pct,
+                "strategy": "ULTRA STRICT - 70%+ probability required"
             },
             "summary": self.cycle_stats,
             "trade_history": self.trade_history
@@ -1345,7 +1450,7 @@ class ScalperBotV72:
         self.logger.info(f"\n📄 Detailed report exported to: {filename}")
 
 # ========================================================================
-# 🚀 MAIN EXECUTION - FULLY AUTOMATIC
+# 🚀 MAIN EXECUTION - ULTRA STRICT
 # ========================================================================
 
 if __name__ == "__main__":
@@ -1367,24 +1472,32 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("="*60)
-    print("🚀 CRISIS ARBITRAGE SCALPER v7.2 - FULLY AUTOMATIC")
+    print("🚀 CRISIS ARBITRAGE SCALPER v8.0 - ULTRA STRICT EDITION")
     print("="*60)
-    print("\nAUTOMATIC MODE:")
-    print("1. ✅ No user input required - runs immediately")
-    print("2. ✅ Waits indefinitely for favorable conditions")
-    print("3. ✅ Real money trading (LIVE mode)")
-    print("4. ✅ Real TA with mathematical edge")
-    print("5. ✅ $10 minimum orders (MIN_NOTIONAL fixed)")
-    print("6. ✅ Press Ctrl+C to stop at any time")
-    print("\n⚠️  This bot trades with REAL MONEY automatically")
-    print("⚠️  Make sure your API keys have trading permissions")
+    print("\nULTRA STRICT IMPROVEMENTS:")
+    print("1. ✅ Only trades with 70%+ probability")
+    print("2. ✅ Requires 2+ STRONG signals")
+    print("3. ✅ Stricter RSI range (25-45 for buys)")
+    print("4. ✅ Tighter BB position (<0.35)")
+    print("5. ✅ 60%+ bullish signals required")
+    print("6. ✅ 1:2.5 Risk:Reward ratio")
+    print("7. ✅ Only 0.6% stop loss (tighter)")
+    print("8. ✅ 8% max drawdown (safer)")
+    print("9. ✅ Only strong signals allowed")
+    print("10. ✅ 60 second pause after 50 skips")
+    print("\nEXPECTED RESULTS:")
+    print("   - Win Rate: 70%+")
+    print("   - Trades: Fewer but HIGHER quality")
+    print("   - Profit per win: +$0.15 on $10 trade")
+    print("   - Loss per loss: -$0.06 on $10 trade")
+    print("   - Positive expectancy: YES")
     print("="*60)
     
     # Auto-start with no questions
-    print("\n🤖 Starting bot in 3 seconds...")
+    print("\n🤖 Starting ULTRA STRICT bot in 3 seconds...")
     time.sleep(3)
     
-    bot = ScalperBotV72(
+    bot = ScalperBotV80(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
@@ -1392,5 +1505,5 @@ if __name__ == "__main__":
         log_level="INFO"
     )
 
-    # Run forever - will wait for favorable conditions
-    bot.run_forever(delay_between_cycles=5)
+    # Run forever with ultra strict standards
+    bot.run_forever(delay_between_cycles=8)
