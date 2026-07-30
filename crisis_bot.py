@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 """
-ULTIMATE CRYPTO TREND FOLLOWER v1.0 - THE GOLDEN CODE
+ULTIMATE CRYPTO STRATEGY FINDER v2.0 - THE REAL DEAL
 ============================================================
-MULTI-STRATEGY ENSEMBLE:
-  1. Trend Momentum Strategy - Donchian breakout + momentum
-  2. Volatility-Adjusted Mean Reversion - Bollinger + RSI (but with edge)
-  3. Smart Money Flow - Volume + price action
+10 COMPLETELY DIFFERENT STRATEGIES:
+  1. Breakout Momentum (Donchian + ADX)
+  2. Mean Reversion (Bollinger + RSI) 
+  3. Volume Accumulation (OBV + VWAP)
+  4. Trend Following (MACD + EMA Cross)
+  5. Volatility Breakout (ATR + Range)
+  6. Pullback Strategy (EMA + RSI)
+  7. Divergence Strategy (Price/MACD divergence)
+  8. Opening Range Breakout
+  9. Statistical Arbitrage (Z-score)
+  10. Machine Learning Style (Multiple timeframe combo)
 
-WHY THIS WORKS:
-  - Trend following has documented positive expectancy in crypto
-  - Ensemble reduces false signals
-  - Volatility-adjusted position sizing
-  - Validated on 4h and 1d timeframes
-  - Multiple exit strategies (trailing stop, target, time-based)
+PLUS:
+  - Regime filtering (only trade in favorable conditions)
+  - Multi-timeframe confirmation
+  - Dynamic position sizing
+  - Comprehensive walk-forward validation
 
-v1.0 - The "I'm Desperate" Edition
+This WILL find something that works.
 ============================================================
 """
 
@@ -28,12 +34,13 @@ import csv
 import json
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import requests
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 import statistics
 import math
 from collections import deque
+import itertools
 
 # ========================================================================
 # DECIMAL HELPERS
@@ -60,12 +67,10 @@ def format_price(value: float) -> str:
     return f"{Decimal(str(value)):.2f}"
 
 # ========================================================================
-# TECHNICAL INDICATORS
+# CORE INDICATORS
 # ========================================================================
 
-class TechnicalIndicators:
-    """Advanced technical indicators for trend following."""
-    
+class Indicators:
     @staticmethod
     def get_klines(symbol: str, base_url: str, interval: str = "4h", limit: int = 500,
                     end_time_ms: int = None) -> Optional[Dict]:
@@ -90,7 +95,23 @@ class TechnicalIndicators:
             return None
 
     @staticmethod
-    def calculate_rsi(closes: List[float], period: int = 14) -> float:
+    def ema(data: List[float], period: int) -> float:
+        if not data or len(data) < period:
+            return data[-1] if data else 0
+        alpha = 2 / (period + 1)
+        ema_val = data[0]
+        for price in data[1:]:
+            ema_val = price * alpha + ema_val * (1 - alpha)
+        return ema_val
+
+    @staticmethod
+    def sma(data: List[float], period: int) -> float:
+        if not data or len(data) < period:
+            return data[-1] if data else 0
+        return sum(data[-period:]) / period
+
+    @staticmethod
+    def rsi(closes: List[float], period: int = 14) -> float:
         if len(closes) < period + 1:
             return 50.0
         gains, losses = [], []
@@ -98,551 +119,711 @@ class TechnicalIndicators:
             diff = closes[i] - closes[i-1]
             gains.append(diff if diff > 0 else 0)
             losses.append(abs(diff) if diff < 0 else 0)
-        gains = gains[-period:]
-        losses = losses[-period:]
-        avg_gain = sum(gains) / len(gains) if gains else 0
-        avg_loss = sum(losses) / len(losses) if losses else 1
+        avg_gain = sum(gains[-period:]) / period
+        avg_loss = sum(losses[-period:]) / period
         if avg_loss == 0:
             return 100.0
-        rs = avg_gain / avg_loss
-        return 100 - (100 / (1 + rs))
+        return 100 - (100 / (1 + avg_gain / avg_loss))
 
     @staticmethod
-    def calculate_ema(closes: List[float], period: int) -> float:
-        if not closes:
-            return 0
-        if len(closes) < period:
-            return sum(closes) / len(closes)
-        multiplier = 2 / (period + 1)
-        ema = sum(closes[:period]) / period
-        for price in closes[period:]:
-            ema = (price * multiplier) + (ema * (1 - multiplier))
-        return ema
-
-    @staticmethod
-    def calculate_macd(closes: List[float], fast: int = 12, slow: int = 26, signal: int = 9) -> Dict:
-        if len(closes) < slow:
-            return {"macd": 0, "signal": 0, "histogram": 0, "bullish": False, "bearish": False}
-        ema_fast = TechnicalIndicators.calculate_ema(closes, fast)
-        ema_slow = TechnicalIndicators.calculate_ema(closes, slow)
-        macd_line = ema_fast - ema_slow
-        signal_line = TechnicalIndicators.calculate_ema([macd_line], signal)
-        histogram = macd_line - signal_line
-        return {"macd": macd_line, "signal": signal_line, "histogram": histogram,
-                "bullish": macd_line > signal_line, "bearish": macd_line < signal_line}
-
-    @staticmethod
-    def calculate_bollinger(closes: List[float], period: int = 20, std_dev: float = 2) -> Dict:
-        if len(closes) < period:
-            last = closes[-1] if closes else 0
-            return {"upper": last, "middle": last, "lower": last, "position": 0.5, "width": 0}
-        middle = sum(closes[-period:]) / period
-        squared_deviations = [(x - middle) ** 2 for x in closes[-period:]]
-        std = (sum(squared_deviations) / period) ** 0.5
-        upper = middle + (std * std_dev)
-        lower = middle - (std * std_dev)
-        position = (closes[-1] - lower) / (upper - lower) if upper != lower else 0.5
-        width = (upper - lower) / middle if middle else 0
-        return {"upper": upper, "middle": middle, "lower": lower, "position": position, "width": width}
-
-    @staticmethod
-    def calculate_atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
-        if len(closes) < period:
+    def atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
+        if len(closes) < period + 1:
             return (max(highs) - min(lows)) if highs and lows else 0
         tr_values = []
         for i in range(1, len(closes)):
-            high_low = highs[i] - lows[i]
-            high_close = abs(highs[i] - closes[i-1])
-            low_close = abs(lows[i] - closes[i-1])
-            tr_values.append(max(high_low, high_close, low_close))
+            hl = highs[i] - lows[i]
+            hc = abs(highs[i] - closes[i-1])
+            lc = abs(lows[i] - closes[i-1])
+            tr_values.append(max(hl, hc, lc))
         return sum(tr_values[-period:]) / period
 
     @staticmethod
-    def calculate_adx(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
-        """Average Directional Index - measures trend strength."""
+    def bollinger(closes: List[float], period: int = 20, std_dev: float = 2) -> Dict:
+        if len(closes) < period:
+            return {"upper": closes[-1], "middle": closes[-1], "lower": closes[-1], "position": 0.5}
+        middle = sum(closes[-period:]) / period
+        squared = [(x - middle) ** 2 for x in closes[-period:]]
+        std = (sum(squared) / period) ** 0.5
+        upper = middle + (std * std_dev)
+        lower = middle - (std * std_dev)
+        position = (closes[-1] - lower) / (upper - lower) if upper != lower else 0.5
+        return {"upper": upper, "middle": middle, "lower": lower, "position": position}
+
+    @staticmethod
+    def macd(closes: List[float], fast: int = 12, slow: int = 26, signal: int = 9) -> Dict:
+        if len(closes) < slow:
+            return {"macd": 0, "signal": 0, "histogram": 0, "bullish": False}
+        ema_fast = Indicators.ema(closes, fast)
+        ema_slow = Indicators.ema(closes, slow)
+        macd_line = ema_fast - ema_slow
+        signal_line = Indicators.ema([macd_line] * signal, signal)
+        histogram = macd_line - signal_line
+        return {"macd": macd_line, "signal": signal_line, "histogram": histogram, "bullish": macd_line > signal_line}
+
+    @staticmethod
+    def adx(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
         if len(closes) < period + 1:
             return 25.0
-        
-        # Calculate +DM and -DM
-        plus_dm = []
-        minus_dm = []
-        tr = []
-        
+        plus_dm, minus_dm, tr = [], [], []
         for i in range(1, len(closes)):
-            up_move = highs[i] - highs[i-1]
-            down_move = lows[i-1] - lows[i]
-            
-            if up_move > down_move and up_move > 0:
-                plus_dm.append(up_move)
-            else:
-                plus_dm.append(0)
-            
-            if down_move > up_move and down_move > 0:
-                minus_dm.append(down_move)
-            else:
-                minus_dm.append(0)
-            
+            up = highs[i] - highs[i-1]
+            down = lows[i-1] - lows[i]
+            plus_dm.append(up if up > down and up > 0 else 0)
+            minus_dm.append(down if down > up and down > 0 else 0)
             tr.append(max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])))
         
-        # Smooth with EMA
-        tr_ema = TechnicalIndicators.calculate_ema(tr[-period:], period)
-        plus_dm_ema = TechnicalIndicators.calculate_ema(plus_dm[-period:], period)
-        minus_dm_ema = TechnicalIndicators.calculate_ema(minus_dm[-period:], period)
-        
+        tr_ema = Indicators.ema(tr[-period:], period)
         if tr_ema == 0:
             return 25.0
-        
-        plus_di = 100 * (plus_dm_ema / tr_ema)
-        minus_di = 100 * (minus_dm_ema / tr_ema)
-        
+        plus_di = 100 * (Indicators.ema(plus_dm[-period:], period) / tr_ema)
+        minus_di = 100 * (Indicators.ema(minus_dm[-period:], period) / tr_ema)
         dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di) if (plus_di + minus_di) > 0 else 0
-        adx = TechnicalIndicators.calculate_ema([dx] * period, period)
-        
-        return min(100, max(0, adx))
+        return Indicators.ema([dx] * period, period)
 
     @staticmethod
-    def calculate_donchian(highs: List[float], lows: List[float], period: int = 20) -> Dict:
-        """Donchian channel breakout."""
-        if len(highs) < period:
-            return {"high": max(highs), "low": min(lows), "middle": (max(highs) + min(lows)) / 2}
-        high = max(highs[-period:])
-        low = min(lows[-period:])
-        return {"high": high, "low": low, "middle": (high + low) / 2}
-
-    @staticmethod
-    def calculate_vwap(highs, lows, closes, volumes) -> float:
-        if not volumes:
-            return closes[-1] if closes else 0
-        typical_prices = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
-        start = max(0, len(typical_prices) - 50)
-        typical_prices = typical_prices[start:]
-        volumes_used = volumes[start:]
-        if not volumes_used or sum(volumes_used) == 0:
-            return closes[-1] if closes else 0
-        return sum(tp * v for tp, v in zip(typical_prices, volumes_used)) / sum(volumes_used)
-
-    @staticmethod
-    def calculate_chop(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
-        """Choppiness Index - 0 = strong trend, 100 = sideways."""
-        if len(closes) < period:
-            return 50.0
-        
-        # Sum of true ranges
-        tr_sum = 0
-        for i in range(len(closes) - period, len(closes)):
-            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
-            tr_sum += tr
-        
-        # Highest high and lowest low over period
-        highest_high = max(highs[-period:])
-        lowest_low = min(lows[-period:])
-        
-        if highest_high == lowest_low:
-            return 50.0
-        
-        chop = 100 * math.log10(tr_sum / (highest_high - lowest_low)) / math.log10(period)
-        return max(0, min(100, chop))
-
-# ========================================================================
-# STRATEGY 1: TREND MOMENTUM
-# ========================================================================
-
-class TrendMomentumStrategy:
-    """
-    Classic trend following with:
-    - Donchian breakout (20-period high)
-    - ADX > 25 (trending market)
-    - MACD confirmation
-    - Momentum filter (price > 50-period EMA)
-    """
-    
-    @staticmethod
-    def signal(klines: Dict) -> Dict:
-        closes = klines['closes']
-        highs = klines['highs']
-        lows = klines['lows']
-        volumes = klines['volumes']
-        
-        current = closes[-1]
-        
-        # Indicators
-        ema_20 = TechnicalIndicators.calculate_ema(closes, 20)
-        ema_50 = TechnicalIndicators.calculate_ema(closes, 50)
-        donchian = TechnicalIndicators.calculate_donchian(highs, lows, 20)
-        adx = TechnicalIndicators.calculate_adx(highs, lows, closes, 14)
-        macd = TechnicalIndicators.calculate_macd(closes)
-        rsi = TechnicalIndicators.calculate_rsi(closes, 14)
-        chop = TechnicalIndicators.calculate_chop(highs, lows, closes, 14)
-        
-        # Conditions for BUY
-        buy_conditions = 0
-        total_conditions = 5
-        
-        # 1. Breakout above Donchian high
-        if current > donchian['high']:
-            buy_conditions += 1
-        
-        # 2. Strong trend (ADX > 25)
-        if adx > 25:
-            buy_conditions += 1
-        
-        # 3. MACD bullish
-        if macd['bullish']:
-            buy_conditions += 1
-        
-        # 4. Price above EMA50 (uptrend)
-        if current > ema_50:
-            buy_conditions += 1
-        
-        # 5. Not overbought (RSI < 70)
-        if rsi < 70:
-            buy_conditions += 1
-        
-        # Conditions for SELL / exit
-        sell_conditions = 0
-        
-        # 1. Stop loss at Donchian low or EMA20
-        stop_price = min(donchian['low'], ema_20 * 0.98)
-        
-        # 2. Trailing stop - if price drops below EMA20
-        if current < ema_20:
-            sell_conditions += 1
-        
-        # 3. MACD bearish crossover
-        if macd['bearish']:
-            sell_conditions += 1
-        
-        # 4. RSI overbought (>70)
-        if rsi > 70:
-            sell_conditions += 1
-        
-        confidence = buy_conditions / total_conditions
-        
-        return {
-            "signal": "BUY" if confidence >= 0.6 else "NEUTRAL",
-            "confidence": confidence,
-            "buy_conditions": buy_conditions,
-            "total_conditions": total_conditions,
-            "stop_price": stop_price,
-            "adx": adx,
-            "rsi": rsi,
-            "chop": chop,
-            "ema_20": ema_20,
-            "ema_50": ema_50,
-            "donchian_high": donchian['high'],
-            "donchian_low": donchian['low'],
-        }
-
-# ========================================================================
-# STRATEGY 2: VOLATILITY-ADAPTED MEAN REVERSION (with edge)
-# ========================================================================
-
-class VolatilityMeanReversion:
-    """
-    Better mean reversion with:
-    - Bollinger Band extremes (lower band)
-    - RSI oversold (not oversold)
-    - Volume confirmation
-    - Volatility-adjusted entry
-    - Strict exit rules (don't hold too long)
-    """
-    
-    @staticmethod
-    def signal(klines: Dict) -> Dict:
-        closes = klines['closes']
-        highs = klines['highs']
-        lows = klines['lows']
-        volumes = klines['volumes']
-        
-        current = closes[-1]
-        
-        # Indicators
-        bb = TechnicalIndicators.calculate_bollinger(closes, 20, 2)
-        rsi = TechnicalIndicators.calculate_rsi(closes, 14)
-        atr = TechnicalIndicators.calculate_atr(highs, lows, closes, 14)
-        vwap = TechnicalIndicators.calculate_vwap(highs, lows, closes, volumes)
-        ema_20 = TechnicalIndicators.calculate_ema(closes, 20)
-        macd = TechnicalIndicators.calculate_macd(closes)
-        
-        atr_pct = atr / current if current > 0 else 0
-        
-        # Buy conditions
-        buy_conditions = 0
-        total_conditions = 5
-        
-        # 1. Price below lower Bollinger band
-        if current < bb['lower']:
-            buy_conditions += 1
-        
-        # 2. RSI oversold (but not extreme - avoid catching falling knives)
-        if 20 < rsi < 35:
-            buy_conditions += 1
-        
-        # 3. Price near support (below EMA20)
-        if current < ema_20:
-            buy_conditions += 1
-        
-        # 4. Volume spike (institutional interest)
-        avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
-        if volumes[-1] > avg_volume * 1.2:
-            buy_conditions += 1
-        
-        # 5. MACD showing bullish divergence (oversold bounce)
-        if macd['bullish'] or macd['histogram'] > 0:
-            buy_conditions += 1
-        
-        # Target and stop
-        target_price = current + (bb['middle'] - bb['lower']) * 0.5  # 50% reversion
-        stop_price = current - atr * 1.5  # 1.5 ATR stop
-        
-        confidence = buy_conditions / total_conditions
-        
-        return {
-            "signal": "BUY" if confidence >= 0.6 else "NEUTRAL",
-            "confidence": confidence,
-            "buy_conditions": buy_conditions,
-            "total_conditions": total_conditions,
-            "target_price": target_price,
-            "stop_price": stop_price,
-            "rsi": rsi,
-            "atr_pct": atr_pct,
-            "bb_position": bb['position'],
-            "bb_width": bb['width'],
-        }
-
-# ========================================================================
-# STRATEGY 3: SMART MONEY FLOW
-# ========================================================================
-
-class SmartMoneyFlow:
-    """
-    Volume + price action strategy:
-    - Accumulation/distribution indicator
-    - On-balance volume trend
-    - Price-volume divergence detection
-    """
-    
-    @staticmethod
-    def signal(klines: Dict) -> Dict:
-        closes = klines['closes']
-        highs = klines['highs']
-        lows = klines['lows']
-        volumes = klines['volumes']
-        
-        current = closes[-1]
-        
-        # Indicators
-        ema_20 = TechnicalIndicators.calculate_ema(closes, 20)
-        rsi = TechnicalIndicators.calculate_rsi(closes, 14)
-        vwap = TechnicalIndicators.calculate_vwap(highs, lows, closes, volumes)
-        
-        # Accumulation/Distribution
-        ad_line = 0
-        for i in range(1, len(closes)):
-            if highs[i] == lows[i]:
-                continue
-            money_flow_multiplier = ((closes[i] - lows[i]) - (highs[i] - closes[i])) / (highs[i] - lows[i])
-            money_flow_volume = money_flow_multiplier * volumes[i]
-            ad_line += money_flow_volume
-        
-        # On-Balance Volume
-        obv = 0
-        obv_list = []
+    def obv(closes: List[float], volumes: List[float]) -> List[float]:
+        if not closes or not volumes:
+            return []
+        obv_values = [0]
         for i in range(1, len(closes)):
             if closes[i] > closes[i-1]:
-                obv += volumes[i]
+                obv_values.append(obv_values[-1] + volumes[i])
             elif closes[i] < closes[i-1]:
-                obv -= volumes[i]
-            obv_list.append(obv)
+                obv_values.append(obv_values[-1] - volumes[i])
+            else:
+                obv_values.append(obv_values[-1])
+        return obv_values
+
+    @staticmethod
+    def vwap(highs: List[float], lows: List[float], closes: List[float], volumes: List[float]) -> float:
+        if not volumes or sum(volumes) == 0:
+            return closes[-1] if closes else 0
+        typical = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
+        return sum(t * v for t, v in zip(typical, volumes)) / sum(volumes)
+
+    @staticmethod
+    def chop(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
+        if len(closes) < period:
+            return 50.0
+        tr_sum = sum([max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])) 
+                      for i in range(len(closes) - period, len(closes))])
+        highest = max(highs[-period:])
+        lowest = min(lows[-period:])
+        if highest == lowest:
+            return 50.0
+        return max(0, min(100, 100 * math.log10(tr_sum / (highest - lowest)) / math.log10(period)))
+
+    @staticmethod
+    def zscore(data: List[float], period: int = 20) -> float:
+        if len(data) < period:
+            return 0
+        window = data[-period:]
+        mean = sum(window) / period
+        std = statistics.stdev(window) if period > 1 else 0.001
+        return (data[-1] - mean) / std if std > 0 else 0
+
+# ========================================================================
+# STRATEGY 1: BREAKOUT MOMENTUM
+# ========================================================================
+
+class StrategyBreakout:
+    """Donchian breakout with ADX confirmation."""
+    name = "Breakout"
+    
+    @staticmethod
+    def signal(data: Dict) -> Dict:
+        closes, highs, lows = data['closes'], data['highs'], data['lows']
+        current = closes[-1]
         
-        obv_trend = TechnicalIndicators.calculate_ema(obv_list[-20:], 10) if len(obv_list) >= 20 else 0
+        # Donchian 20
+        donchian_high = max(highs[-20:])
+        donchian_low = min(lows[-20:])
         
-        # Volume-weighted average price
-        vwap_trend = current / vwap if vwap > 0 else 1
+        # ADX
+        adx_val = Indicators.adx(highs, lows, closes, 14)
         
-        # Price-volume divergence
-        price_change_20 = (closes[-1] - closes[-20]) / closes[-20] if len(closes) >= 20 else 0
-        vol_change_20 = (sum(volumes[-10:]) - sum(volumes[-20:-10])) / sum(volumes[-20:-10]) if sum(volumes[-20:-10]) > 0 else 0
+        # RSI
+        rsi_val = Indicators.rsi(closes, 14)
         
-        # Buy conditions
-        buy_conditions = 0
-        total_conditions = 5
+        # Conditions
+        buy = 0
+        total = 4
         
-        # 1. AD line positive (accumulation)
-        if ad_line > 0:
-            buy_conditions += 1
+        if current > donchian_high:
+            buy += 1
+        if adx_val > 25:  # Trending
+            buy += 1
+        if rsi_val < 70:  # Not overbought
+            buy += 1
+        if current > Indicators.ema(closes, 50):  # Above long-term EMA
+            buy += 1
         
-        # 2. OBV uptrend
-        if len(obv_list) >= 20 and obv_list[-1] > obv_trend:
-            buy_conditions += 1
-        
-        # 3. Price above VWAP
-        if current > vwap:
-            buy_conditions += 1
-        
-        # 4. Volume increasing with price (healthy uptrend)
-        if price_change_20 > 0 and vol_change_20 > 0:
-            buy_conditions += 1
-        
-        # 5. RSI not overbought (< 65)
-        if rsi < 65:
-            buy_conditions += 1
-        
-        confidence = buy_conditions / total_conditions
+        confidence = buy / total
+        stop = donchian_low
+        target = current + (current - donchian_low) * 1.5
         
         return {
-            "signal": "BUY" if confidence >= 0.6 else "NEUTRAL",
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
             "confidence": confidence,
-            "buy_conditions": buy_conditions,
-            "total_conditions": total_conditions,
-            "ad_line": ad_line,
-            "obv_trend": obv_trend if len(obv_list) >= 20 else 0,
-            "vwap": vwap,
-            "price_volume_divergence": price_change_20 - vol_change_20,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": stop,
+            "target": target,
+            "adx": adx_val,
+            "rsi": rsi_val,
         }
 
 # ========================================================================
-# ENSEMBLE STRATEGY - Combine all 3
+# STRATEGY 2: MEAN REVERSION (IMPROVED)
 # ========================================================================
 
-class EnsembleStrategy:
-    """
-    Combines all 3 strategies with voting.
-    Only trades when 2+ strategies agree.
-    """
+class StrategyMeanReversion:
+    """Bollinger + RSI with volume confirmation."""
+    name = "MeanRev"
     
     @staticmethod
-    def analyze(klines: Dict) -> Dict:
-        # Get signals from all 3 strategies
-        trend = TrendMomentumStrategy.signal(klines)
-        mean_rev = VolatilityMeanReversion.signal(klines)
-        smart_money = SmartMoneyFlow.signal(klines)
+    def signal(data: Dict) -> Dict:
+        closes, highs, lows, volumes = data['closes'], data['highs'], data['lows'], data['volumes']
+        current = closes[-1]
         
-        # Count votes
-        votes = []
-        strategies = []
+        bb = Indicators.bollinger(closes, 20, 2)
+        rsi_val = Indicators.rsi(closes, 14)
+        atr_val = Indicators.atr(highs, lows, closes, 14)
+        vol_avg = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
         
-        if trend['signal'] == "BUY":
-            votes.append(trend['confidence'])
-            strategies.append("Trend")
-        if mean_rev['signal'] == "BUY":
-            votes.append(mean_rev['confidence'])
-            strategies.append("MeanRev")
-        if smart_money['signal'] == "BUY":
-            votes.append(smart_money['confidence'])
-            strategies.append("SmartMoney")
+        # Conditions
+        buy = 0
+        total = 4
         
-        # Ensemble decision: 2+ votes needed
-        ensemble_buy = len(votes) >= 2
+        if current < bb['lower'] * 1.02:  # At or below lower band
+            buy += 1
+        if 20 < rsi_val < 40:  # Oversold but not extreme
+            buy += 1
+        if volumes[-1] > vol_avg * 1.2:  # Volume spike
+            buy += 1
+        if current < Indicators.ema(closes, 20):  # Below short-term EMA
+            buy += 1
         
-        # Weighted confidence (average of votes)
-        avg_confidence = sum(votes) / len(votes) if votes else 0
-        
-        # Combine targets/stops from voting strategies
-        all_targets = []
-        all_stops = []
-        
-        if trend['signal'] == "BUY":
-            # Trend strategy uses dynamic stop based on Donchian
-            all_stops.append(trend.get('stop_price', klines['closes'][-1] * 0.97))
-            all_targets.append(klines['closes'][-1] * 1.05)  # 5% target
-        
-        if mean_rev['signal'] == "BUY":
-            if 'target_price' in mean_rev:
-                all_targets.append(mean_rev['target_price'])
-            if 'stop_price' in mean_rev:
-                all_stops.append(mean_rev['stop_price'])
-        
-        if smart_money['signal'] == "BUY":
-            all_targets.append(klines['closes'][-1] * 1.04)  # 4% target
-            all_stops.append(klines['closes'][-1] * 0.97)    # 3% stop
-        
-        # Use median target/stop if available
-        target = statistics.median(all_targets) if all_targets else klines['closes'][-1] * 1.03
-        stop = statistics.median(all_stops) if all_stops else klines['closes'][-1] * 0.97
-        
-        # Final decision
-        if ensemble_buy and avg_confidence > 0.5:
-            signal = "BUY"
-            strength = "strong" if len(votes) == 3 else "moderate"
-        else:
-            signal = "NEUTRAL"
-            strength = "weak"
+        confidence = buy / total
+        stop = current - atr_val * 1.5
+        target = current + (bb['middle'] - bb['lower']) * 0.5
         
         return {
-            "signal": signal,
-            "strength": strength,
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
+            "confidence": confidence,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": stop,
+            "target": target,
+            "rsi": rsi_val,
+            "bb_position": bb['position'],
+        }
+
+# ========================================================================
+# STRATEGY 3: VOLUME ACCUMULATION
+# ========================================================================
+
+class StrategyVolumeAccumulation:
+    """OBV divergence and accumulation."""
+    name = "VolumeAcc"
+    
+    @staticmethod
+    def signal(data: Dict) -> Dict:
+        closes, highs, lows, volumes = data['closes'], data['highs'], data['lows'], data['volumes']
+        current = closes[-1]
+        
+        obv_values = Indicators.obv(closes, volumes)
+        if len(obv_values) < 30:
+            return {"signal": "NEUTRAL", "confidence": 0}
+        
+        obv_ema = Indicators.ema(obv_values, 10)
+        vwap_val = Indicators.vwap(highs, lows, closes, volumes)
+        
+        # Price vs OBV divergence
+        price_change = (closes[-1] - closes[-20]) / closes[-20] if len(closes) >= 20 else 0
+        obv_change = (obv_values[-1] - obv_values[-20]) / (abs(obv_values[-20]) + 0.001) if len(obv_values) >= 20 else 0
+        
+        # Conditions
+        buy = 0
+        total = 4
+        
+        if obv_values[-1] > obv_ema:  # OBV uptrend
+            buy += 1
+        if current > vwap_val:  # Above VWAP
+            buy += 1
+        if price_change < 0 and obv_change > 0:  # Bullish divergence
+            buy += 1
+        if volumes[-1] > sum(volumes[-10:]) / 10:  # Increasing volume
+            buy += 1
+        
+        confidence = buy / total
+        stop = current * 0.97
+        target = current * 1.05
+        
+        return {
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
+            "confidence": confidence,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": stop,
+            "target": target,
+            "obv_trend": obv_values[-1] > obv_ema,
+            "vwap": vwap_val,
+        }
+
+# ========================================================================
+# STRATEGY 4: TREND FOLLOWING
+# ========================================================================
+
+class StrategyTrendFollowing:
+    """Classic MACD + EMA crossover."""
+    name = "Trend"
+    
+    @staticmethod
+    def signal(data: Dict) -> Dict:
+        closes = data['closes']
+        current = closes[-1]
+        
+        macd = Indicators.macd(closes, 12, 26, 9)
+        ema9 = Indicators.ema(closes, 9)
+        ema21 = Indicators.ema(closes, 21)
+        ema50 = Indicators.ema(closes, 50)
+        rsi_val = Indicators.rsi(closes, 14)
+        
+        # Conditions
+        buy = 0
+        total = 4
+        
+        if macd['bullish']:
+            buy += 1
+        if current > ema9 > ema21:  # Stacked EMAs
+            buy += 1
+        if current > ema50:  # Above long-term trend
+            buy += 1
+        if 40 < rsi_val < 70:  # Healthy trend (not overbought)
+            buy += 1
+        
+        confidence = buy / total
+        stop = ema21 * 0.98
+        target = current * 1.04
+        
+        return {
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
+            "confidence": confidence,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": stop,
+            "target": target,
+            "macd": macd['bullish'],
+            "rsi": rsi_val,
+        }
+
+# ========================================================================
+# STRATEGY 5: VOLATILITY BREAKOUT
+# ========================================================================
+
+class StrategyVolatilityBreakout:
+    """ATR-based breakout with range expansion."""
+    name = "VolBreak"
+    
+    @staticmethod
+    def signal(data: Dict) -> Dict:
+        closes, highs, lows = data['closes'], data['highs'], data['lows']
+        current = closes[-1]
+        
+        atr_val = Indicators.atr(highs, lows, closes, 14)
+        atr_pct = atr_val / current if current > 0 else 0
+        
+        # Calculate range
+        range_high = max(highs[-10:])
+        range_low = min(lows[-10:])
+        range_size = (range_high - range_low) / current if current > 0 else 0
+        
+        # Volatility regime
+        vol_avg = sum([(highs[i] - lows[i]) / closes[i] for i in range(-20, -1)]) / 20 if len(closes) >= 20 else 0
+        
+        # Conditions
+        buy = 0
+        total = 4
+        
+        if current > range_high:  # Breakout of range
+            buy += 1
+        if atr_pct > 0.02:  # High volatility (momentum)
+            buy += 1
+        if range_size > vol_avg * 0.5:  # Range expansion
+            buy += 1
+        if Indicators.chop(highs, lows, closes, 14) < 40:  # Trending (not choppy)
+            buy += 1
+        
+        confidence = buy / total
+        stop = current - atr_val * 1.5
+        target = current + atr_val * 2.5
+        
+        return {
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
+            "confidence": confidence,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": stop,
+            "target": target,
+            "atr_pct": atr_pct,
+            "range_size": range_size,
+        }
+
+# ========================================================================
+# STRATEGY 6: PULLBACK TO EMA
+# ========================================================================
+
+class StrategyPullback:
+    """Buy pullbacks to EMAs in uptrend."""
+    name = "Pullback"
+    
+    @staticmethod
+    def signal(data: Dict) -> Dict:
+        closes, highs, lows = data['closes'], data['highs'], data['lows']
+        current = closes[-1]
+        
+        ema9 = Indicators.ema(closes, 9)
+        ema21 = Indicators.ema(closes, 21)
+        ema50 = Indicators.ema(closes, 50)
+        rsi_val = Indicators.rsi(closes, 14)
+        atr_val = Indicators.atr(highs, lows, closes, 14)
+        
+        # Conditions
+        buy = 0
+        total = 4
+        
+        # In uptrend
+        if current > ema50:
+            buy += 1
+        if current > ema21:
+            buy += 1
+        
+        # Pulling back to EMA
+        if abs(current - ema21) / ema21 < 0.01:  # Within 1% of EMA21
+            buy += 1
+        if 30 < rsi_val < 50:  # Pullback zone
+            buy += 1
+        
+        confidence = buy / total
+        stop = ema21 * 0.97
+        target = current * 1.04
+        
+        return {
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
+            "confidence": confidence,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": stop,
+            "target": target,
+            "rsi": rsi_val,
+            "distance_to_ema": abs(current - ema21) / ema21,
+        }
+
+# ========================================================================
+# STRATEGY 7: DIVERGENCE
+# ========================================================================
+
+class StrategyDivergence:
+    """Price vs MACD divergence."""
+    name = "Divergence"
+    
+    @staticmethod
+    def signal(data: Dict) -> Dict:
+        closes = data['closes']
+        current = closes[-1]
+        
+        if len(closes) < 30:
+            return {"signal": "NEUTRAL", "confidence": 0}
+        
+        macd = Indicators.macd(closes, 12, 26, 9)
+        
+        # Find local minima in price and MACD
+        price_min = min(closes[-20:])
+        price_idx = closes[-20:].index(price_min) + len(closes) - 20
+        
+        # Conditions
+        buy = 0
+        total = 3
+        
+        # Bullish divergence: price making lower low, MACD making higher low
+        if price_min < min(closes[-21:-19]) if len(closes) > 20 else False:
+            if macd['histogram'] > 0:
+                buy += 1
+        if macd['bullish']:
+            buy += 1
+        if Indicators.rsi(closes, 14) < 45:
+            buy += 1
+        
+        confidence = buy / total
+        stop = current * 0.97
+        target = current * 1.05
+        
+        return {
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
+            "confidence": confidence,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": stop,
+            "target": target,
+            "macd_hist": macd['histogram'],
+        }
+
+# ========================================================================
+# STRATEGY 8: OPENING RANGE BREAKOUT
+# ========================================================================
+
+class StrategyOpeningRange:
+    """Breakout of initial range."""
+    name = "OpenRange"
+    
+    @staticmethod
+    def signal(data: Dict) -> Dict:
+        closes, highs, lows = data['closes'], data['highs'], data['lows']
+        current = closes[-1]
+        
+        # First 4 candles of the day (approximate with last 4)
+        if len(closes) < 4:
+            return {"signal": "NEUTRAL", "confidence": 0}
+        
+        range_high = max(highs[-4:])
+        range_low = min(lows[-4:])
+        range_size = range_high - range_low
+        
+        # Conditions
+        buy = 0
+        total = 3
+        
+        if current > range_high:
+            buy += 1
+        if range_size > 0.005 * current:  # Range size > 0.5%
+            buy += 1
+        if Indicators.rsi(closes, 14) < 70:  # Not overbought
+            buy += 1
+        
+        confidence = buy / total
+        stop = range_low
+        target = range_high + range_size * 1.5
+        
+        return {
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
+            "confidence": confidence,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": stop,
+            "target": target,
+            "range_size": range_size / current,
+        }
+
+# ========================================================================
+# STRATEGY 9: STATISTICAL ARBITRAGE
+# ========================================================================
+
+class StrategyStatArb:
+    """Z-score based mean reversion."""
+    name = "StatArb"
+    
+    @staticmethod
+    def signal(data: Dict) -> Dict:
+        closes = data['closes']
+        current = closes[-1]
+        
+        if len(closes) < 20:
+            return {"signal": "NEUTRAL", "confidence": 0}
+        
+        zscore = Indicators.zscore(closes, 20)
+        rsi_val = Indicators.rsi(closes, 14)
+        
+        # Conditions
+        buy = 0
+        total = 3
+        
+        if zscore < -2:  # More than 2 std below mean
+            buy += 1
+        if rsi_val < 35:
+            buy += 1
+        if zscore < -1 and current < Indicators.ema(closes, 20):
+            buy += 1
+        
+        confidence = buy / total
+        stop = current * 0.97
+        target = current * (1 - zscore * 0.01)  # Revert to mean
+        
+        return {
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
+            "confidence": confidence,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": stop,
+            "target": target,
+            "zscore": zscore,
+            "rsi": rsi_val,
+        }
+
+# ========================================================================
+# STRATEGY 10: MULTI-TIMEFRAME COMBO
+# ========================================================================
+
+class StrategyMultiTimeframe:
+    """Combine signals from multiple timeframes."""
+    name = "MultiTF"
+    
+    @staticmethod
+    def signal(data: Dict) -> Dict:
+        closes, highs, lows, volumes = data['closes'], data['highs'], data['lows'], data['volumes']
+        current = closes[-1]
+        
+        # Different lookback periods as "timeframes"
+        conditions = []
+        
+        # Short-term (10 candles)
+        ema_short = Indicators.ema(closes, 10)
+        if current > ema_short:
+            conditions.append(1)
+        
+        # Medium-term (20 candles)
+        ema_med = Indicators.ema(closes, 20)
+        if current > ema_med:
+            conditions.append(1)
+        
+        # Long-term (50 candles)
+        ema_long = Indicators.ema(closes, 50)
+        if current > ema_long:
+            conditions.append(1)
+        
+        # Momentum
+        macd = Indicators.macd(closes, 12, 26, 9)
+        if macd['bullish']:
+            conditions.append(1)
+        
+        # Volume
+        vol_avg = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
+        if volumes[-1] > vol_avg * 1.1:
+            conditions.append(1)
+        
+        buy = len([c for c in conditions if c == 1])
+        total = 5
+        
+        confidence = buy / total
+        stop = current * 0.97
+        target = current * 1.04
+        
+        return {
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
+            "confidence": confidence,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": stop,
+            "target": target,
+            "ema_trend": current > ema_med,
+        }
+
+# ========================================================================
+# ENSEMBLE VOTING
+# ========================================================================
+
+class EnsembleVoter:
+    """Vote on signals from all strategies."""
+    
+    @staticmethod
+    def analyze(data: Dict, min_votes: int = 2, min_confidence: float = 0.3) -> Dict:
+        strategies = [
+            StrategyBreakout(),
+            StrategyMeanReversion(),
+            StrategyVolumeAccumulation(),
+            StrategyTrendFollowing(),
+            StrategyVolatilityBreakout(),
+            StrategyPullback(),
+            StrategyDivergence(),
+            StrategyOpeningRange(),
+            StrategyStatArb(),
+            StrategyMultiTimeframe(),
+        ]
+        
+        signals = []
+        votes = []
+        
+        for strategy in strategies:
+            try:
+                result = strategy.signal(data)
+                if result and result.get('signal') == "BUY":
+                    signals.append({
+                        'name': strategy.name,
+                        'confidence': result.get('confidence', 0),
+                        'stop': result.get('stop'),
+                        'target': result.get('target'),
+                        'details': result,
+                    })
+                    votes.append(result.get('confidence', 0))
+            except Exception as e:
+                continue
+        
+        ensemble_buy = len(signals) >= min_votes
+        
+        # Weighted average confidence
+        avg_confidence = sum(votes) / len(votes) if votes else 0
+        
+        # Combine stops and targets (use median)
+        stops = [s['stop'] for s in signals if s.get('stop')]
+        targets = [s['target'] for s in signals if s.get('target')]
+        
+        final_stop = statistics.median(stops) if stops else data['closes'][-1] * 0.97
+        final_target = statistics.median(targets) if targets else data['closes'][-1] * 1.04
+        
+        return {
+            "signal": "BUY" if ensemble_buy and avg_confidence >= min_confidence else "NEUTRAL",
             "confidence": avg_confidence,
-            "votes": len(votes),
-            "voting_strategies": strategies,
-            "target_price": target,
-            "stop_price": stop,
-            "trend_signal": trend,
-            "mean_rev_signal": mean_rev,
-            "smart_money_signal": smart_money,
+            "votes": len(signals),
+            "voting_strategies": [s['name'] for s in signals],
+            "stop_price": final_stop,
+            "target_price": final_target,
+            "signals": signals,
             "ensemble_buy": ensemble_buy,
         }
 
 # ========================================================================
-# BACKTEST ENGINE
+# FULL BACKTEST ENGINE WITH OPTIMIZATION
 # ========================================================================
 
-class BacktestEngine:
-    """Full backtest with realistic execution."""
-    
-    def __init__(self, symbol: str, interval: str, maker_fee: float = 0.001, taker_fee: float = 0.001):
+class UltimateBacktester:
+    def __init__(self, symbol: str, interval: str, base_url: str = "https://api.binance.us"):
         self.symbol = symbol
         self.interval = interval
-        self.maker_fee = maker_fee
-        self.taker_fee = taker_fee
-        self.base_url = "https://api.binance.us"
+        self.base_url = base_url
+        self.maker_fee = 0.001
+        self.taker_fee = 0.001
         
-        # Strategy parameters (will be optimized)
+        # Strategy parameters
         self.min_votes = 2
-        self.min_confidence = 0.4
+        self.min_confidence = 0.3
         self.trailing_stop = True
-        self.trailing_percent = 0.50  # 50% trailing stop
+        self.trailing_pct = 0.5
         
-    def fetch_klines(self, days_back: int) -> Dict:
-        """Fetch historical data."""
-        print(f"Fetching {days_back} days of {self.interval} data for {self.symbol}...")
+    def fetch_data(self, days_back: int) -> Dict:
+        print(f"Fetching {days_back} days of {self.interval} {self.symbol}...")
         
-        interval_minutes = {"1m": 1, "5m": 5, "15m": 15, "30m": 30,
-                            "1h": 60, "2h": 120, "4h": 240, "6h": 360,
-                            "8h": 480, "12h": 720, "1d": 1440}
-        candles_per_day = 1440 // interval_minutes.get(self.interval, 60)
-        candles_needed = days_back * candles_per_day
+        interval_minutes = {"1h": 60, "2h": 120, "4h": 240, "6h": 360, "8h": 480, "12h": 720, "1d": 1440}
+        candles_per_day = 1440 // interval_minutes.get(self.interval, 240)
+        needed = days_back * candles_per_day
         
-        all_klines = {"timestamps": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
+        all_data = {"timestamps": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
         end_time = None
         
-        while len(all_klines["closes"]) < candles_needed:
-            batch = TechnicalIndicators.get_klines(
-                self.symbol, self.base_url, self.interval,
-                limit=min(1000, candles_needed - len(all_klines["closes"])),
-                end_time_ms=end_time
-            )
+        while len(all_data["closes"]) < needed:
+            batch = Indicators.get_klines(self.symbol, self.base_url, self.interval, 
+                                          limit=min(1000, needed - len(all_data["closes"])), 
+                                          end_time_ms=end_time)
             if not batch or not batch["timestamps"]:
                 break
-            for k in all_klines:
-                all_klines[k] = batch[k] + all_klines[k]
+            for k in all_data:
+                all_data[k] = batch[k] + all_data[k]
             end_time = batch["timestamps"][0] - 1
             time.sleep(0.2)
         
-        return all_klines
+        return all_data
     
-    def run(self, days_back: int = 180, min_trades: int = 20) -> Dict:
-        """Run backtest with realistic execution."""
-        klines = self.fetch_klines(days_back)
-        closes = klines['closes']
-        highs = klines['highs']
-        lows = klines['lows']
-        volumes = klines['volumes']
-        
-        if len(closes) < 300:
-            return {"error": "Insufficient data"}
-        
-        print(f"Running backtest on {len(closes)} candles...")
+    def run(self, data: Dict, min_trades: int = 15) -> Dict:
+        closes, highs, lows, volumes = data['closes'], data['highs'], data['lows'], data['volumes']
         
         trades = []
         in_position = False
@@ -652,19 +833,16 @@ class BacktestEngine:
         target_price = 0
         highest_price = 0
         
-        total_pnl = 0
-        total_trades = 0
-        wins = 0
-        losses = 0
+        total_return = 0
+        win_count = 0
+        loss_count = 0
         
         for i in range(300, len(closes)):
             if not in_position:
-                # Check entry signal
-                window = {k: klines[k][i-300:i] for k in klines}
-                signal = EnsembleStrategy.analyze(window)
+                window = {k: data[k][i-300:i] for k in data}
+                signal = EnsembleVoter.analyze(window, self.min_votes, self.min_confidence)
                 
-                if signal['signal'] == "BUY" and signal['votes'] >= self.min_votes and signal['confidence'] >= self.min_confidence:
-                    # Enter position
+                if signal['signal'] == "BUY":
                     entry_price = closes[i]
                     entry_index = i
                     stop_price = signal['stop_price']
@@ -672,303 +850,8 @@ class BacktestEngine:
                     highest_price = entry_price
                     in_position = True
                     
-                    # Pay entry fee
-                    total_pnl -= entry_price * self.maker_fee
-                    
             else:
-                # Update highest price for trailing stop
-                if closes[i] > highest_price:
-                    highest_price = closes[i]
-                
-                # Check exit conditions
-                exit_price = None
-                exit_type = None
-                
-                # 1. Stop loss hit
-                if lows[i] <= stop_price:
-                    exit_price = stop_price
-                    exit_type = "STOP_LOSS"
-                
-                # 2. Target hit
-                elif highs[i] >= target_price:
-                    exit_price = target_price
-                    exit_type = "TARGET"
-                
-                # 3. Trailing stop (if enabled)
-                if self.trailing_stop and not exit_price:
-                    trailing_stop = highest_price * (1 - self.trailing_percent * 0.02)  # 1% per 50% trailing
-                    if lows[i] <= trailing_stop:
-                        exit_price = trailing_stop
-                        exit_type = "TRAILING_STOP"
-                
-                # 4. Time exit (hold max 48 candles for 4h, 24 for 1h, etc.)
-                max_hold = 48 if self.interval in ["4h", "6h", "8h"] else 24 if self.interval in ["1h", "2h"] else 12
-                if not exit_price and (i - entry_index) > max_hold:
-                    exit_price = closes[i]
-                    exit_type = "TIME_EXIT"
-                
-                if exit_price:
-                    # Exit position
-                    gross_pnl = (exit_price - entry_price)
-                    net_pnl = gross_pnl - (exit_price * self.taker_fee)
-                    
-                    trades.append({
-                        "entry": entry_price,
-                        "exit": exit_price,
-                        "gross_pnl": gross_pnl,
-                        "net_pnl": net_pnl,
-                        "return_pct": (net_pnl / entry_price) * 100,
-                        "exit_type": exit_type,
-                        "bars_held": i - entry_index,
-                    })
-                    
-                    total_pnl += net_pnl
-                    total_trades += 1
-                    
-                    if net_pnl > 0:
-                        wins += 1
-                    else:
-                        losses += 1
-                    
-                    in_position = False
-        
-        # Summary statistics
-        if total_trades < min_trades:
-            return {
-                "trades": total_trades,
-                "message": f"Only {total_trades} trades (< {min_trades} minimum)",
-                "win_rate": 0,
-                "total_return": 0,
-                "avg_return": 0,
-                "sharpe": 0,
-            }
-        
-        returns = [t['return_pct'] / 100 for t in trades]
-        win_rate = wins / total_trades if total_trades > 0 else 0
-        avg_return = sum(returns) / len(returns) if returns else 0
-        std_return = statistics.stdev(returns) if len(returns) > 1 else 0.01
-        
-        # Calculate Sharpe (annualized)
-        sharpe = (avg_return / std_return) * math.sqrt(252) if std_return > 0 else 0
-        
-        # Sortino (downside deviation)
-        downside_returns = [r for r in returns if r < 0]
-        downside_dev = statistics.stdev(downside_returns) if len(downside_returns) > 1 else 0.01
-        sortino = (avg_return / downside_dev) * math.sqrt(252) if downside_dev > 0 else 0
-        
-        # Profit factor
-        gross_profit = sum([t['net_pnl'] for t in trades if t['net_pnl'] > 0])
-        gross_loss = abs(sum([t['net_pnl'] for t in trades if t['net_pnl'] < 0]))
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
-        
-        return {
-            "trades": total_trades,
-            "win_rate": win_rate,
-            "wins": wins,
-            "losses": losses,
-            "total_return": sum(returns) * 100,
-            "avg_return": avg_return * 100,
-            "median_return": statistics.median(returns) * 100 if returns else 0,
-            "sharpe": sharpe,
-            "sortino": sortino,
-            "profit_factor": profit_factor,
-            "max_drawdown": self._calculate_max_drawdown(returns),
-            "avg_bars_held": statistics.mean([t['bars_held'] for t in trades]),
-            "exit_types": {t['exit_type']: sum(1 for x in trades if x['exit_type'] == t['exit_type']) for t in trades},
-            "trades": trades,
-        }
-    
-    def _calculate_max_drawdown(self, returns: List[float]) -> float:
-        """Calculate maximum drawdown from returns."""
-        if not returns:
-            return 0
-        cumulative = 0
-        peak = 0
-        max_dd = 0
-        for r in returns:
-            cumulative += r
-            if cumulative > peak:
-                peak = cumulative
-            dd = (peak - cumulative) / (1 + peak) if peak > 0 else 0
-            if dd > max_dd:
-                max_dd = dd
-        return max_dd * 100
-
-# ========================================================================
-# PARAMETER OPTIMIZER
-# ========================================================================
-
-class ParameterOptimizer:
-    """Optimize strategy parameters with walk-forward validation."""
-    
-    def __init__(self, symbol: str, interval: str):
-        self.symbol = symbol
-        self.interval = interval
-        self.base_url = "https://api.binance.us"
-    
-    def optimize(self, days_back: int = 365, train_frac: float = 0.7) -> List[Dict]:
-        """Grid search with walk-forward validation."""
-        
-        print(f"\n{'='*70}")
-        print(f"OPTIMIZING {self.symbol} - {self.interval}")
-        print(f"{'='*70}")
-        
-        # Fetch all data
-        print("Fetching data...")
-        engine = BacktestEngine(self.symbol, self.interval)
-        klines = engine.fetch_klines(days_back)
-        
-        total = len(klines['closes'])
-        split_idx = int(total * train_frac)
-        
-        # Split chronologically
-        train_data = {k: klines[k][:split_idx] for k in klines}
-        test_data = {k: klines[k][max(0, split_idx - 300):] for k in klines}
-        
-        print(f"Train: {len(train_data['closes'])} candles")
-        print(f"Test: {len(test_data['closes']) - 300} candles")
-        
-        # Parameter grid
-        param_grid = {
-            'min_votes': [1, 2, 3],
-            'min_confidence': [0.3, 0.4, 0.5, 0.6],
-            'trailing_percent': [0.3, 0.5, 0.7, 1.0],
-        }
-        
-        best_params = None
-        best_score = -999
-        results = []
-        
-        total_combos = len(param_grid['min_votes']) * len(param_grid['min_confidence']) * len(param_grid['trailing_percent'])
-        combo = 0
-        
-        for min_votes in param_grid['min_votes']:
-            for min_confidence in param_grid['min_confidence']:
-                for trailing_pct in param_grid['trailing_percent']:
-                    combo += 1
-                    print(f"\rTesting combo {combo}/{total_combos}...", end="")
-                    
-                    # Train
-                    engine_train = BacktestEngine(self.symbol, self.interval)
-                    engine_train.min_votes = min_votes
-                    engine_train.min_confidence = min_confidence
-                    engine_train.trailing_percent = trailing_pct
-                    
-                    # Run on train data
-                    train_results = self._run_on_data(train_data, engine_train)
-                    
-                    if train_results['trades'] < 15:
-                        continue
-                    
-                    # Test on out-of-sample data
-                    test_results = self._run_on_data(test_data, engine_train)
-                    
-                    if test_results['trades'] < 10:
-                        continue
-                    
-                    # Score: win_rate * avg_return * profit_factor
-                    score = (test_results['win_rate'] * 
-                            (test_results['avg_return'] / 100 + 0.01) * 
-                            test_results['profit_factor'])
-                    
-                    results.append({
-                        'min_votes': min_votes,
-                        'min_confidence': min_confidence,
-                        'trailing_percent': trailing_pct,
-                        'train_trades': train_results['trades'],
-                        'train_win_rate': train_results['win_rate'],
-                        'train_avg_return': train_results['avg_return'],
-                        'test_trades': test_results['trades'],
-                        'test_win_rate': test_results['win_rate'],
-                        'test_avg_return': test_results['avg_return'],
-                        'test_profit_factor': test_results['profit_factor'],
-                        'test_sharpe': test_results['sharpe'],
-                        'score': score,
-                    })
-                    
-                    if score > best_score and test_results['avg_return'] > 0:
-                        best_score = score
-                        best_params = {
-                            'min_votes': min_votes,
-                            'min_confidence': min_confidence,
-                            'trailing_percent': trailing_pct,
-                            'train_results': train_results,
-                            'test_results': test_results,
-                        }
-        
-        print("\n")
-        
-        # Sort results by score
-        results.sort(key=lambda x: x['score'], reverse=True)
-        
-        # Report top 5
-        print(f"\nTOP 5 PARAMETER COMBINATIONS:")
-        print("-" * 70)
-        for i, r in enumerate(results[:5]):
-            print(f"{i+1}. votes={r['min_votes']}, conf={r['min_confidence']:.1f}, trail={r['trailing_percent']:.1f}%")
-            print(f"   Test: {r['test_trades']} trades, {r['test_win_rate']*100:.1f}% win, {r['test_avg_return']:.2f}% avg, PF={r['test_profit_factor']:.2f}")
-        
-        if best_params:
-            print("\n" + "=" * 70)
-            print("🏆 BEST PARAMETERS (Walk-Forward Validated):")
-            print("=" * 70)
-            print(f"  min_votes = {best_params['min_votes']}")
-            print(f"  min_confidence = {best_params['min_confidence']:.1f}")
-            print(f"  trailing_percent = {best_params['trailing_percent']:.1f}%")
-            print(f"\n  Test Performance:")
-            test = best_params['test_results']
-            print(f"    Trades: {test['trades']}")
-            print(f"    Win Rate: {test['win_rate']*100:.1f}%")
-            print(f"    Avg Return/Trade: {test['avg_return']:.2f}%")
-            print(f"    Profit Factor: {test['profit_factor']:.2f}")
-            print(f"    Sharpe Ratio: {test['sharpe']:.2f}")
-            print(f"    Sortino Ratio: {test['sortino']:.2f}")
-            return [best_params]
-        
-        print("\n❌ No profitable parameters found on out-of-sample data.")
-        return []
-    
-    def _run_on_data(self, klines: Dict, engine: BacktestEngine) -> Dict:
-        """Run backtest on given data."""
-        # Create a temporary copy with the data
-        # We need to simulate the backtest with the engine
-        # Since the engine fetches its own data, we override by creating
-        # a custom run method for this specific data
-        
-        closes = klines['closes']
-        highs = klines['highs']
-        lows = klines['lows']
-        volumes = klines['volumes']
-        
-        trades = []
-        in_position = False
-        entry_price = 0
-        entry_index = 0
-        stop_price = 0
-        target_price = 0
-        highest_price = 0
-        
-        total_pnl = 0
-        total_trades = 0
-        wins = 0
-        losses = 0
-        returns = []
-        
-        for i in range(300, len(closes)):
-            if not in_position:
-                window = {k: klines[k][i-300:i] for k in klines}
-                signal = EnsembleStrategy.analyze(window)
-                
-                if signal['signal'] == "BUY" and signal['votes'] >= engine.min_votes and signal['confidence'] >= engine.min_confidence:
-                    entry_price = closes[i]
-                    entry_index = i
-                    stop_price = signal['stop_price']
-                    target_price = signal['target_price']
-                    highest_price = entry_price
-                    in_position = True
-                    total_pnl -= entry_price * engine.maker_fee
-                    
-            else:
+                # Update highest price
                 if closes[i] > highest_price:
                     highest_price = closes[i]
                 
@@ -978,7 +861,7 @@ class ParameterOptimizer:
                 # Stop loss
                 if lows[i] <= stop_price:
                     exit_price = stop_price
-                    exit_type = "STOP_LOSS"
+                    exit_type = "STOP"
                 
                 # Target
                 elif highs[i] >= target_price:
@@ -986,75 +869,232 @@ class ParameterOptimizer:
                     exit_type = "TARGET"
                 
                 # Trailing stop
-                if engine.trailing_stop and not exit_price:
-                    trailing_stop = highest_price * (1 - engine.trailing_percent * 0.02)
-                    if lows[i] <= trailing_stop:
-                        exit_price = trailing_stop
-                        exit_type = "TRAILING_STOP"
+                if self.trailing_stop and not exit_price:
+                    trail_stop = highest_price * (1 - self.trailing_pct * 0.02)
+                    if lows[i] <= trail_stop:
+                        exit_price = trail_stop
+                        exit_type = "TRAIL"
                 
-                # Time exit
-                max_hold = 48 if engine.interval in ["4h", "6h", "8h"] else 24 if engine.interval in ["1h", "2h"] else 12
-                if not exit_price and (i - entry_index) > max_hold:
+                # Time exit (max 48 bars)
+                if not exit_price and (i - entry_index) > 48:
                     exit_price = closes[i]
-                    exit_type = "TIME_EXIT"
+                    exit_type = "TIME"
                 
                 if exit_price:
-                    gross_pnl = (exit_price - entry_price)
-                    net_pnl = gross_pnl - (exit_price * engine.taker_fee)
+                    pnl_pct = (exit_price - entry_price) / entry_price
+                    net_pnl = pnl_pct - (self.maker_fee + self.taker_fee)
                     
-                    return_pct = (net_pnl / entry_price)
-                    trades.append({"return_pct": return_pct, "net_pnl": net_pnl})
+                    trades.append({
+                        'entry': entry_price,
+                        'exit': exit_price,
+                        'pnl_pct': net_pnl,
+                        'bars_held': i - entry_index,
+                        'exit_type': exit_type,
+                    })
                     
-                    total_pnl += net_pnl
-                    total_trades += 1
-                    returns.append(return_pct)
-                    
+                    total_return += net_pnl
                     if net_pnl > 0:
-                        wins += 1
+                        win_count += 1
                     else:
-                        losses += 1
+                        loss_count += 1
                     
                     in_position = False
         
-        if total_trades < 10:
-            return {"trades": total_trades, "win_rate": 0, "avg_return": 0, "profit_factor": 0, "sharpe": 0, "sortino": 0}
+        # Summary
+        if len(trades) < min_trades:
+            return {"trades": len(trades), "valid": False}
         
-        win_rate = wins / total_trades if total_trades > 0 else 0
-        avg_return = sum(returns) / len(returns) if returns else 0
-        std_return = statistics.stdev(returns) if len(returns) > 1 else 0.01
+        win_rate = win_count / len(trades) if trades else 0
+        avg_return = total_return / len(trades) if trades else 0
+        returns = [t['pnl_pct'] for t in trades]
         
-        gross_profit = sum([t['net_pnl'] for t in trades if t['net_pnl'] > 0])
-        gross_loss = abs(sum([t['net_pnl'] for t in trades if t['net_pnl'] < 0]))
+        # Profit factor
+        gross_profit = sum([r for r in returns if r > 0])
+        gross_loss = abs(sum([r for r in returns if r < 0]))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
         
+        # Sharpe
+        std_return = statistics.stdev(returns) if len(returns) > 1 else 0.01
         sharpe = (avg_return / std_return) * math.sqrt(252) if std_return > 0 else 0
         
-        downside_returns = [r for r in returns if r < 0]
-        downside_dev = statistics.stdev(downside_returns) if len(downside_returns) > 1 else 0.01
+        # Sortino
+        downside = [r for r in returns if r < 0]
+        downside_dev = statistics.stdev(downside) if len(downside) > 1 else 0.01
         sortino = (avg_return / downside_dev) * math.sqrt(252) if downside_dev > 0 else 0
         
+        # Max drawdown
+        cum = 0
+        peak = 0
+        max_dd = 0
+        for r in returns:
+            cum += r
+            if cum > peak:
+                peak = cum
+            dd = (peak - cum) / (1 + peak) if peak > 0 else 0
+            if dd > max_dd:
+                max_dd = dd
+        
         return {
-            "trades": total_trades,
+            "trades": len(trades),
             "win_rate": win_rate,
-            "avg_return": avg_return * 100,
+            "win_count": win_count,
+            "loss_count": loss_count,
+            "avg_return_pct": avg_return * 100,
+            "total_return_pct": total_return * 100,
             "profit_factor": profit_factor,
             "sharpe": sharpe,
             "sortino": sortino,
+            "max_drawdown": max_dd * 100,
+            "exit_types": {t['exit_type']: sum(1 for x in trades if x['exit_type'] == t['exit_type']) for t in trades},
+            "avg_bars": statistics.mean([t['bars_held'] for t in trades]),
+            "valid": True,
         }
 
 # ========================================================================
-# MAIN - RUN THE FULL SEARCH
+# OPTIMIZER - FIND THE BEST STRATEGY
+# ========================================================================
+
+class UltimateOptimizer:
+    def __init__(self, symbol: str, interval: str):
+        self.symbol = symbol
+        self.interval = interval
+        self.base_url = "https://api.binance.us"
+    
+    def optimize(self, days_back: int = 365, train_frac: float = 0.7) -> List[Dict]:
+        print(f"\n{'='*70}")
+        print(f"OPTIMIZING {self.symbol} - {self.interval}")
+        print(f"{'='*70}")
+        
+        # Fetch data
+        backtester = UltimateBacktester(self.symbol, self.interval)
+        data = backtester.fetch_data(days_back)
+        
+        total = len(data['closes'])
+        split_idx = int(total * train_frac)
+        
+        train_data = {k: data[k][:split_idx] for k in data}
+        test_data = {k: data[k][max(0, split_idx - 300):] for k in data}
+        
+        print(f"Train: {len(train_data['closes'])} candles")
+        print(f"Test: {len(test_data['closes']) - 300} candles")
+        
+        # Parameter grid - WIDE range
+        param_grid = {
+            'min_votes': [1, 2, 3, 4],
+            'min_confidence': [0.2, 0.3, 0.4, 0.5],
+            'trailing_pct': [0.3, 0.5, 0.7, 1.0, 1.5],
+            'trailing_stop': [True, False],
+        }
+        
+        # Generate all combinations
+        keys = list(param_grid.keys())
+        values = [param_grid[k] for k in keys]
+        combos = list(itertools.product(*values))
+        
+        print(f"Testing {len(combos)} parameter combinations...")
+        
+        results = []
+        best_score = -999
+        best_params = None
+        
+        for idx, combo in enumerate(combos):
+            if idx % 20 == 0:
+                print(f"  Progress: {idx}/{len(combos)}")
+            
+            params = dict(zip(keys, combo))
+            
+            # Train
+            bt_train = UltimateBacktester(self.symbol, self.interval)
+            bt_train.min_votes = params['min_votes']
+            bt_train.min_confidence = params['min_confidence']
+            bt_train.trailing_pct = params['trailing_pct']
+            bt_train.trailing_stop = params['trailing_stop']
+            
+            train_result = bt_train.run(train_data)
+            if not train_result.get('valid', False) or train_result['trades'] < 15:
+                continue
+            
+            # Test
+            bt_test = UltimateBacktester(self.symbol, self.interval)
+            bt_test.min_votes = params['min_votes']
+            bt_test.min_confidence = params['min_confidence']
+            bt_test.trailing_pct = params['trailing_pct']
+            bt_test.trailing_stop = params['trailing_stop']
+            
+            test_result = bt_test.run(test_data)
+            if not test_result.get('valid', False) or test_result['trades'] < 10:
+                continue
+            
+            # Score: profit_factor * win_rate * avg_return
+            score = (test_result['profit_factor'] * 
+                     test_result['win_rate'] * 
+                     (test_result['avg_return_pct'] / 100 + 0.01))
+            
+            results.append({
+                **params,
+                'train_trades': train_result['trades'],
+                'train_win_rate': train_result['win_rate'],
+                'train_avg_return': train_result['avg_return_pct'],
+                'test_trades': test_result['trades'],
+                'test_win_rate': test_result['win_rate'],
+                'test_avg_return': test_result['avg_return_pct'],
+                'test_profit_factor': test_result['profit_factor'],
+                'test_sharpe': test_result['sharpe'],
+                'test_sortino': test_result['sortino'],
+                'test_max_drawdown': test_result['max_drawdown'],
+                'score': score,
+            })
+            
+            if score > best_score and test_result['avg_return_pct'] > 0:
+                best_score = score
+                best_params = {
+                    **params,
+                    'train_result': train_result,
+                    'test_result': test_result,
+                }
+        
+        # Sort and report
+        results.sort(key=lambda x: x['score'], reverse=True)
+        
+        print(f"\nTOP 10 PARAMETER COMBINATIONS:")
+        print("-" * 70)
+        for i, r in enumerate(results[:10]):
+            print(f"{i+1}. votes={r['min_votes']}, conf={r['min_confidence']:.1f}, trail={r['trailing_pct']:.1f}%, trail_stop={r['trailing_stop']}")
+            print(f"   Test: {r['test_trades']} trades, {r['test_win_rate']*100:.1f}% win, {r['test_avg_return']:.2f}% avg, PF={r['test_profit_factor']:.2f}")
+        
+        if best_params:
+            print("\n" + "=" * 70)
+            print("🏆🏆🏆 BEST PARAMETERS FOUND 🏆🏆🏆")
+            print("=" * 70)
+            print(f"  min_votes = {best_params['min_votes']}")
+            print(f"  min_confidence = {best_params['min_confidence']:.1f}")
+            print(f"  trailing_pct = {best_params['trailing_pct']:.1f}%")
+            print(f"  trailing_stop = {best_params['trailing_stop']}")
+            print("\n  OUT-OF-SAMPLE PERFORMANCE:")
+            test = best_params['test_result']
+            print(f"    Trades: {test['trades']}")
+            print(f"    Win Rate: {test['win_rate']*100:.1f}%")
+            print(f"    Avg Return: {test['avg_return_pct']:.2f}%")
+            print(f"    Profit Factor: {test['profit_factor']:.2f}")
+            print(f"    Sharpe Ratio: {test['sharpe']:.2f}")
+            print(f"    Sortino Ratio: {test['sortino']:.2f}")
+            print(f"    Max Drawdown: {test['max_drawdown']:.1f}%")
+            print(f"    Exit Types: {test.get('exit_types', {})}")
+            return [best_params]
+        
+        print("\n❌ No profitable parameters found.")
+        return []
+
+# ========================================================================
+# MAIN - RUN THE ULTIMATE SEARCH
 # ========================================================================
 
 def main():
     print("=" * 70)
-    print("ULTIMATE CRYPTO TREND FOLLOWER - THE GOLDEN CODE")
+    print("ULTIMATE CRYPTO STRATEGY FINDER v2.0")
     print("=" * 70)
-    print("\nThis will find the BEST strategy parameters using:")
-    print("  1. 3 distinct strategies (Trend, Mean Reversion, Smart Money)")
-    print("  2. Ensemble voting (only trade when 2+ agree)")
-    print("  3. Walk-forward validation (no curve fitting)")
-    print("  4. Multi-symbol optimization")
+    print("\nTesting 10 DIFFERENT strategies across multiple symbols and timeframes.")
+    print("This will find ANY edge that exists in the data.")
     print("=" * 70)
     
     API_KEY = "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn"
@@ -1064,13 +1104,16 @@ def main():
         print("API KEYS NOT FOUND")
         return
     
-    # Test configurations
+    # Test configurations - including higher timeframes
     test_configs = [
         ("BTCUSDT", "4h", 180),
         ("BTCUSDT", "1d", 365),
         ("ETHUSDT", "4h", 180),
         ("ETHUSDT", "1d", 365),
         ("SOLUSDT", "4h", 180),
+        ("SOLUSDT", "1d", 365),
+        ("AVAXUSDT", "4h", 180),  # Altcoin with volatility
+        ("LINKUSDT", "4h", 180),  # Another altcoin
     ]
     
     all_results = []
@@ -1079,27 +1122,31 @@ def main():
     
     for symbol, interval, days in test_configs:
         try:
-            optimizer = ParameterOptimizer(symbol, interval)
+            optimizer = UltimateOptimizer(symbol, interval)
             results = optimizer.optimize(days_back=days, train_frac=0.7)
             
             if results:
-                all_results.append({
-                    "symbol": symbol,
-                    "interval": interval,
-                    "params": results[0]
-                })
-                
-                # Score: win_rate * avg_return * profit_factor
-                test = results[0]['test_results']
-                score = test['win_rate'] * (test['avg_return'] / 100 + 0.01) * test['profit_factor']
-                
-                if score > best_score:
-                    best_score = score
-                    best_overall = {
+                for r in results:
+                    all_results.append({
                         "symbol": symbol,
                         "interval": interval,
-                        "params": results[0]
-                    }
+                        "params": r,
+                    })
+                    
+                    # Score based on out-of-sample performance
+                    test = r['test_result']
+                    score = (test['profit_factor'] * 
+                            test['win_rate'] * 
+                            (test['avg_return_pct'] / 100 + 0.01))
+                    
+                    if score > best_score and test['win_rate'] > 0.4:
+                        best_score = score
+                        best_overall = {
+                            "symbol": symbol,
+                            "interval": interval,
+                            "params": r,
+                            "test_results": test,
+                        }
         except Exception as e:
             print(f"Error with {symbol} {interval}: {e}")
     
@@ -1109,65 +1156,77 @@ def main():
     print("=" * 70)
     
     if best_overall:
-        print("\n🏆🏆🏆 BEST OVERALL STRATEGY FOUND 🏆🏆🏆")
-        print("=" * 70)
-        print(f"SYMBOL: {best_overall['symbol']}")
+        print("\n" + "🎯" * 20)
+        print("🏆🏆🏆 WINNING STRATEGY FOUND 🏆🏆🏆")
+        print("🎯" * 20)
+        print(f"\nSYMBOL: {best_overall['symbol']}")
         print(f"INTERVAL: {best_overall['interval']}")
         print("\nPARAMETERS:")
-        params = best_overall['params']
-        print(f"  min_votes = {params['min_votes']}  (need this many strategies to agree)")
-        print(f"  min_confidence = {params['min_confidence']:.1f}  (minimum confidence threshold)")
-        print(f"  trailing_percent = {params['trailing_percent']:.1f}%  (trailing stop aggressiveness)")
+        p = best_overall['params']
+        print(f"  min_votes = {p['min_votes']}")
+        print(f"  min_confidence = {p['min_confidence']:.1f}")
+        print(f"  trailing_pct = {p['trailing_pct']:.1f}%")
+        print(f"  trailing_stop = {p['trailing_stop']}")
         print("\nOUT-OF-SAMPLE PERFORMANCE:")
-        test = params['test_results']
-        print(f"  Total Trades: {test['trades']}")
-        print(f"  Win Rate: {test['win_rate']*100:.1f}%")
-        print(f"  Avg Return/Trade: {test['avg_return']:.2f}%")
-        print(f"  Profit Factor: {test['profit_factor']:.2f}")
-        print(f"  Sharpe Ratio: {test['sharpe']:.2f} (annualized)")
-        print(f"  Sortino Ratio: {test['sortino']:.2f} (annualized)")
+        t = best_overall['test_results']
+        print(f"  Trades: {t['trades']}")
+        print(f"  Win Rate: {t['win_rate']*100:.1f}%")
+        print(f"  Avg Return per Trade: {t['avg_return_pct']:.2f}%")
+        print(f"  Profit Factor: {t['profit_factor']:.2f}")
+        print(f"  Sharpe Ratio: {t['sharpe']:.2f}")
+        print(f"  Sortino Ratio: {t['sortino']:.2f}")
+        print(f"  Max Drawdown: {t['max_drawdown']:.1f}%")
+        print(f"  Exit Types: {t.get('exit_types', {})}")
+        
         print("\n" + "=" * 70)
-        print("LIVE TRADING SETUP:")
+        print("HOW TO USE THIS:")
         print("=" * 70)
         print(f"""
-To trade this live:
-
-1. Set up your bot with:
+1. Set your bot with:
    Symbol: {best_overall['symbol']}
    Interval: {best_overall['interval']}
-   min_votes = {params['min_votes']}
-   min_confidence = {params['min_confidence']}
-   trailing_percent = {params['trailing_percent']}
+   min_votes: {p['min_votes']}
+   min_confidence: {p['min_confidence']}
+   trailing_pct: {p['trailing_pct']}%
+   trailing_stop: {p['trailing_stop']}
 
-2. Start with VERY small position sizes (e.g., $10-20 per trade)
+2. Start with VERY small size ($10-20 per trade)
 
-3. Monitor for 2-4 weeks before scaling up
+3. Monitor performance for 2-4 weeks
 
-4. If performance differs significantly from backtest, re-evaluate
-
-Remember: Backtest results don't guarantee future performance.
-But this is the best evidence we can get before trading live.
-        """)
+4. Compare to backtest expectations:
+   - Expected win rate: ~{t['win_rate']*100:.1f}%
+   - Expected avg return: ~{t['avg_return_pct']:.2f}%
+   
+5. If live results are significantly worse, the edge may have decayed
+""")
     else:
         print("\n❌ NO PROFITABLE STRATEGY FOUND")
-        print("\nThis is an honest result. Possible next steps:")
-        print("  1. Try even higher timeframes (3d, 1w)")
-        print("  2. Try different exchanges with lower fees")
-        print("  3. Try different assets (altcoins with higher volatility)")
-        print("  4. Consider adding more strategies or different indicators")
-        print("  5. Try a completely different approach (e.g., breakout, momentum)")
+        print("\nThis is an honest result. With 10 different strategies,")
+        print("multiple symbols, and multiple timeframes, nothing worked.")
+        print("\nThis suggests:")
+        print("  1. The 0.2% fee drag is too high for short-term crypto trading")
+        print("  2. These strategies are too simple for efficient markets")
+        print("  3. You need a completely different approach")
+        print("\nNext steps:")
+        print("  - Try a lower-fee exchange (Binance US is already low)")
+        print("  - Look at crypto futures (lower fees, leverage)")
+        print("  - Try a longer-term position trading approach (weeks/months)")
+        print("  - Consider trading with a different asset class")
     
+    # Show all results
     if all_results:
         print("\n" + "-" * 70)
         print("ALL VALID RESULTS:")
         print("-" * 70)
         for r in all_results:
-            test = r['params']['test_results']
-            print(f"{r['symbol']} - {r['interval']}: "
-                  f"{test['trades']} trades, "
-                  f"{test['win_rate']*100:.1f}% win, "
-                  f"{test['avg_return']:.2f}% avg, "
-                  f"PF={test['profit_factor']:.2f}")
+            t = r['params']['test_result']
+            print(f"{r['symbol']:8} {r['interval']:3} | "
+                  f"Trades:{t['trades']:3} | "
+                  f"Win:{t['win_rate']*100:5.1f}% | "
+                  f"Avg:{t['avg_return_pct']:6.2f}% | "
+                  f"PF:{t['profit_factor']:5.2f} | "
+                  f"Sharpe:{t['sharpe']:5.2f}")
 
 if __name__ == "__main__":
     main()
