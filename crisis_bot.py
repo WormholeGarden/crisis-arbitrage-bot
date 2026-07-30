@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v4.2 - $50 BALANCE - FINAL FIX
-- Fixed ZeroDivisionError when balance is 0
-- Better balance fetching with fallbacks
-- Proper error handling for empty accounts
-- Optimized for small accounts
+🚀 CRISIS ARBITRAGE SCALPER v4.2 - HIGH DRAWDOWN TOLERANCE
+- Increased max drawdown to 60% for small accounts
+- Reduced position sizing to preserve capital
+- Better risk management for volatile markets
+- Optimized for small accounts ($50 USDT)
 """
 
 import hashlib
@@ -139,7 +139,7 @@ class CrisisScoringEngine:
         return opportunities[:limit]
 
 # ========================================================================
-# 🤖 SCALPER BOT - FINAL FIXED VERSION
+# 🤖 SCALPER BOT - HIGH DRAWDOWN TOLERANCE
 # ========================================================================
 
 class ScalperBotV40:
@@ -149,7 +149,7 @@ class ScalperBotV40:
                  log_level: str = "INFO"):
         """
         exchange_region: "us" -> api.binance.us, "global" -> api.binance.com
-        Optimized for $50 USDT balance
+        Optimized for small accounts with high volatility tolerance
         """
         self.api_key = api_key
         self.api_secret = api_secret
@@ -180,15 +180,15 @@ class ScalperBotV40:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 OPTIMIZED FOR $50 BALANCE
+        # 💰 OPTIMIZED FOR SMALL ACCOUNTS - HIGH DRAWDOWN TOLERANCE
         self.total_balance_usdt = 50.0
-        self.max_risk_per_trade = 0.10
-        self.trade_amount_usdt = 5.00
+        self.max_risk_per_trade = 0.08  # Reduced to 8% to preserve capital
+        self.trade_amount_usdt = 4.00   # $4 per trade
         
-        # Risk parameters
-        self.target_profit_pct = 0.005
-        self.stop_loss_pct = 0.004
-        self.max_drawdown_pct = 0.40
+        # Conservative risk parameters
+        self.target_profit_pct = 0.008  # 0.8% profit target
+        self.stop_loss_pct = 0.005      # 0.5% stop loss
+        self.max_drawdown_pct = 0.65    # Increased to 65% for small accounts
         
         self.max_chase_attempts = 3
         self.chase_timeout_sec = 30
@@ -215,8 +215,9 @@ class ScalperBotV40:
         self.peak_balance = self.total_balance_usdt
         self.current_balance = self.total_balance_usdt
         self.consecutive_losses = 0
-        self.max_consecutive_losses = 5
+        self.max_consecutive_losses = 7  # Increased to 7 losses
         self.balance_fetched = False
+        self.stopped = False
 
         # Statistics tracking
         self.cycle_stats = {
@@ -233,15 +234,16 @@ class ScalperBotV40:
 
         self.country_performance = {}
 
-        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v4.2 - FINAL FIX")
+        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v4.2 - HIGH DRAWDOWN TOLERANCE")
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Exchange: {self.base_url}")
         self.logger.info(f"   Mode: {'🧪 PAPER TRADING' if test_mode else '💰 LIVE TRADING'}")
         self.logger.info(f"   Target Balance: ${self.total_balance_usdt:.2f}")
-        self.logger.info(f"   Trade Amount: ${self.trade_amount_usdt:.2f}")
+        self.logger.info(f"   Trade Amount: ${self.trade_amount_usdt:.2f} ({self.max_risk_per_trade*100:.0f}% per trade)")
         self.logger.info(f"   Target Profit: {self.target_profit_pct*100:.1f}%")
         self.logger.info(f"   Stop Loss: {self.stop_loss_pct*100:.1f}%")
         self.logger.info(f"   Max Drawdown: {self.max_drawdown_pct*100:.0f}%")
+        self.logger.info(f"   Max Consecutive Losses: {self.max_consecutive_losses}")
         self.logger.info("="*60)
 
         if not test_mode:
@@ -563,6 +565,9 @@ class ScalperBotV40:
         return self._send_signed_request("GET", "/api/v3/order", params)
 
     def run_cycle(self, iso: str = None, cycle_number: int = 0) -> dict:
+        if self.stopped:
+            return {"success": False, "error": "Bot stopped"}
+            
         self.logger.info(f"\n{'='*60}")
         self.logger.info(f"🔄 CYCLE {cycle_number}/100")
         self.logger.info(f"{'='*60}")
@@ -574,23 +579,28 @@ class ScalperBotV40:
             # Check if balance is valid
             if not self.balance_fetched or self.current_balance <= 0:
                 self.logger.error("❌ Invalid or zero balance, cannot trade")
+                self.stopped = True
                 return {"success": False, "error": "Invalid balance"}
             
-            # Check drawdown
+            # Check drawdown (now 65%)
             if self.peak_balance > 0:
                 drawdown = (self.peak_balance - self.current_balance) / self.peak_balance
                 if drawdown > self.max_drawdown_pct:
                     self.logger.error(f"❌ Max drawdown exceeded: {drawdown*100:.1f}% > {self.max_drawdown_pct*100:.0f}%")
+                    self.logger.info("💡 Consider depositing more funds or reducing position size")
+                    self.stopped = True
                     return {"success": False, "error": "Max drawdown exceeded"}
             
             # Check consecutive losses
             if self.consecutive_losses >= self.max_consecutive_losses:
                 self.logger.error(f"❌ Too many consecutive losses: {self.consecutive_losses}")
+                self.stopped = True
                 return {"success": False, "error": "Too many consecutive losses"}
             
             # Check minimum balance
-            if self.current_balance < 5.0:
-                self.logger.error(f"❌ Balance too low: ${self.current_balance:.2f} < $5.00")
+            if self.current_balance < 3.0:
+                self.logger.error(f"❌ Balance too low: ${self.current_balance:.2f} < $3.00")
+                self.stopped = True
                 return {"success": False, "error": "Balance too low"}
 
         # Select country
@@ -619,7 +629,7 @@ class ScalperBotV40:
             self.logger.info(f"💰 Current Price: ${current_price:.2f}")
 
         # Place BUY MARKET order for immediate fill
-        buy_amount = min(self.trade_amount_usdt, self.current_balance * 0.9)  # Don't use all balance
+        buy_amount = min(self.trade_amount_usdt, self.current_balance * 0.85)
         self.logger.info(f"📈 Placing BUY MARKET order for ~${buy_amount:.2f}")
         
         buy_order = self.place_market_order(
@@ -820,18 +830,26 @@ class ScalperBotV40:
 
         for cycle_num in range(1, 101):
             try:
+                # Check if bot is stopped
+                if self.stopped:
+                    self.logger.error("❌ Bot stopped due to risk limits")
+                    break
+                
                 # Check if we should continue
                 if not self.test_mode:
                     if not self.balance_fetched or self.current_balance <= 0:
                         self.logger.error("❌ No valid balance, stopping")
+                        self.stopped = True
                         break
                     
-                    if self.current_balance < 5.0:
+                    if self.current_balance < 3.0:
                         self.logger.error(f"❌ Balance critically low: ${self.current_balance:.2f}, stopping")
+                        self.stopped = True
                         break
                     
                     if self.cycle_stats.get("failed_cycles", 0) > 50:
                         self.logger.error("❌ Too many failed cycles, stopping")
+                        self.stopped = True
                         break
 
                 country_idx = (cycle_num - 1) % len(top_countries)
@@ -916,7 +934,7 @@ class ScalperBotV40:
             roi = (stats['net_profit'] / self.total_balance_usdt) * 100
             self.logger.info(f"📊 ROI:                {roi:.1f}%")
         else:
-            self.logger.info(f"📊 ROI:                0.0% (no initial balance)")
+            self.logger.info(f"📊 ROI:                0.0%")
         
         # Safe drawdown calculation
         if self.peak_balance > 0:
@@ -926,14 +944,16 @@ class ScalperBotV40:
             self.logger.info(f"📊 Max Drawdown:       0.0%")
             
         self.logger.info(f"📊 Consecutive Losses: {self.consecutive_losses}")
+        self.logger.info(f"📊 Bot Stopped:         {self.stopped}")
 
-        self.logger.info("\n🌍 COUNTRY PERFORMANCE:")
-        self.logger.info("-"*70)
-        sorted_countries = sorted(self.country_performance.items(), key=lambda x: x[1]["total_profit"], reverse=True)
-        for iso, data in sorted_countries[:10]:
-            win_rate_country = (data["wins"] / data["trades"]) * 100 if data["trades"] > 0 else 0
-            stop_rate = (data.get("stopped_out", 0) / data["trades"]) * 100 if data["trades"] > 0 else 0
-            self.logger.info(f"   {data['flag']} {data['name']}: {data['trades']} trades, ${data['total_profit']:.4f}, {win_rate_country:.1f}% win, {stop_rate:.1f}% stopped")
+        if self.country_performance:
+            self.logger.info("\n🌍 COUNTRY PERFORMANCE:")
+            self.logger.info("-"*70)
+            sorted_countries = sorted(self.country_performance.items(), key=lambda x: x[1]["total_profit"], reverse=True)
+            for iso, data in sorted_countries[:10]:
+                win_rate_country = (data["wins"] / data["trades"]) * 100 if data["trades"] > 0 else 0
+                stop_rate = (data.get("stopped_out", 0) / data["trades"]) * 100 if data["trades"] > 0 else 0
+                self.logger.info(f"   {data['flag']} {data['name']}: {data['trades']} trades, ${data['total_profit']:.4f}, {win_rate_country:.1f}% win, {stop_rate:.1f}% stopped")
 
         self.logger.info("="*70)
 
@@ -990,6 +1010,7 @@ class ScalperBotV40:
             "max_drawdown_percent": max_drawdown_percent,
             "consecutive_losses": self.consecutive_losses,
             "roi_percent": roi_percent,
+            "bot_stopped": self.stopped,
             "summary": self.cycle_stats,
             "country_performance": self.country_performance,
             "top_trades": sorted(self.cycle_stats["cycle_results"], key=lambda x: x.get('profit', 0), reverse=True)[:10],
@@ -1008,8 +1029,8 @@ class ScalperBotV40:
 
 if __name__ == "__main__":
     # ⚠️ WARNING: Replace these with your own API keys!
-    API_KEY = "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn"
-    API_SECRET = "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0"
+    API_KEY = "YOUR_API_KEY_HERE"
+    API_SECRET = "YOUR_API_SECRET_HERE"
 
     bot = ScalperBotV40(
         api_key=API_KEY,
