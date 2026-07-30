@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v4.2 - MARKET ORDER FIX
-- Fixed market order price handling (price can be 0 initially)
-- Better order status checking for fills
-- Enhanced error handling for Binance responses
-- Optimized for small accounts ($50 USDT)
+🚀 CRISIS ARBITRAGE SCALPER v4.3 - FIXED DRAWDOWN CALCULATION
+- Fixed peak balance initialization to match actual balance
+- Better balance handling for small accounts
+- Improved error handling for drawdown checks
 """
 
 import hashlib
@@ -139,7 +138,7 @@ class CrisisScoringEngine:
         return opportunities[:limit]
 
 # ========================================================================
-# 🤖 SCALPER BOT - MARKET ORDER FIX
+# 🤖 SCALPER BOT - FIXED DRAWDOWN
 # ========================================================================
 
 class ScalperBotV40:
@@ -181,7 +180,7 @@ class ScalperBotV40:
             raise ValueError('exchange_region must be "us" or "global"')
 
         # 💰 OPTIMIZED FOR SMALL ACCOUNTS
-        self.total_balance_usdt = 50.0
+        self.total_balance_usdt = 50.0  # Will be updated when balance is fetched
         self.max_risk_per_trade = 0.10
         self.trade_amount_usdt = 5.00
         
@@ -210,14 +209,16 @@ class ScalperBotV40:
         self.buy_qty = None
         self.crisis_engine = CrisisScoringEngine()
         
-        # Track running P&L
+        # Track running P&L - FIX: Initialize properly
         self.running_pnl = 0.0
-        self.peak_balance = self.total_balance_usdt
-        self.current_balance = self.total_balance_usdt
+        self.current_balance = 0.0  # Will be set when balance is fetched
+        self.peak_balance = 0.0     # Will be set when balance is fetched
+        self.starting_balance = 0.0 # Store the actual starting balance
         self.consecutive_losses = 0
         self.max_consecutive_losses = 7
         self.balance_fetched = False
         self.stopped = False
+        self.initialized = False
 
         # Statistics tracking
         self.cycle_stats = {
@@ -234,7 +235,7 @@ class ScalperBotV40:
 
         self.country_performance = {}
 
-        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v4.2 - MARKET ORDER FIX")
+        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v4.3 - FIXED DRAWDOWN")
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Exchange: {self.base_url}")
         self.logger.info(f"   Mode: {'🧪 PAPER TRADING' if test_mode else '💰 LIVE TRADING'}")
@@ -248,7 +249,40 @@ class ScalperBotV40:
         if not test_mode:
             self._check_connectivity()
             self._get_exchange_info()
-            self._update_balance()
+            self._initialize_balance()  # NEW: Initialize balance before starting
+
+    def _initialize_balance(self):
+        """Initialize balance and peak balance from exchange"""
+        try:
+            balances = self.get_account_balance()
+            if "USDT" in balances and balances["USDT"] > 0:
+                self.current_balance = balances["USDT"]
+                self.starting_balance = self.current_balance
+                self.peak_balance = self.current_balance  # CRITICAL FIX: Set peak to actual balance
+                self.total_balance_usdt = self.current_balance
+                self.balance_fetched = True
+                self.initialized = True
+                
+                # Update trade amount based on current balance
+                self.trade_amount_usdt = min(
+                    self.current_balance * self.max_risk_per_trade,
+                    self.trade_amount_usdt
+                )
+                if self.trade_amount_usdt < 2.0:
+                    self.trade_amount_usdt = 2.0
+                    
+                self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
+                self.logger.info(f"💰 Peak Balance: ${self.peak_balance:.2f}")
+                self.logger.info(f"💰 Trade Amount: ${self.trade_amount_usdt:.2f}")
+                return True
+            else:
+                self.logger.warning("⚠️ Could not fetch valid balance, using default values")
+                self.balance_fetched = False
+                return False
+        except Exception as e:
+            self.logger.error(f"Error fetching balance: {e}")
+            self.balance_fetched = False
+            return False
 
     def _update_balance(self):
         """Update current balance from exchange with fallbacks"""
@@ -263,6 +297,10 @@ class ScalperBotV40:
                 self.total_balance_usdt = self.current_balance
                 self.balance_fetched = True
                 
+                # Update peak balance if this is the first time or if balance is higher
+                if self.peak_balance == 0 or self.current_balance > self.peak_balance:
+                    self.peak_balance = self.current_balance
+                
                 # Update trade amount based on current balance
                 self.trade_amount_usdt = min(
                     self.current_balance * self.max_risk_per_trade,
@@ -272,6 +310,7 @@ class ScalperBotV40:
                     self.trade_amount_usdt = 2.0
                     
                 self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
+                self.logger.info(f"💰 Peak Balance: ${self.peak_balance:.2f}")
                 self.logger.info(f"💰 Trade Amount: ${self.trade_amount_usdt:.2f}")
             else:
                 self.logger.warning("⚠️ Could not fetch valid balance, using default values")
@@ -606,6 +645,14 @@ class ScalperBotV40:
 
         # Check balance and risk limits
         if not self.test_mode:
+            # Ensure balance is initialized
+            if not self.initialized:
+                self._initialize_balance()
+                if not self.initialized:
+                    self.logger.error("❌ Failed to initialize balance, cannot trade")
+                    self.stopped = True
+                    return {"success": False, "error": "Balance initialization failed"}
+            
             self._update_balance()
             
             # Check if balance is valid
@@ -614,11 +661,12 @@ class ScalperBotV40:
                 self.stopped = True
                 return {"success": False, "error": "Invalid balance"}
             
-            # Check drawdown
+            # Check drawdown - FIXED: Use peak_balance which is properly initialized
             if self.peak_balance > 0:
                 drawdown = (self.peak_balance - self.current_balance) / self.peak_balance
                 if drawdown > self.max_drawdown_pct:
                     self.logger.error(f"❌ Max drawdown exceeded: {drawdown*100:.1f}% > {self.max_drawdown_pct*100:.0f}%")
+                    self.logger.error(f"   Peak: ${self.peak_balance:.2f}, Current: ${self.current_balance:.2f}")
                     self.stopped = True
                     return {"success": False, "error": "Max drawdown exceeded"}
             
@@ -948,6 +996,7 @@ class ScalperBotV40:
         self.logger.info(f"   Failed: {stats['failed_cycles']}")
         self.logger.info(f"   Net Profit: ${stats['net_profit']:.4f}")
         self.logger.info(f"   Current Balance: ${self.current_balance:.2f}")
+        self.logger.info(f"   Peak Balance: ${self.peak_balance:.2f}")
         self.logger.info(f"   Consecutive Losses: {self.consecutive_losses}")
         if stats['total_cycles'] > 0:
             win_rate = (stats['successful_cycles'] / stats['total_cycles']) * 100
@@ -974,16 +1023,17 @@ class ScalperBotV40:
             win_rate = (stats['successful_cycles'] / stats['total_cycles']) * 100
             self.logger.info(f"🏆 Win Rate:           {win_rate:.1f}%")
         self.logger.info("-"*70)
-        self.logger.info(f"💰 Starting Balance:   ${self.total_balance_usdt:.2f}")
+        self.logger.info(f"💰 Starting Balance:   ${self.starting_balance:.2f}")
         self.logger.info(f"💰 Final Balance:      ${self.current_balance:.2f}")
+        self.logger.info(f"💰 Peak Balance:       ${self.peak_balance:.2f}")
         self.logger.info(f"📈 Total Profit:       ${stats['net_profit']:.4f}")
         
         if stats['total_cycles'] > 0:
             avg_profit = stats['net_profit'] / stats['total_cycles']
             self.logger.info(f"📊 Avg Profit/Cycle:   ${avg_profit:.4f}")
         
-        if self.total_balance_usdt > 0:
-            roi = (stats['net_profit'] / self.total_balance_usdt) * 100
+        if self.starting_balance > 0:
+            roi = (stats['net_profit'] / self.starting_balance) * 100
             self.logger.info(f"📊 ROI:                {roi:.1f}%")
         else:
             self.logger.info(f"📊 ROI:                0.0%")
@@ -1046,15 +1096,15 @@ class ScalperBotV40:
 
     def export_final_report(self):
         roi_percent = 0.0
-        if self.total_balance_usdt > 0:
-            roi_percent = ((self.current_balance - self.total_balance_usdt) / self.total_balance_usdt) * 100
+        if self.starting_balance > 0:
+            roi_percent = ((self.current_balance - self.starting_balance) / self.starting_balance) * 100
         
         max_drawdown_percent = 0.0
         if self.peak_balance > 0:
             max_drawdown_percent = ((self.peak_balance - self.current_balance) / self.peak_balance * 100)
         
         report = {
-            "starting_balance": self.total_balance_usdt,
+            "starting_balance": self.starting_balance,
             "final_balance": self.current_balance,
             "peak_balance": self.peak_balance,
             "max_drawdown_percent": max_drawdown_percent,
