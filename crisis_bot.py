@@ -1029,8 +1029,8 @@ class ScalperBotV40:
 
 if __name__ == "__main__":
     # ⚠️ WARNING: Replace these with your own API keys!
-    API_KEY = "YOUR_API_KEY_HERE"
-    API_SECRET = "YOUR_API_SECRET_HERE"
+    API_KEY = "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn"
+    API_SECRET = "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0"
 
     bot = ScalperBotV40(
         api_key=API_KEY,
