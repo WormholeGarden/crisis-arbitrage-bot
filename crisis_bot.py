@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v4.2 - $50 BALANCE OPTIMIZED - FINAL
-- Increased max drawdown to 40% for small accounts
-- Better position sizing for volatility
-- Fixed quantity formatting (no scientific notation)
+🚀 CRISIS ARBITRAGE SCALPER v4.2 - $50 BALANCE - FAST EXECUTION
+- Uses MARKET orders for faster fills
+- Better order monitoring with timeout recovery
 - Optimized for small account ($50 USDT)
 """
 
@@ -139,7 +138,7 @@ class CrisisScoringEngine:
         return opportunities[:limit]
 
 # ========================================================================
-# 🤖 SCALPER BOT - FULLY FIXED WITH BETTER DRAWDOWN MANAGEMENT
+# 🤖 SCALPER BOT - FAST EXECUTION WITH MARKET ORDERS
 # ========================================================================
 
 class ScalperBotV40:
@@ -180,19 +179,19 @@ class ScalperBotV40:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 OPTIMIZED FOR $50 BALANCE - MORE FORGIVING DRAWDOWN
+        # 💰 OPTIMIZED FOR $50 BALANCE
         self.total_balance_usdt = 50.0
-        self.max_risk_per_trade = 0.10  # Reduced from 15% to 10%
-        self.trade_amount_usdt = 5.00   # Reduced from $7.50
+        self.max_risk_per_trade = 0.10
+        self.trade_amount_usdt = 5.00
         
-        # Conservative risk parameters for small account
-        self.target_profit_pct = 0.005  # 0.5% (lower target for small account)
-        self.stop_loss_pct = 0.004      # 0.4% stop loss (tighter)
-        self.max_drawdown_pct = 0.40    # Increased to 40% for small accounts
+        # Risk parameters
+        self.target_profit_pct = 0.005
+        self.stop_loss_pct = 0.004
+        self.max_drawdown_pct = 0.40
         
-        self.max_chase_attempts = 5
-        self.chase_timeout_sec = 300
-        self.stop_loss_poll_sec = 3
+        self.max_chase_attempts = 3
+        self.chase_timeout_sec = 30  # Reduced from 300 to 30 seconds
+        self.stop_loss_poll_sec = 2
         self.maker_fee_rate = 0.001
         
         # Price cache
@@ -215,7 +214,7 @@ class ScalperBotV40:
         self.peak_balance = self.total_balance_usdt
         self.current_balance = self.total_balance_usdt
         self.consecutive_losses = 0
-        self.max_consecutive_losses = 5  # Stop if 5 losses in a row
+        self.max_consecutive_losses = 5
 
         # Statistics tracking
         self.cycle_stats = {
@@ -232,16 +231,15 @@ class ScalperBotV40:
 
         self.country_performance = {}
 
-        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v4.2 - $50 BALANCE")
+        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v4.2 - FAST EXECUTION")
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Exchange: {self.base_url}")
         self.logger.info(f"   Mode: {'🧪 PAPER TRADING' if test_mode else '💰 LIVE TRADING'}")
         self.logger.info(f"   Total Balance: ${self.total_balance_usdt:.2f}")
-        self.logger.info(f"   Trade Amount: ${self.trade_amount_usdt:.2f} ({self.max_risk_per_trade*100:.0f}% of balance)")
-        self.logger.info(f"   Target Profit: {self.target_profit_pct*100:.1f}% per cycle")
+        self.logger.info(f"   Trade Amount: ${self.trade_amount_usdt:.2f}")
+        self.logger.info(f"   Target Profit: {self.target_profit_pct*100:.1f}%")
         self.logger.info(f"   Stop Loss: {self.stop_loss_pct*100:.1f}%")
         self.logger.info(f"   Max Drawdown: {self.max_drawdown_pct*100:.0f}%")
-        self.logger.info(f"   Max Consecutive Losses: {self.max_consecutive_losses}")
         self.logger.info("="*60)
 
         if not test_mode:
@@ -262,7 +260,6 @@ class ScalperBotV40:
                 self.current_balance * self.max_risk_per_trade,
                 self.trade_amount_usdt
             )
-            # Ensure minimum trade amount
             if self.trade_amount_usdt < 2.0:
                 self.trade_amount_usdt = 2.0
             self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
@@ -427,65 +424,98 @@ class ScalperBotV40:
             return balances
         return {"USDT": 0.0}
 
-    def place_maker_limit_order(self, side: str, amount: float, target_price: float = None, is_quantity: bool = False) -> dict:
-        """Place a LIMIT_MAKER order with proper quantity formatting"""
+    def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
+        """Place a MARKET order for immediate execution"""
         if self.test_mode:
-            simulated_id = f"SIM_{int(time.time() * 1000)}"
-            price = target_price or (64000.0 + random.uniform(-500, 500))
+            simulated_id = f"SIM_MKT_{int(time.time() * 1000)}"
+            price = 64000.0 + random.uniform(-500, 500)
             qty = amount if is_quantity else amount / price
             if qty < self._min_qty:
                 qty = self._min_qty
-            self.logger.info(f"[TEST MODE] {side} LIMIT_MAKER @ ${price:.2f} | Qty: {qty:.8f}")
+            self.logger.info(f"[TEST MODE] {side} MARKET | Qty: {qty:.8f} @ ~${price:.2f}")
             return {
                 "orderId": simulated_id,
                 "price": str(price),
-                "origQty": str(qty),
                 "executedQty": str(qty),
-                "status": "NEW",
+                "origQty": str(qty),
+                "status": "FILLED",
                 "side": side,
             }
 
+        # Get current price
         ticker = self.get_order_book_ticker()
         if not ticker:
             return {"error": "Failed to get market price"}
 
-        # Check balance
-        if side.upper() == "BUY":
-            balances = self.get_account_balance()
-            if balances.get("USDT", 0) < amount:
-                self.logger.warning(f"Insufficient balance: {balances.get('USDT', 0)} USDT < {amount}")
-                return {"error": "Insufficient balance"}
-
-        if side.upper() == "BUY":
-            limit_price = target_price if target_price else ticker["bid"] * 0.9995
-        else:
-            limit_price = target_price if target_price else ticker["ask"] * 1.0005
-
-        limit_price = round_to_tick(limit_price, self._tick_size)
-
+        # Calculate quantity
         if is_quantity:
             qty = round_to_step(amount, self._min_qty)
         else:
-            qty = round_to_step(amount / limit_price, self._min_qty)
+            price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
+            qty = round_to_step(amount / price, self._min_qty)
 
         if qty < self._min_qty:
             qty = self._min_qty
             self.logger.info(f"Quantity adjusted to minimum: {qty:.8f}")
 
-        # Format quantity without scientific notation
         qty_str = format_quantity(qty)
-        price_str = format_price(limit_price)
 
-        self.logger.info(f"Placing {side} order: {qty_str} @ ${price_str}")
+        self.logger.info(f"Placing {side} MARKET order: {qty_str}")
 
         params = {
             "symbol": self.symbol,
             "side": side.upper(),
-            "type": "LIMIT_MAKER",
+            "type": "MARKET",
             "quantity": qty_str,
-            "price": price_str,
+        }
+        
+        response = self._send_signed_request("POST", "/api/v3/order", params)
+        
+        if "error" in response:
+            return response
+        
+        return {
+            "orderId": response.get("orderId", f"ERR_{int(time.time())}"),
+            "price": str(response.get("price", 0)),
+            "executedQty": str(response.get("executedQty", qty)),
+            "origQty": str(response.get("origQty", qty)),
+            "status": response.get("status", "FILLED"),
+            "side": side,
         }
 
+    def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
+        """Place a LIMIT order (not MAKER) for better fill probability"""
+        if self.test_mode:
+            simulated_id = f"SIM_LIMIT_{int(time.time() * 1000)}"
+            self.logger.info(f"[TEST MODE] {side} LIMIT @ ${price:.2f} | Qty: {quantity:.8f}")
+            return {
+                "orderId": simulated_id,
+                "price": str(price),
+                "origQty": str(quantity),
+                "executedQty": str(quantity),
+                "status": "FILLED",
+                "side": side,
+            }
+
+        qty = round_to_step(quantity, self._min_qty)
+        if qty < self._min_qty:
+            qty = self._min_qty
+
+        limit_price = round_to_tick(price, self._tick_size)
+        qty_str = format_quantity(qty)
+        price_str = format_price(limit_price)
+
+        self.logger.info(f"Placing {side} LIMIT order: {qty_str} @ ${price_str}")
+
+        params = {
+            "symbol": self.symbol,
+            "side": side.upper(),
+            "type": "LIMIT",
+            "quantity": qty_str,
+            "price": price_str,
+            "timeInForce": "GTC",
+        }
+        
         response = self._send_signed_request("POST", "/api/v3/order", params)
         
         if "error" in response:
@@ -500,44 +530,6 @@ class ScalperBotV40:
             "side": side,
         }
 
-    def place_market_order(self, side: str, quantity: float) -> dict:
-        if self.test_mode:
-            simulated_id = f"SIM_MKT_{int(time.time() * 1000)}"
-            price = 64000.0 + random.uniform(-500, 500)
-            self.logger.info(f"[TEST MODE] {side} MARKET | Qty: {quantity:.8f} @ ~${price:.2f}")
-            return {
-                "orderId": simulated_id,
-                "price": str(price),
-                "executedQty": str(quantity),
-                "status": "FILLED",
-                "side": side,
-            }
-
-        qty = round_to_step(quantity, self._min_qty)
-        if qty < self._min_qty:
-            qty = self._min_qty
-
-        qty_str = format_quantity(qty)
-
-        params = {
-            "symbol": self.symbol,
-            "side": side.upper(),
-            "type": "MARKET",
-            "quantity": qty_str,
-        }
-        response = self._send_signed_request("POST", "/api/v3/order", params)
-        
-        if "error" in response:
-            return response
-        
-        return {
-            "orderId": response.get("orderId", f"ERR_{int(time.time())}"),
-            "price": str(response.get("price", 0)),
-            "executedQty": str(response.get("executedQty", qty)),
-            "status": response.get("status", "FILLED"),
-            "side": side,
-        }
-
     def cancel_order(self, order_id: str) -> dict:
         if self.test_mode:
             self.logger.info(f"[TEST MODE] Cancelled Order ID: {order_id}")
@@ -546,15 +538,13 @@ class ScalperBotV40:
         params = {"symbol": self.symbol, "orderId": order_id}
         return self._send_signed_request("DELETE", "/api/v3/order", params)
 
-    def chase_order(self, side: str, current_qty: float, last_order_id: str) -> dict:
-        self.logger.info(f"Chasing {side} order...")
-        self.cancel_order(last_order_id)
-        return self.place_maker_limit_order(
-            side=side,
-            amount=current_qty,
-            target_price=None,
-            is_quantity=True,
-        )
+    def get_order_status(self, order_id: str) -> dict:
+        """Get current order status"""
+        if self.test_mode:
+            return {"status": "FILLED", "orderId": order_id}
+        
+        params = {"symbol": self.symbol, "orderId": order_id}
+        return self._send_signed_request("GET", "/api/v3/order", params)
 
     def run_cycle(self, iso: str = None, cycle_number: int = 0) -> dict:
         self.logger.info(f"\n{'='*60}")
@@ -565,19 +555,13 @@ class ScalperBotV40:
         if not self.test_mode:
             self._update_balance()
             
-            # Check max drawdown (now 40%)
             drawdown = (self.peak_balance - self.current_balance) / self.peak_balance if self.peak_balance > 0 else 0
             if drawdown > self.max_drawdown_pct:
                 self.logger.error(f"❌ Max drawdown exceeded: {drawdown*100:.1f}% > {self.max_drawdown_pct*100:.0f}%")
-                self.logger.error(f"   Current Balance: ${self.current_balance:.2f}")
-                self.logger.error(f"   Peak Balance: ${self.peak_balance:.2f}")
-                self.logger.error("   Stopping trading to preserve capital")
                 return {"success": False, "error": "Max drawdown exceeded"}
             
-            # Check for too many consecutive losses
             if self.consecutive_losses >= self.max_consecutive_losses:
                 self.logger.error(f"❌ Too many consecutive losses: {self.consecutive_losses}")
-                self.logger.error("   Stopping trading to prevent further losses")
                 return {"success": False, "error": "Too many consecutive losses"}
             
             if self.current_balance < 5.0:
@@ -604,12 +588,18 @@ class ScalperBotV40:
             self.logger.info(f"🎯 Trading: {country['flag']} {country['name']} (FSI: {country['fsi_score']}, WST: {country['wst_class']})")
             self.logger.info(f"   Opportunity Score: {country['opportunity_score']:.2f}")
 
-        # Place Buy Order
+        # Get current price for reference
+        current_price = self.get_current_price()
+        if current_price:
+            self.logger.info(f"💰 Current Price: ${current_price:.2f}")
+
+        # Place BUY MARKET order for immediate fill
         buy_amount = self.trade_amount_usdt * (1 + random.uniform(-0.05, 0.05))
-        buy_order = self.place_maker_limit_order(
+        self.logger.info(f"📈 Placing BUY MARKET order for ~${buy_amount:.2f}")
+        
+        buy_order = self.place_market_order(
             side="BUY",
             amount=buy_amount,
-            target_price=None,
             is_quantity=False,
         )
 
@@ -622,50 +612,15 @@ class ScalperBotV40:
             self.logger.error(f"Missing orderId in response: {buy_order}")
             return {"success": False, "error": "Missing orderId"}
 
+        # Get fill details
         self.buy_price = float(buy_order.get("price", 0))
-        self.buy_qty = float(buy_order.get("origQty", 0))
+        self.buy_qty = float(buy_order.get("executedQty", buy_order.get("origQty", 0)))
         
         if self.buy_price == 0 or self.buy_qty == 0:
             self.logger.error(f"Invalid price or quantity: {buy_order}")
             return {"success": False, "error": "Invalid price or quantity"}
 
-        self.logger.info(f"📈 BUY Order: {self.buy_qty:.8f} BTC @ ${self.buy_price:.2f}")
-
-        # Monitor Buy Fill
-        self.logger.info("⏳ Waiting for buy fill...")
-        filled = False
-        start_time = time.time()
-
-        while not filled:
-            if time.time() - start_time > self.chase_timeout_sec:
-                chase_res = self.chase_order("BUY", self.buy_qty, order_id)
-                if "error" not in chase_res and chase_res.get("orderId"):
-                    order_id = chase_res["orderId"]
-                    self.buy_price = float(chase_res.get("price", self.buy_price))
-                start_time = time.time()
-
-            if self.test_mode:
-                time.sleep(1.0 + random.uniform(0, 1.0))
-                filled = True
-                self.logger.info(f"✅ [TEST] BUY Filled @ ${self.buy_price:.2f}")
-            else:
-                status = self._send_signed_request("GET", "/api/v3/order", {
-                    "symbol": self.symbol,
-                    "orderId": order_id,
-                })
-                if status.get("status") == "FILLED":
-                    filled = True
-                    self.buy_price = float(status.get("price", self.buy_price))
-                    self.buy_qty = float(status.get("executedQty", self.buy_qty))
-                    self.logger.info(f"✅ BUY Filled @ ${self.buy_price:.2f}")
-                elif status.get("status") == "CANCELED":
-                    self.logger.warning("Buy order was cancelled, retrying...")
-                    chase_res = self.chase_order("BUY", self.buy_qty, order_id)
-                    if "error" not in chase_res and chase_res.get("orderId"):
-                        order_id = chase_res["orderId"]
-                        self.buy_price = float(chase_res.get("price", self.buy_price))
-                    start_time = time.time()
-                time.sleep(2)
+        self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} BTC @ ${self.buy_price:.2f}")
 
         # Calculate Exit Levels
         target_profit_pct = self.target_profit_pct * (1 + random.uniform(-0.1, 0.1))
@@ -675,86 +630,79 @@ class ScalperBotV40:
         self.logger.info(f"🎯 Target: ${target_price:.2f} (+{target_profit_pct*100:.1f}%)")
         self.logger.info(f"🛑 Stop:   ${stop_price:.2f} (-{self.stop_loss_pct*100:.1f}%)")
 
-        # Place Sell Order
-        sell_order = self.place_maker_limit_order(
+        # Place SELL LIMIT order at target
+        self.logger.info(f"📉 Placing SELL LIMIT order @ ${target_price:.2f}")
+        sell_order = self.place_limit_order(
             side="SELL",
-            amount=self.buy_qty,
-            target_price=target_price,
-            is_quantity=True,
+            quantity=self.buy_qty,
+            price=target_price,
         )
 
         if "error" in sell_order:
             self.logger.error(f"Failed to place sell order: {sell_order}")
-            return {"success": False, "error": sell_order.get("error", "Sell order failed")}
+            # Try market sell as fallback
+            self.logger.info("Attempting market sell as fallback...")
+            fallback_sell = self.place_market_order("SELL", self.buy_qty, is_quantity=True)
+            if "error" in fallback_sell:
+                return {"success": False, "error": "Sell order failed"}
+            exit_price = float(fallback_sell.get("price", self.buy_price))
+            sell_filled = True
+            stopped_out = False
+        else:
+            sell_order_id = sell_order.get("orderId")
+            if not sell_order_id:
+                self.logger.error(f"Missing orderId in sell response: {sell_order}")
+                return {"success": False, "error": "Missing sell orderId"}
 
-        sell_order_id = sell_order.get("orderId")
-        if not sell_order_id:
-            self.logger.error(f"Missing orderId in sell response: {sell_order}")
-            return {"success": False, "error": "Missing sell orderId"}
+            # Monitor sell order
+            sell_filled = False
+            sell_start = time.time()
+            exit_price = target_price
+            stopped_out = False
 
-        self.logger.info(f"📉 SELL Order placed @ ${target_price:.2f}")
-
-        # Monitor for target fill OR stop-loss
-        sell_filled = False
-        sell_start = time.time()
-        exit_price = target_price
-        stopped_out = False
-        last_stop_check = 0.0
-
-        while not sell_filled:
-            now = time.time()
-
-            if now - sell_start > self.chase_timeout_sec:
-                chase_res = self.chase_order("SELL", self.buy_qty, sell_order_id)
-                if "error" not in chase_res and chase_res.get("orderId"):
-                    sell_order_id = chase_res["orderId"]
-                sell_start = time.time()
-
-            if self.test_mode:
-                time.sleep(1.0 + random.uniform(0, 1.0))
-                sim_price = self.buy_price * (1 + random.uniform(-0.015, 0.015))
-                if sim_price <= stop_price:
-                    exit_price = stop_price
-                    stopped_out = True
-                    self.logger.info(f"🛑 [TEST] STOP-LOSS hit @ ${exit_price:.2f}")
-                elif sim_price >= target_price:
-                    exit_price = target_price
-                    self.logger.info(f"✅ [TEST] SELL Filled @ ${target_price:.2f}")
-                else:
-                    self.logger.info(f"[TEST] Price moved to ${sim_price:.2f}, waiting...")
-                    time.sleep(1)
-                    continue
-                sell_filled = True
-            else:
-                status = self._send_signed_request("GET", "/api/v3/order", {
-                    "symbol": self.symbol,
-                    "orderId": sell_order_id,
-                })
+            while not sell_filled:
+                now = time.time()
                 
+                # Check if order filled
+                status = self.get_order_status(sell_order_id)
                 if status.get("status") == "FILLED":
                     sell_filled = True
                     exit_price = float(status.get("price", target_price))
                     self.logger.info(f"✅ SELL Filled @ ${exit_price:.2f}")
                     break
-
-                if now - last_stop_check > self.stop_loss_poll_sec:
-                    last_stop_check = now
+                
+                # Check stop-loss
+                if now - sell_start > 2:
                     current_price = self.get_current_price()
-                    if current_price is not None and current_price <= stop_price:
-                        self.logger.warning(f"🛑 STOP-LOSS breached: current ${current_price:.2f} <= stop ${stop_price:.2f}")
+                    if current_price and current_price <= stop_price:
+                        self.logger.warning(f"🛑 STOP-LOSS breached: ${current_price:.2f} <= ${stop_price:.2f}")
                         self.cancel_order(sell_order_id)
-                        exit_res = self.place_market_order("SELL", self.buy_qty)
+                        exit_res = self.place_market_order("SELL", self.buy_qty, is_quantity=True)
                         if "error" in exit_res:
                             self.logger.error(f"Stop-loss exit failed: {exit_res}")
-                            time.sleep(2)
+                            time.sleep(1)
                             continue
                         sell_filled = True
                         stopped_out = True
                         exit_price = float(exit_res.get("price", current_price))
                         self.logger.info(f"🛑 Stopped out @ ${exit_price:.2f}")
                         break
-
-                time.sleep(2)
+                
+                # Chase if taking too long
+                if now - sell_start > self.chase_timeout_sec:
+                    self.logger.info("Sell order taking too long, converting to market...")
+                    self.cancel_order(sell_order_id)
+                    exit_res = self.place_market_order("SELL", self.buy_qty, is_quantity=True)
+                    if "error" in exit_res:
+                        self.logger.error(f"Chase sell failed: {exit_res}")
+                        time.sleep(1)
+                        continue
+                    sell_filled = True
+                    exit_price = float(exit_res.get("price", self.buy_price))
+                    self.logger.info(f"✅ SELL Filled @ ${exit_price:.2f} (chased)")
+                    break
+                
+                time.sleep(1)
 
         # Calculate P&L
         realized_pnl = (exit_price - self.buy_price) * self.buy_qty
@@ -765,11 +713,11 @@ class ScalperBotV40:
         self.current_balance = self.total_balance_usdt + self.running_pnl
         if self.current_balance > self.peak_balance:
             self.peak_balance = self.current_balance
-            self.consecutive_losses = 0  # Reset on new peak
+            self.consecutive_losses = 0
         elif realized_pnl < 0:
             self.consecutive_losses += 1
         else:
-            self.consecutive_losses = 0  # Reset on win
+            self.consecutive_losses = 0
         
         self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
         self.logger.info(f"📊 Consecutive Losses: {self.consecutive_losses}")
@@ -808,7 +756,7 @@ class ScalperBotV40:
             "exit_price": exit_price,
             "quantity": self.buy_qty,
             "profit": realized_pnl,
-            "profit_percent": (realized_pnl / (self.buy_price * self.buy_qty)) * 100,
+            "profit_percent": (realized_pnl / (self.buy_price * self.buy_qty)) * 100 if self.buy_price * self.buy_qty > 0 else 0,
             "stopped_out": stopped_out,
             "balance_after": self.current_balance,
             "consecutive_losses": self.consecutive_losses,
@@ -847,12 +795,7 @@ class ScalperBotV40:
 
         for cycle_num in range(1, 101):
             try:
-                # Check if we should continue
                 if not self.test_mode:
-                    if self.cycle_stats.get("failed_cycles", 0) > 50:
-                        self.logger.error("❌ Too many failed cycles, stopping")
-                        break
-                    
                     if self.current_balance < 5.0:
                         self.logger.error("❌ Balance critically low, stopping")
                         break
@@ -936,7 +879,8 @@ class ScalperBotV40:
             roi = (stats['net_profit'] / self.total_balance_usdt) * 100
             self.logger.info(f"📊 ROI:                {roi:.1f}%")
         
-        self.logger.info(f"📊 Max Drawdown:       {(self.peak_balance - self.current_balance) / self.peak_balance * 100:.1f}%")
+        drawdown = (self.peak_balance - self.current_balance) / self.peak_balance * 100 if self.peak_balance > 0 else 0
+        self.logger.info(f"📊 Max Drawdown:       {drawdown:.1f}%")
         self.logger.info(f"📊 Consecutive Losses: {self.consecutive_losses}")
 
         self.logger.info("\n🌍 COUNTRY PERFORMANCE:")
@@ -1011,8 +955,8 @@ class ScalperBotV40:
 
 if __name__ == "__main__":
     # ⚠️ WARNING: Replace these with your own API keys!
-    API_KEY = "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn"
-    API_SECRET = "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0"
+    API_KEY = "YOUR_API_KEY_HERE"
+    API_SECRET = "YOUR_API_SECRET_HERE"
 
     bot = ScalperBotV40(
         api_key=API_KEY,
