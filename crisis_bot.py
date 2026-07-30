@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v7.1 - FIXED MIN_NOTIONAL ERROR
-- Fixed minimum order size for Binance ($10 minimum)
-- Proper position sizing
+🚀 CRISIS ARBITRAGE SCALPER v7.2 - FULLY AUTOMATIC
+- No user input required - runs continuously
+- Waits indefinitely for favorable conditions
+- Auto-trades when ALL conditions met
+- Fixed MIN_NOTIONAL with $10 minimum orders
 - Real TA with mathematical edge
 """
 
@@ -411,21 +413,21 @@ class StrategyEngine:
         }
 
 # ========================================================================
-# 🤖 SCALPER BOT - FIXED MIN_NOTIONAL
+# 🤖 SCALPER BOT - FULLY AUTOMATIC
 # ========================================================================
 
-class ScalperBotV71:
+class ScalperBotV72:
 
     def __init__(self, api_key: str, api_secret: str, symbol: str = "BTCUSDT",
-                 test_mode: bool = True, exchange_region: str = "us",
-                 log_level: str = "INFO"):
+                 exchange_region: str = "us", log_level: str = "INFO"):
         """
-        REAL EDGE EDITION - FIXED MIN_NOTIONAL ERROR
+        FULLY AUTOMATIC - No user input required
+        Runs continuously until conditions are favorable
         """
         self.api_key = api_key
         self.api_secret = api_secret
         self.symbol = symbol
-        self.test_mode = test_mode
+        self.test_mode = False  # ALWAYS REAL TRADING
 
         # Setup logging
         log_filename = f"crisis_scalper_{datetime.now().strftime('%Y%m%d')}.log"
@@ -450,19 +452,19 @@ class ScalperBotV71:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 FIXED POSITION SIZING - MIN_NOTIONAL
+        # 💰 FIXED POSITION SIZING
         self.total_balance_usdt = 50.0
         
-        # MINIMUM ORDER SIZE FOR BINANCE IS $10
-        self.min_order_usdt = 10.0  # Binance minimum
-        self.max_order_usdt = 20.0  # Cap for safety
+        # MINIMUM ORDER SIZE
+        self.min_order_usdt = 10.0
+        self.max_order_usdt = 20.0
         
         # RISK:REWARD = 1:2
-        self.stop_loss_pct = 0.008          # 0.8% stop loss
-        self.target_profit_pct = 0.016      # 1.6% target
+        self.stop_loss_pct = 0.008
+        self.target_profit_pct = 0.016
         
         # Position sizing
-        self.risk_per_trade = 0.02          # 2% risk per trade
+        self.risk_per_trade = 0.02
         
         # Entry conditions
         self.min_confidence = 0.35
@@ -486,7 +488,7 @@ class ScalperBotV71:
         # Exchange info cache
         self._min_qty = 0.00001
         self._tick_size = 0.01
-        self._min_notional = 10.0  # Binance minimum
+        self._min_notional = 10.0
 
         # Internal state
         self.active_order_id = None
@@ -525,19 +527,20 @@ class ScalperBotV71:
             "cycle_results": []
         }
 
-        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v7.1 - FIXED MIN_NOTIONAL")
+        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v7.2 - FULLY AUTOMATIC")
         self.logger.info(f"   Symbol: {symbol}")
-        self.logger.info(f"   Mode: {'🧪 PAPER TRADING' if test_mode else '💰 LIVE TRADING'}")
-        self.logger.info(f"   Min Order: ${self.min_order_usdt:.2f} (Binance requirement)")
+        self.logger.info(f"   Mode: 💰 LIVE TRADING (AUTOMATIC)")
+        self.logger.info(f"   Min Order: ${self.min_order_usdt:.2f}")
         self.logger.info(f"   Target Profit: {self.target_profit_pct*100:.1f}%")
         self.logger.info(f"   Stop Loss: {self.stop_loss_pct*100:.1f}%")
         self.logger.info(f"   Risk:Reward: 1:{self.target_profit_pct/self.stop_loss_pct:.1f}")
+        self.logger.info(f"   Will wait indefinitely for favorable conditions")
         self.logger.info("="*60)
 
-        if not test_mode:
-            self._check_connectivity()
-            self._get_exchange_info()
-            self._initialize_balance()
+        # Auto-initialize
+        self._check_connectivity()
+        self._get_exchange_info()
+        self._initialize_balance()
 
     def _initialize_balance(self):
         """Initialize balance and peak balance from exchange"""
@@ -564,10 +567,6 @@ class ScalperBotV71:
 
     def _update_balance(self):
         """Update current balance from exchange"""
-        if self.test_mode:
-            self.balance_fetched = True
-            return
-        
         try:
             balances = self.get_account_balance()
             if "USDT" in balances and balances["USDT"] > 0:
@@ -597,9 +596,6 @@ class ScalperBotV71:
 
     def _get_exchange_info(self):
         """Get exchange info for symbol validation"""
-        if self.test_mode:
-            return
-        
         try:
             resp = requests.get(f"{self.base_url}/api/v3/exchangeInfo", timeout=5)
             if resp.status_code == 200:
@@ -731,9 +727,6 @@ class ScalperBotV71:
         return mid
 
     def get_account_balance(self) -> Dict[str, float]:
-        if self.test_mode:
-            return {"USDT": self.total_balance_usdt, "BTC": 0.0}
-        
         resp = self._send_signed_request("GET", "/api/v3/account")
         if "balances" in resp and not resp.get("error"):
             balances = {}
@@ -747,9 +740,6 @@ class ScalperBotV71:
 
     def get_order_fill_price(self, order_id: str) -> Optional[float]:
         """Get the actual fill price of a completed order"""
-        if self.test_mode:
-            return 64000.0
-        
         status = self._send_signed_request("GET", "/api/v3/order", {
             "symbol": self.symbol,
             "orderId": order_id,
@@ -764,42 +754,17 @@ class ScalperBotV71:
 
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
         """Place a MARKET order - FIXED MIN_NOTIONAL"""
-        if self.test_mode:
-            simulated_id = f"SIM_MKT_{int(time.time() * 1000)}"
-            price = 64000.0 + random.uniform(-200, 200)
-            qty = amount if is_quantity else amount / price
-            
-            # Ensure minimum order size in test mode too
-            if amount < self.min_order_usdt:
-                qty = self.min_order_usdt / price
-                self.logger.info(f"[TEST] Adjusted to minimum: ${self.min_order_usdt:.2f}")
-            
-            if qty < self._min_qty:
-                qty = self._min_qty
-            
-            self.logger.info(f"[TEST] {side} MARKET | Qty: {qty:.8f}")
-            return {
-                "orderId": simulated_id,
-                "price": str(price),
-                "executedQty": str(qty),
-                "origQty": str(qty),
-                "status": "FILLED",
-                "side": side,
-            }
-
         ticker = self.get_order_book_ticker()
         if not ticker:
             return {"error": "Failed to get market price"}
 
-        # FIX: Ensure minimum order size
         price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
         
-        # If amount is less than minimum, use minimum
+        # Ensure minimum order size
         if amount < self.min_order_usdt:
             self.logger.info(f"⚠️ Amount ${amount:.2f} below minimum ${self.min_order_usdt:.2f} - adjusting")
             amount = self.min_order_usdt
         
-        # Cap at max to be safe
         if amount > self.max_order_usdt and self.current_balance > 50:
             amount = self.max_order_usdt
         
@@ -808,7 +773,6 @@ class ScalperBotV71:
         else:
             qty = round_to_step(amount / price, self._min_qty)
 
-        # Ensure qty meets minimum
         if qty < self._min_qty:
             qty = self._min_qty
             self.logger.info(f"Quantity adjusted to minimum: {qty:.8f}")
@@ -859,18 +823,6 @@ class ScalperBotV71:
 
     def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
         """Place a LIMIT order - FIXED MIN_NOTIONAL"""
-        if self.test_mode:
-            simulated_id = f"SIM_LIMIT_{int(time.time() * 1000)}"
-            self.logger.info(f"[TEST] {side} LIMIT @ ${price:.2f}")
-            return {
-                "orderId": simulated_id,
-                "price": str(price),
-                "origQty": str(quantity),
-                "executedQty": str(quantity),
-                "status": "FILLED",
-                "side": side,
-            }
-
         # Ensure minimum notional
         if quantity * price < self._min_notional:
             quantity = self._min_notional / price
@@ -911,18 +863,11 @@ class ScalperBotV71:
         }
 
     def cancel_order(self, order_id: str) -> dict:
-        if self.test_mode:
-            self.logger.info(f"[TEST] Cancelled Order ID: {order_id}")
-            return {"status": "CANCELED", "orderId": order_id}
-
         params = {"symbol": self.symbol, "orderId": order_id}
         return self._send_signed_request("DELETE", "/api/v3/order", params)
 
     def get_order_status(self, order_id: str) -> dict:
         """Get current order status"""
-        if self.test_mode:
-            return {"status": "FILLED", "orderId": order_id}
-        
         params = {"symbol": self.symbol, "orderId": order_id}
         return self._send_signed_request("GET", "/api/v3/order", params)
 
@@ -931,43 +876,35 @@ class ScalperBotV71:
             return {"success": False, "error": "Bot stopped"}
             
         self.logger.info(f"\n{'='*60}")
-        self.logger.info(f"🔄 CYCLE {cycle_number}/100")
+        self.logger.info(f"🔄 CYCLE {cycle_number}")
         self.logger.info(f"{'='*60}")
 
         # Check balance and risk limits
-        if not self.test_mode:
-            if not self.initialized:
-                self._initialize_balance()
-                if not self.initialized:
-                    self.logger.error("❌ Failed to initialize balance")
-                    self.stopped = True
-                    return {"success": False, "error": "Balance initialization failed"}
-            
-            self._update_balance()
-            
-            if not self.balance_fetched or self.current_balance <= 0:
-                self.logger.error("❌ Invalid balance")
+        self._update_balance()
+        
+        if not self.balance_fetched or self.current_balance <= 0:
+            self.logger.error("❌ Invalid balance")
+            self.stopped = True
+            return {"success": False, "error": "Invalid balance"}
+        
+        # Check drawdown
+        if self.peak_balance > 0:
+            drawdown = (self.peak_balance - self.current_balance) / self.peak_balance
+            if drawdown > self.max_drawdown_pct:
+                self.logger.error(f"❌ Max drawdown exceeded: {drawdown*100:.1f}%")
                 self.stopped = True
-                return {"success": False, "error": "Invalid balance"}
-            
-            # Check drawdown
-            if self.peak_balance > 0:
-                drawdown = (self.peak_balance - self.current_balance) / self.peak_balance
-                if drawdown > self.max_drawdown_pct:
-                    self.logger.error(f"❌ Max drawdown exceeded: {drawdown*100:.1f}%")
-                    self.stopped = True
-                    return {"success": False, "error": "Max drawdown exceeded"}
-            
-            # Stop after 4 consecutive losses
-            if self.consecutive_losses >= self.max_consecutive_losses:
-                self.logger.error(f"❌ Too many consecutive losses: {self.consecutive_losses}")
-                self.stopped = True
-                return {"success": False, "error": "Too many consecutive losses"}
-            
-            if self.current_balance < self.min_order_usdt:
-                self.logger.error(f"❌ Balance too low: ${self.current_balance:.2f} < ${self.min_order_usdt:.2f} minimum")
-                self.stopped = True
-                return {"success": False, "error": "Balance too low for minimum order"}
+                return {"success": False, "error": "Max drawdown exceeded"}
+        
+        # Stop after 4 consecutive losses
+        if self.consecutive_losses >= self.max_consecutive_losses:
+            self.logger.error(f"❌ Too many consecutive losses: {self.consecutive_losses}")
+            self.stopped = True
+            return {"success": False, "error": "Too many consecutive losses"}
+        
+        if self.current_balance < self.min_order_usdt:
+            self.logger.error(f"❌ Balance too low: ${self.current_balance:.2f} < ${self.min_order_usdt:.2f} minimum")
+            self.stopped = True
+            return {"success": False, "error": "Balance too low for minimum order"}
 
         # Get REAL market data
         klines = TechnicalAnalysis.get_klines(self.symbol, self.base_url, interval="1m", limit=100)
@@ -993,17 +930,17 @@ class ScalperBotV71:
         
         # Check if we should trade
         if analysis['signal'] != "BUY":
-            self.logger.warning(f"⏭️ Signal not BUY ({analysis['signal']}) - skipping")
+            self.logger.warning(f"⏭️ Signal not BUY ({analysis['signal']}) - waiting...")
             self.skipped_trades += 1
             return {"success": False, "error": "Not a buy signal", "skipped": True}
         
         if analysis['confidence'] < self.min_confidence:
-            self.logger.warning(f"⏭️ Confidence too low: {analysis['confidence']:.2f} < {self.min_confidence:.2f}")
+            self.logger.warning(f"⏭️ Confidence too low: {analysis['confidence']:.2f} < {self.min_confidence:.2f} - waiting...")
             self.skipped_trades += 1
             return {"success": False, "error": "Confidence too low", "skipped": True}
         
         if analysis['strength'] not in ["strong", "moderate"]:
-            self.logger.warning(f"⏭️ Signal too weak: {analysis['strength']}")
+            self.logger.warning(f"⏭️ Signal too weak: {analysis['strength']} - waiting...")
             self.skipped_trades += 1
             return {"success": False, "error": "Signal too weak", "skipped": True}
         
@@ -1019,10 +956,9 @@ class ScalperBotV71:
         if not current_price:
             return {"success": False, "error": "No price data"}
 
-        # FIX: Calculate position size - ENSURE MINIMUM ORDER
+        # Calculate position size
         position_size = max(self.min_order_usdt, min(self.max_order_usdt, self.current_balance * self.risk_per_trade * 2))
         
-        # If balance is small, use minimum
         if self.current_balance < 20:
             position_size = self.min_order_usdt
             self.logger.info(f"⚠️ Small balance - using minimum order: ${position_size:.2f}")
@@ -1048,7 +984,7 @@ class ScalperBotV71:
         self.buy_price = float(buy_order.get("price", 0))
         self.buy_qty = float(buy_order.get("executedQty", buy_order.get("origQty", 0)))
         
-        if self.buy_price == 0 and order_id and not self.test_mode:
+        if self.buy_price == 0 and order_id:
             fill_price = self.get_order_fill_price(order_id)
             if fill_price:
                 self.buy_price = fill_price
@@ -1219,74 +1155,50 @@ class ScalperBotV71:
 
         return result
 
-    def run_scanner(self):
-        """Show real market analysis"""
-        self.logger.info("\n📊 REAL MARKET ANALYSIS")
-        self.logger.info("="*60)
-        
-        klines = TechnicalAnalysis.get_klines(self.symbol, self.base_url)
-        if not klines:
-            self.logger.error("Failed to fetch market data")
-            return
-        
-        analysis = StrategyEngine.analyze_market(klines)
-        
-        self.logger.info(f"Current Price: ${analysis['current_price']:.2f}")
-        self.logger.info(f"Signal: {analysis['signal']} ({analysis['strength']})")
-        self.logger.info(f"Confidence: {analysis['confidence']:.2f}")
-        self.logger.info(f"Expected Win Rate: {analysis['expected_win_rate']*100:.0f}%")
-        self.logger.info(f"\nIndicators:")
-        self.logger.info(f"  RSI: {analysis['rsi']:.1f}")
-        self.logger.info(f"  MACD: {analysis['macd']['histogram']:.2f}")
-        self.logger.info(f"  BB Position: {analysis['bb']['position']:.2f}")
-        self.logger.info(f"  VWAP: ${analysis['vwap']:.2f}")
-        self.logger.info(f"  Support: ${analysis['sr']['support']:.2f}")
-        self.logger.info(f"  Resistance: ${analysis['sr']['resistance']:.2f}")
-        self.logger.info(f"\nSignal Reasons:")
-        for reason in analysis['reasons']:
-            self.logger.info(f"  → {reason}")
-
-    def run_100_cycles(self, delay_between_cycles: int = 5):
+    def run_forever(self, delay_between_cycles: int = 5):
+        """Run continuously until conditions are favorable"""
         self.logger.info("\n" + "="*60)
-        self.logger.info("🚀 STARTING EXECUTION - FIXED MIN_NOTIONAL")
-        self.logger.info(f"   Min Order: ${self.min_order_usdt:.2f}")
+        self.logger.info("🚀 STARTING AUTOMATIC TRADING")
+        self.logger.info("   Will wait indefinitely for favorable conditions")
+        self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*60)
 
         self.cycle_stats["start_time"] = datetime.now()
         
         cycle_num = 1
-        while cycle_num <= 100 and not self.stopped:
+        while not self.stopped:
             try:
-                self.logger.info(f"\n📊 Cycle {cycle_num}/100")
-                self.logger.info(f"   Current Streak: {self.consecutive_wins} wins | {self.consecutive_losses} losses")
+                self.logger.info(f"\n📊 Cycle {cycle_num}")
+                self.logger.info(f"   Streak: {self.consecutive_wins} wins | {self.consecutive_losses} losses")
                 
                 result = self.run_cycle(cycle_number=cycle_num)
 
                 if result.get("skipped", False):
-                    self.cycle_stats["skipped_cycles"] += 1
-                    self.logger.info("⏭️ Trade skipped - waiting for better conditions")
+                    self.logger.info(f"⏭️ Skipped - waiting for better conditions ({self.skipped_trades} total skips)")
                 elif not result.get("success", False):
                     self.logger.error(f"⚠️ Cycle {cycle_num} failed: {result.get('error', 'Unknown error')}")
                 else:
-                    self.logger.info(f"✅ Cycle {cycle_num} completed!")
-                    self.logger.info(f"   Profit: ${result.get('profit', 0):.4f}")
+                    self.logger.info(f"✅ TRADE COMPLETED! Profit: ${result.get('profit', 0):.4f}")
 
                 self.print_current_stats()
                 self.export_results_to_csv()
 
+                # Check if we achieved 7 wins
                 if self.consecutive_wins >= 7:
                     self.logger.info("\n" + "="*60)
                     self.logger.info("🎉🎉🎉 SUCCESS! 7 CONSECUTIVE WINS ACHIEVED! 🎉🎉🎉")
                     self.logger.info("="*60)
+                    self.stopped = True
                     break
 
+                # Wait before next cycle
                 wait_time = delay_between_cycles + random.uniform(0, 2)
                 self.logger.info(f"\n⏳ Waiting {wait_time:.1f} seconds before next cycle...")
                 time.sleep(wait_time)
                 cycle_num += 1
 
             except KeyboardInterrupt:
-                self.logger.info("\n⚠️ Execution interrupted by user")
+                self.logger.info("\n⚠️ Stopped by user (Ctrl+C)")
                 break
             except Exception as e:
                 self.logger.error(f"❌ Error in cycle {cycle_num}: {e}")
@@ -1317,7 +1229,7 @@ class ScalperBotV71:
         seconds = duration % 60
 
         self.logger.info("\n" + "="*70)
-        self.logger.info("🎯 FINAL SUMMARY - FIXED MIN_NOTIONAL")
+        self.logger.info("🎯 FINAL SUMMARY")
         self.logger.info("="*70)
         self.logger.info(f"📅 Start Time: {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
         self.logger.info(f"📅 End Time:   {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1433,13 +1345,14 @@ class ScalperBotV71:
         self.logger.info(f"\n📄 Detailed report exported to: {filename}")
 
 # ========================================================================
-# 🚀 MAIN EXECUTION
+# 🚀 MAIN EXECUTION - FULLY AUTOMATIC
 # ========================================================================
 
 if __name__ == "__main__":
     import os
     import sys
     
+    # Load API keys from environment
     API_KEY = "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn"
     API_SECRET = "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0"
     
@@ -1454,38 +1367,30 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("="*60)
-    print("🚀 CRISIS ARBITRAGE SCALPER v7.1 - FIXED MIN_NOTIONAL")
+    print("🚀 CRISIS ARBITRAGE SCALPER v7.2 - FULLY AUTOMATIC")
     print("="*60)
-    print("\nFIXES:")
-    print("1. ✅ MIN_NOTIONAL error fixed - uses $10 minimum orders")
-    print("2. ✅ Proper position sizing for small balances")
-    print("3. ✅ REAL Technical Analysis (RSI, MACD, BB, Volume, VWAP)")
-    print("4. ✅ Risk:Reward = 1:2 - Positive expectancy")
-    print("\n⚠️  ALWAYS test with test_mode=True first!")
+    print("\nAUTOMATIC MODE:")
+    print("1. ✅ No user input required - runs immediately")
+    print("2. ✅ Waits indefinitely for favorable conditions")
+    print("3. ✅ Real money trading (LIVE mode)")
+    print("4. ✅ Real TA with mathematical edge")
+    print("5. ✅ $10 minimum orders (MIN_NOTIONAL fixed)")
+    print("6. ✅ Press Ctrl+C to stop at any time")
+    print("\n⚠️  This bot trades with REAL MONEY automatically")
+    print("⚠️  Make sure your API keys have trading permissions")
     print("="*60)
     
-    mode = input("\nRun in TEST MODE? (yes/no): ").lower()
-    test_mode = mode != 'no'
+    # Auto-start with no questions
+    print("\n🤖 Starting bot in 3 seconds...")
+    time.sleep(3)
     
-    if not test_mode:
-        confirm = input("\n⚠️  You are about to trade with REAL MONEY! Type 'YES' to confirm: ")
-        if confirm != 'YES':
-            print("Exiting...")
-            sys.exit(0)
-    
-    bot = ScalperBotV71(
+    bot = ScalperBotV72(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
-        test_mode=test_mode,
         exchange_region="us",
         log_level="INFO"
     )
 
-    bot.run_scanner()
-    
-    proceed = input("\nProceed with trading cycles? (yes/no): ").lower()
-    if proceed == 'yes':
-        bot.run_100_cycles(delay_between_cycles=5)
-    else:
-        print("Exiting...")
+    # Run forever - will wait for favorable conditions
+    bot.run_forever(delay_between_cycles=5)
