@@ -7,6 +7,7 @@
 - LIMIT_MAKER orders with proper Binance API
 - Partial fill handling with chase_order()
 - Paper/Live mode switching
+- 100 cycles automated execution
 """
 
 import hashlib
@@ -185,6 +186,19 @@ class ScalperBotV40:
         self.buy_qty = None
         self.crisis_engine = CrisisScoringEngine()
         
+        # Statistics tracking for 100 cycles
+        self.cycle_stats = {
+            "total_cycles": 0,
+            "successful_cycles": 0,
+            "failed_cycles": 0,
+            "total_profit": 0.0,
+            "total_loss": 0.0,
+            "net_profit": 0.0,
+            "start_time": None,
+            "end_time": None,
+            "cycle_results": []
+        }
+        
         print(f"🚀 CRISIS ARBITRAGE SCALPER v4.0")
         print(f"   Symbol: {symbol}")
         print(f"   Mode: {'🧪 PAPER TRADING' if test_mode else '💰 LIVE TRADING'}")
@@ -311,16 +325,18 @@ class ScalperBotV40:
             is_quantity=True,
         )
 
-    def run_cycle(self, iso: str = None):
+    def run_cycle(self, iso: str = None, cycle_number: int = 0) -> dict:
         """Run one trading cycle with FSI + WST selection"""
-        print(f"\n=== Starting Crisis Arbitrage Cycle ===")
+        print(f"\n{'='*60}")
+        print(f"🔄 CYCLE {cycle_number}/100")
+        print(f"{'='*60}")
         
         # 1. Select the best opportunity
         if iso:
             country = CrisisScoringEngine.get_crisis_score(iso)
             if not country:
                 print(f"❌ Country {iso} not found in FSI data")
-                return
+                return {"success": False, "error": "Country not found"}
             opp_score = CrisisScoringEngine.score_opportunity(iso)
             print(f"🎯 Trading: {country['flag']} {country['name']} (FSI: {country['fsi_score']}, WST: {country['wst_class']})")
             print(f"   Opportunity Score: {opp_score:.2f}")
@@ -328,7 +344,7 @@ class ScalperBotV40:
             top = CrisisScoringEngine.get_top_opportunities(1)
             if not top:
                 print("❌ No opportunities found")
-                return
+                return {"success": False, "error": "No opportunities"}
             country = top[0]
             iso = country["iso"]
             print(f"🎯 Best Opportunity: {country['flag']} {country['name']} (FSI: {country['fsi_score']}, WST: {country['wst_class']})")
@@ -344,7 +360,7 @@ class ScalperBotV40:
 
         if "orderId" not in buy_order:
             print(f"❌ Failed to place buy order: {buy_order}")
-            return
+            return {"success": False, "error": "Buy order failed"}
 
         order_id = buy_order["orderId"]
         self.buy_price = float(buy_order["price"])
@@ -355,6 +371,7 @@ class ScalperBotV40:
         print("⏳ Waiting for buy fill...")
         filled = False
         start_time = time.time()
+        realized_pnl = 0
 
         while not filled:
             if time.time() - start_time > self.chase_timeout_sec:
@@ -399,7 +416,7 @@ class ScalperBotV40:
 
         if "orderId" not in sell_order:
             print(f"❌ Failed to place sell order: {sell_order}")
-            return
+            return {"success": False, "error": "Sell order failed"}
 
         sell_order_id = sell_order["orderId"]
         print(f"📉 SELL Order placed @ ${target_price:.2f}")
@@ -407,6 +424,7 @@ class ScalperBotV40:
         # 6. Monitor Sell Fill
         sell_filled = False
         sell_start = time.time()
+        exit_price = target_price
 
         while not sell_filled:
             if time.time() - sell_start > self.chase_timeout_sec:
@@ -420,7 +438,7 @@ class ScalperBotV40:
                 sell_filled = True
                 realized_pnl = (target_price - self.buy_price) * self.buy_qty
                 print(f"✅ [TEST] SELL Filled @ ${target_price:.2f}")
-                print(f"💰 Est. P&L: +${realized_pnl:.4f}")
+                print(f"💰 P&L: ${realized_pnl:.4f}")
             else:
                 status = self._send_signed_request("GET", "/api/v3/order", {
                     "symbol": self.symbol,
@@ -428,18 +446,42 @@ class ScalperBotV40:
                 })
                 if status.get("status") == "FILLED":
                     sell_filled = True
-                    realized_pnl = (float(status.get("price", target_price)) - self.buy_price) * self.buy_qty
-                    print(f"✅ SELL Filled @ ${float(status.get('price', target_price)):.2f}")
-                    print(f"💰 P&L: +${realized_pnl:.4f}")
+                    exit_price = float(status.get("price", target_price))
+                    realized_pnl = (exit_price - self.buy_price) * self.buy_qty
+                    print(f"✅ SELL Filled @ ${exit_price:.2f}")
+                    print(f"💰 P&L: ${realized_pnl:.4f}")
                 time.sleep(2)
 
-        print("=== Cycle Complete ===\n")
-        return {
+        print("=== Cycle Complete ===")
+        
+        result = {
+            "success": True,
+            "cycle": cycle_number,
             "country": iso,
+            "country_name": country["name"],
+            "country_flag": country["flag"],
+            "fsi_score": country["fsi_score"],
+            "wst_class": country["wst_class"],
             "entry_price": self.buy_price,
-            "exit_price": target_price,
-            "profit": realized_pnl if sell_filled else 0,
+            "exit_price": exit_price,
+            "quantity": self.buy_qty,
+            "profit": realized_pnl,
+            "timestamp": datetime.now().isoformat()
         }
+        
+        # Update statistics
+        self.cycle_stats["total_cycles"] += 1
+        if realized_pnl > 0:
+            self.cycle_stats["successful_cycles"] += 1
+            self.cycle_stats["total_profit"] += realized_pnl
+        else:
+            self.cycle_stats["failed_cycles"] += 1
+            self.cycle_stats["total_loss"] += abs(realized_pnl)
+        
+        self.cycle_stats["net_profit"] += realized_pnl
+        self.cycle_stats["cycle_results"].append(result)
+        
+        return result
 
     def run_scanner(self):
         """Scan and display top opportunities"""
@@ -451,6 +493,106 @@ class ScalperBotV40:
             print(f"   FSI: {opp['fsi_score']:.1f} | WST: {opp['wst_class']} | Recovery: {opp['recovery_rate']*100:.0f}%")
             print(f"   Opportunity Score: {opp['opportunity_score']:.2f}")
             print()
+    
+    def run_100_cycles(self, delay_between_cycles: int = 5):
+        """Run 100 trading cycles"""
+        print("\n" + "="*60)
+        print("🚀 STARTING 100 CYCLES EXECUTION")
+        print("="*60)
+        
+        self.cycle_stats["start_time"] = datetime.now()
+        
+        for cycle_num in range(1, 101):
+            try:
+                # Run the cycle
+                result = self.run_cycle(cycle_number=cycle_num)
+                
+                # Check if cycle was successful
+                if not result.get("success", False):
+                    print(f"⚠️ Cycle {cycle_num} failed: {result.get('error', 'Unknown error')}")
+                    self.cycle_stats["failed_cycles"] += 1
+                else:
+                    print(f"✅ Cycle {cycle_num} completed successfully!")
+                    print(f"   Profit: ${result.get('profit', 0):.4f}")
+                
+                # Print current statistics
+                self.print_current_stats()
+                
+                # Wait before next cycle (except after last cycle)
+                if cycle_num < 100:
+                    print(f"\n⏳ Waiting {delay_between_cycles} seconds before next cycle...")
+                    time.sleep(delay_between_cycles)
+                    
+            except KeyboardInterrupt:
+                print("\n⚠️ Execution interrupted by user")
+                break
+            except Exception as e:
+                print(f"❌ Error in cycle {cycle_num}: {e}")
+                self.cycle_stats["failed_cycles"] += 1
+                
+                # Wait before continuing
+                if cycle_num < 100:
+                    print(f"⏳ Waiting {delay_between_cycles * 2} seconds before retry...")
+                    time.sleep(delay_between_cycles * 2)
+        
+        self.cycle_stats["end_time"] = datetime.now()
+        self.print_final_summary()
+    
+    def print_current_stats(self):
+        """Print current cycle statistics"""
+        stats = self.cycle_stats
+        print(f"\n📊 CURRENT STATISTICS:")
+        print(f"   Total Cycles: {stats['total_cycles']}")
+        print(f"   Successful: {stats['successful_cycles']}")
+        print(f"   Failed: {stats['failed_cycles']}")
+        print(f"   Net Profit: ${stats['net_profit']:.4f}")
+        if stats['total_cycles'] > 0:
+            win_rate = (stats['successful_cycles'] / stats['total_cycles']) * 100
+            print(f"   Win Rate: {win_rate:.1f}%")
+    
+    def print_final_summary(self):
+        """Print final summary of all 100 cycles"""
+        stats = self.cycle_stats
+        duration = (stats['end_time'] - stats['start_time']).total_seconds()
+        hours = duration // 3600
+        minutes = (duration % 3600) // 60
+        seconds = duration % 60
+        
+        print("\n" + "="*70)
+        print("🎯 FINAL SUMMARY - 100 CYCLES COMPLETE")
+        print("="*70)
+        print(f"📅 Start Time: {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"📅 End Time:   {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"⏱️  Duration:   {int(hours)}h {int(minutes)}m {int(seconds)}s")
+        print("-"*70)
+        print(f"📊 Total Cycles:       {stats['total_cycles']}")
+        print(f"✅ Successful Cycles:  {stats['successful_cycles']}")
+        print(f"❌ Failed Cycles:      {stats['failed_cycles']}")
+        if stats['total_cycles'] > 0:
+            win_rate = (stats['successful_cycles'] / stats['total_cycles']) * 100
+            print(f"🏆 Win Rate:           {win_rate:.1f}%")
+        print("-"*70)
+        print(f"💰 Total Profit:       ${stats['total_profit']:.4f}")
+        print(f"💸 Total Loss:         ${stats['total_loss']:.4f}")
+        print(f"📈 Net Profit:         ${stats['net_profit']:.4f}")
+        
+        if stats['total_cycles'] > 0:
+            avg_profit = stats['net_profit'] / stats['total_cycles']
+            print(f"📊 Avg Profit/Cycle:   ${avg_profit:.4f}")
+        
+        # Show top 5 best and worst trades
+        if stats['cycle_results']:
+            sorted_results = sorted(stats['cycle_results'], key=lambda x: x.get('profit', 0))
+            
+            print("\n🏆 TOP 5 BEST TRADES:")
+            for i, result in enumerate(sorted_results[-5:][::-1], 1):
+                print(f"   {i}. {result.get('country_flag', '')} {result.get('country_name', 'Unknown')}: ${result.get('profit', 0):.4f}")
+            
+            print("\n📉 TOP 5 WORST TRADES:")
+            for i, result in enumerate(sorted_results[:5], 1):
+                print(f"   {i}. {result.get('country_flag', '')} {result.get('country_name', 'Unknown')}: ${result.get('profit', 0):.4f}")
+        
+        print("="*70)
 
 # ========================================================================
 # 🚀 MAIN EXECUTION
@@ -472,7 +614,5 @@ if __name__ == "__main__":
     # Show top opportunities
     bot.run_scanner()
 
-    # Run a cycle on the best opportunity
-    for i in range(10):
-    bot.run_cycle()
-    time.sleep(2)
+    # Run 100 cycles
+    bot.run_100_cycles(delay_between_cycles=5)
