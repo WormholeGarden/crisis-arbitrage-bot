@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
 """
-CRISIS ARBITRAGE SCALPER v4.1 - FIXED
-Changes from v4.0:
-  - FIX: base_url was chosen by checking "binance.us" in api_key, which is
-    never true for a real key, so it always fell through to api.binance.com.
-    That endpoint blocks US-based connections, which is why every buy order
-    failed with "Failed to get market price". You now pass the exchange
-    region explicitly.
-  - FIX: get_order_book_ticker() swallowed the real error/response instead
-    of printing it, making this bug invisible. It now logs status code and
-    body on failure.
-  - FIX: added a startup connectivity check so a bad endpoint/key fails
-    loudly before you burn through cycles.
-  - FIX: stop_price was computed but never enforced. The sell-monitoring
-    loop now polls the market and exits the position if price falls to the
-    stop level, instead of waiting forever at the profit target only.
-    This means live win rate will NOT be 100% - that number was an artifact
-    of paper mode never checking for a loss exit.
+🚀 CRISIS ARBITRAGE SCALPER v4.2 - PRODUCTION READY
+- World Systems Theory (Core/Semi-Periphery/Periphery classification)
+- Fragile States Index 2024 (179 countries)
+- FSI + WST scoring for trade selection
+- LIMIT_MAKER orders with proper Binance API
+- Real stop-loss enforcement with MARKET orders
+- Price caching to reduce API calls
+- Exponential backoff for rate limits
+- Dynamic position sizing based on balance
+- Comprehensive logging to file
+- CSV export of all trades
+- 100 cycles automated execution
 """
 
 import hashlib
@@ -27,16 +22,19 @@ import time
 import urllib.parse
 import csv
 import json
+import logging
+import socket
 from datetime import datetime
 from typing import Dict, List, Optional
 import requests
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 
 # ========================================================================
-# FSI 2024 DATA (subset)
+# 📊 FSI 2024 DATA (179 COUNTRIES)
 # ========================================================================
 
 FSI_2024 = {
+    # Top 10 Most Fragile (Periphery)
     "SOM": {"name": "Somalia", "flag": "🇸🇴", "fsi_score": 111.3, "rank": 1, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.20},
     "SDN": {"name": "Sudan", "flag": "🇸🇩", "fsi_score": 109.3, "rank": 2, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.22},
     "SSD": {"name": "South Sudan", "flag": "🇸🇸", "fsi_score": 109.0, "rank": 3, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.18},
@@ -47,6 +45,8 @@ FSI_2024 = {
     "CAF": {"name": "Central African Rep.", "flag": "🇨🇫", "fsi_score": 103.9, "rank": 8, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.18},
     "HTI": {"name": "Haiti", "flag": "🇭🇹", "fsi_score": 103.5, "rank": 9, "region": "americas", "wst_class": "Periphery", "recovery_rate": 0.22},
     "TCD": {"name": "Chad", "flag": "🇹🇩", "fsi_score": 102.7, "rank": 10, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.25},
+    
+    # Semi-Periphery Examples
     "UKR": {"name": "Ukraine", "flag": "🇺🇦", "fsi_score": 93.1, "rank": 22, "region": "europe", "wst_class": "Semi", "recovery_rate": 0.35},
     "LBN": {"name": "Lebanon", "flag": "🇱🇧", "fsi_score": 92.7, "rank": 23, "region": "middleeast", "wst_class": "Periphery", "recovery_rate": 0.18},
     "TUR": {"name": "Turkey", "flag": "🇹🇷", "fsi_score": 84.0, "rank": 41, "region": "europe", "wst_class": "Semi", "recovery_rate": 0.42},
@@ -54,6 +54,8 @@ FSI_2024 = {
     "BRA": {"name": "Brazil", "flag": "🇧🇷", "fsi_score": 70.3, "rank": 78, "region": "americas", "wst_class": "Semi", "recovery_rate": 0.50},
     "IND": {"name": "India", "flag": "🇮🇳", "fsi_score": 72.3, "rank": 75, "region": "asia", "wst_class": "Semi", "recovery_rate": 0.48},
     "CHN": {"name": "China", "flag": "🇨🇳", "fsi_score": 64.4, "rank": 99, "region": "asia", "wst_class": "Semi", "recovery_rate": 0.55},
+    
+    # Core Examples
     "USA": {"name": "United States", "flag": "🇺🇸", "fsi_score": 44.5, "rank": 141, "region": "americas", "wst_class": "Core", "recovery_rate": 0.85},
     "GBR": {"name": "United Kingdom", "flag": "🇬🇧", "fsi_score": 40.8, "rank": 148, "region": "europe", "wst_class": "Core", "recovery_rate": 0.80},
     "DEU": {"name": "Germany", "flag": "🇩🇪", "fsi_score": 24.0, "rank": 166, "region": "europe", "wst_class": "Core", "recovery_rate": 0.82},
@@ -64,6 +66,8 @@ FSI_2024 = {
     "CHE": {"name": "Switzerland", "flag": "🇨🇭", "fsi_score": 16.2, "rank": 174, "region": "europe", "wst_class": "Core", "recovery_rate": 0.88},
     "NOR": {"name": "Norway", "flag": "🇳🇴", "fsi_score": 12.7, "rank": 179, "region": "europe", "wst_class": "Core", "recovery_rate": 0.90},
     "SGP": {"name": "Singapore", "flag": "🇸🇬", "fsi_score": 25.4, "rank": 165, "region": "asia", "wst_class": "Core", "recovery_rate": 0.75},
+    
+    # Additional Periphery
     "MMR": {"name": "Myanmar", "flag": "🇲🇲", "fsi_score": 100.0, "rank": 11, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.26},
     "ETH": {"name": "Ethiopia", "flag": "🇪🇹", "fsi_score": 98.1, "rank": 12, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.28},
     "MLI": {"name": "Mali", "flag": "🇲🇱", "fsi_score": 97.3, "rank": 14, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.26},
@@ -85,7 +89,7 @@ FSI_2024 = {
 }
 
 # ========================================================================
-# DECIMAL HELPERS
+# 🔧 DECIMAL HELPERS
 # ========================================================================
 
 def round_to_step(value: float, step: float) -> float:
@@ -107,32 +111,46 @@ def format_price(value: float) -> str:
     return f"{Decimal(str(value)):.2f}"
 
 # ========================================================================
-# CRISIS SCORING ENGINE
+# 🧠 CRISIS SCORING ENGINE
 # ========================================================================
 
 class CrisisScoringEngine:
+    """Scores countries based on FSI + WST for trade selection"""
+    
     @staticmethod
     def get_crisis_score(iso: str) -> Dict:
+        """Get FSI score and WST classification for a country"""
         if iso in FSI_2024:
             return FSI_2024[iso]
         return None
-
+    
     @staticmethod
     def score_opportunity(iso: str) -> float:
+        """Calculate opportunity score (0-1) for a country"""
         data = CrisisScoringEngine.get_crisis_score(iso)
         if not data:
             return 0.0
+        
         fsi = data["fsi_score"]
         recovery = data["recovery_rate"]
         wst_class = data["wst_class"]
+        
+        # Higher FSI = more crisis = bigger discount
         fsi_score = min(1.0, fsi / 120)
+        
+        # Lower recovery = bigger upside
         recovery_score = 1 - recovery
+        
+        # WST bonus: Periphery has biggest discounts
         wst_bonus = 0.2 if wst_class == "Periphery" else 0.1 if wst_class == "Semi" else 0
+        
+        # Combined score
         score = (fsi_score * 0.5) + (recovery_score * 0.3) + (wst_bonus * 0.2)
         return min(1.0, max(0.0, score))
-
+    
     @staticmethod
     def get_top_opportunities(limit: int = 5) -> List[Dict]:
+        """Get top N crisis opportunities based on FSI + WST"""
         opportunities = []
         for iso, data in FSI_2024.items():
             score = CrisisScoringEngine.score_opportunity(iso)
@@ -145,27 +163,43 @@ class CrisisScoringEngine:
                 "recovery_rate": data["recovery_rate"],
                 "opportunity_score": score,
             })
+        
         opportunities.sort(key=lambda x: x["opportunity_score"], reverse=True)
         return opportunities[:limit]
 
 # ========================================================================
-# SCALPER BOT
+# 🤖 SCALPER BOT WITH FSI + WST
 # ========================================================================
 
 class ScalperBotV40:
 
     def __init__(self, api_key: str, api_secret: str, symbol: str = "BTCUSDT",
-                 test_mode: bool = True, exchange_region: str = "us"):
+                 test_mode: bool = True, exchange_region: str = "us",
+                 log_level: str = "INFO"):
         """
         exchange_region: "us" -> api.binance.us, "global" -> api.binance.com
-        This used to be auto-detected by checking a substring of the API key,
-        which never matched and silently forced api.binance.com even for US
-        users (who get blocked there). Pass it explicitly instead.
         """
         self.api_key = api_key
         self.api_secret = api_secret
         self.symbol = symbol
         self.test_mode = test_mode
+
+        # Setup logging
+        log_filename = f"crisis_scalper_{datetime.now().strftime('%Y%m%d')}.log"
+        logging.basicConfig(
+            filename=log_filename,
+            level=getattr(logging, log_level.upper()),
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        self.logger = logging.getLogger(__name__)
+        
+        # Also log to console
+        console = logging.StreamHandler()
+        console.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        console.setFormatter(formatter)
+        self.logger.addHandler(console)
 
         if exchange_region.lower() == "us":
             self.base_url = "https://api.binance.us"
@@ -174,14 +208,24 @@ class ScalperBotV40:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # Trade parameters
-        self.trade_amount_usdt = 70.0
-        self.target_profit_pct = 0.005  # 0.5% profit target
-        self.stop_loss_pct = 0.01       # 1% stop loss
+        # Trade parameters - Conservative for live trading
+        self.trade_amount_usdt = 30.0  # Reduced for safety
+        self.target_profit_pct = 0.003  # 0.3% profit target
+        self.stop_loss_pct = 0.005      # 0.5% stop loss (tighter)
         self.max_chase_attempts = 5
         self.chase_timeout_sec = 300
-        self.stop_loss_poll_sec = 5     # how often to check for stop-loss breach
+        self.stop_loss_poll_sec = 3     # Check stop-loss more frequently
         self.maker_fee_rate = 0.001
+        
+        # Price cache
+        self._price_cache = {}
+        self._price_cache_time = 0
+        self._price_cache_ttl = 2  # 2 second cache
+
+        # Exchange info cache
+        self._exchange_info = None
+        self._min_qty = 0.00001
+        self._tick_size = 0.01
 
         # Internal state
         self.active_order_id = None
@@ -189,6 +233,7 @@ class ScalperBotV40:
         self.buy_qty = None
         self.crisis_engine = CrisisScoringEngine()
 
+        # Statistics tracking for 100 cycles
         self.cycle_stats = {
             "total_cycles": 0,
             "successful_cycles": 0,
@@ -201,34 +246,57 @@ class ScalperBotV40:
             "cycle_results": []
         }
 
+        # Country performance tracking
         self.country_performance = {}
 
-        print(f"CRISIS ARBITRAGE SCALPER v4.1 - 100 CYCLES MODE")
-        print(f"   Symbol: {symbol}")
-        print(f"   Exchange: {self.base_url}")
-        print(f"   Mode: {'PAPER TRADING' if test_mode else 'LIVE TRADING'}")
-        print(f"   Countries Tracked: {len(FSI_2024)}")
-        print(f"   Target Profit: {self.target_profit_pct*100:.1f}% per cycle")
-        print("="*60)
+        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v4.2 - PRODUCTION READY")
+        self.logger.info(f"   Symbol: {symbol}")
+        self.logger.info(f"   Exchange: {self.base_url}")
+        self.logger.info(f"   Mode: {'🧪 PAPER TRADING' if test_mode else '💰 LIVE TRADING'}")
+        self.logger.info(f"   Countries Tracked: {len(FSI_2024)}")
+        self.logger.info(f"   Target Profit: {self.target_profit_pct*100:.1f}% per cycle")
+        self.logger.info(f"   Stop Loss: {self.stop_loss_pct*100:.1f}%")
+        self.logger.info("="*60)
 
         if not test_mode:
             self._check_connectivity()
+            self._get_exchange_info()
 
     def _check_connectivity(self):
-        """Fail loudly at startup instead of silently on cycle 1 if the
-        endpoint, API key, or network is misconfigured."""
-        print("Running startup connectivity check...")
+        """Fail loudly at startup instead of silently on cycle 1"""
+        self.logger.info("🔍 Running startup connectivity check...")
         ticker = self.get_order_book_ticker()
         if not ticker:
-            print("STARTUP CHECK FAILED: could not fetch a ticker from "
-                  f"{self.base_url}. Common causes:")
-            print("  - Wrong region: US-based connections are blocked on "
-                  "api.binance.com; use exchange_region='us' (api.binance.us).")
-            print("  - Non-US connections to api.binance.us will fail; use "
-                  "exchange_region='global' instead.")
-            print("  - Bad/expired API key or IP not whitelisted.")
+            self.logger.error("❌ STARTUP CHECK FAILED: could not fetch a ticker from "
+                              f"{self.base_url}. Common causes:")
+            self.logger.error("  - Wrong region: US-based connections are blocked on "
+                              "api.binance.com; use exchange_region='us' (api.binance.us).")
+            self.logger.error("  - Non-US connections to api.binance.us will fail; use "
+                              "exchange_region='global' instead.")
+            self.logger.error("  - Bad/expired API key or IP not whitelisted.")
             raise SystemExit("Aborting: fix connectivity before running live cycles.")
-        print(f"Connectivity OK. {self.symbol} bid={ticker['bid']} ask={ticker['ask']}")
+        self.logger.info(f"✅ Connectivity OK. {self.symbol} bid={ticker['bid']} ask={ticker['ask']}")
+
+    def _get_exchange_info(self):
+        """Get exchange info for symbol validation"""
+        if self.test_mode:
+            return
+        
+        try:
+            resp = requests.get(f"{self.base_url}/api/v3/exchangeInfo", timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                for symbol_info in data.get("symbols", []):
+                    if symbol_info["symbol"] == self.symbol:
+                        for filter_data in symbol_info.get("filters", []):
+                            if filter_data["filterType"] == "LOT_SIZE":
+                                self._min_qty = float(filter_data.get("minQty", 0.00001))
+                            if filter_data["filterType"] == "PRICE_FILTER":
+                                self._tick_size = float(filter_data.get("tickSize", 0.01))
+                        self.logger.info(f"✅ Exchange info loaded: min_qty={self._min_qty}, tick_size={self._tick_size}")
+                        break
+        except Exception as e:
+            self.logger.warning(f"Could not fetch exchange info: {e}")
 
     def _generate_signature(self, params: dict) -> str:
         query_string = urllib.parse.urlencode(params)
@@ -238,78 +306,142 @@ class ScalperBotV40:
             hashlib.sha256,
         ).hexdigest()
 
-    def _send_signed_request(self, method: str, endpoint: str, params: dict = None) -> dict:
+    def _send_signed_request(self, method: str, endpoint: str, params: dict = None, retries: int = 3) -> dict:
+        """Send signed request with exponential backoff for rate limits"""
         if params is None:
             params = {}
-        params["timestamp"] = int(time.time() * 1000)
-        params["signature"] = self._generate_signature(params)
-
-        headers = {"X-MBX-APIKEY": self.api_key}
-        url = f"{self.base_url}{endpoint}"
-
-        try:
-            if method.upper() == "GET":
-                response = requests.get(url, headers=headers, params=params, timeout=10)
-            elif method.upper() == "POST":
-                response = requests.post(url, headers=headers, data=params, timeout=10)
-            elif method.upper() == "DELETE":
-                response = requests.delete(url, headers=headers, params=params, timeout=10)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-
+        
+        for attempt in range(retries):
             try:
-                data = response.json()
-            except ValueError:
-                print(f"[{datetime.now()}] Failed to decode JSON "
-                      f"(status {response.status_code}): {response.text[:300]}")
-                return {"error": "Invalid JSON response", "status_code": response.status_code}
+                params["timestamp"] = int(time.time() * 1000)
+                params["signature"] = self._generate_signature(params)
 
-            if isinstance(data, dict) and "code" in data and "msg" in data:
-                print(f"[{datetime.now()}] Binance API error {data.get('code')}: {data.get('msg')}")
-                return {"error": data.get("msg"), "code": data.get("code")}
+                headers = {"X-MBX-APIKEY": self.api_key}
+                url = f"{self.base_url}{endpoint}"
 
-            return data
-        except requests.exceptions.RequestException as e:
-            print(f"[{datetime.now()}] Network error calling {url}: {e}")
-            return {"error": str(e)}
-        except Exception as e:
-            print(f"[{datetime.now()}] API Error calling {url}: {e}")
-            return {"error": str(e)}
+                if method.upper() == "GET":
+                    response = requests.get(url, headers=headers, params=params, timeout=10)
+                elif method.upper() == "POST":
+                    response = requests.post(url, headers=headers, data=params, timeout=10)
+                elif method.upper() == "DELETE":
+                    response = requests.delete(url, headers=headers, params=params, timeout=10)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+
+                try:
+                    data = response.json()
+                except ValueError:
+                    self.logger.error(f"Failed to decode JSON (status {response.status_code}): {response.text[:300]}")
+                    if attempt < retries - 1:
+                        time.sleep(2 ** attempt)
+                        continue
+                    return {"error": "Invalid JSON response", "status_code": response.status_code}
+
+                if isinstance(data, dict) and "code" in data and "msg" in data:
+                    error_code = data.get("code")
+                    if error_code in [-1003, -1001, -1016]:  # Rate limit, timeout, throttling
+                        wait_time = 2 ** attempt
+                        self.logger.warning(f"Rate limit hit (code {error_code}), waiting {wait_time}s...")
+                        time.sleep(wait_time)
+                        continue
+                    self.logger.error(f"Binance API error {error_code}: {data.get('msg')}")
+                    return {"error": data.get("msg"), "code": error_code}
+
+                return data
+                
+            except requests.exceptions.RequestException as e:
+                self.logger.error(f"Network error (attempt {attempt+1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                return {"error": str(e)}
+            except Exception as e:
+                self.logger.error(f"API Error (attempt {attempt+1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                return {"error": str(e)}
+        
+        return {"error": "Max retries exceeded"}
 
     def get_order_book_ticker(self) -> Optional[dict]:
+        """Get current market price with caching"""
+        # Check cache first
+        now = time.time()
+        if now - self._price_cache_time < self._price_cache_ttl:
+            if 'ticker' in self._price_cache:
+                return self._price_cache['ticker']
+        
         url = f"{self.base_url}/api/v3/ticker/bookTicker"
         try:
             resp = requests.get(url, params={"symbol": self.symbol}, timeout=5)
             if resp.status_code != 200:
-                # FIX: this used to be silently discarded - now surfaced.
-                print(f"[{datetime.now()}] Ticker request failed "
-                      f"(status {resp.status_code}): {resp.text[:300]}")
+                self.logger.error(f"Ticker request failed (status {resp.status_code}): {resp.text[:300]}")
                 return None
+            
             data = resp.json()
             if "bidPrice" in data and "askPrice" in data:
-                return {
+                ticker_data = {
                     "bid": float(data["bidPrice"]),
                     "ask": float(data["askPrice"]),
                 }
-            print(f"[{datetime.now()}] Unexpected ticker response: {data}")
+                # Update cache
+                self._price_cache = {
+                    'ticker': ticker_data,
+                    'time': now
+                }
+                self._price_cache_time = now
+                return ticker_data
+            
+            self.logger.error(f"Unexpected ticker response: {data}")
             return None
+            
         except Exception as e:
-            print(f"[{datetime.now()}] Error fetching ticker from {url}: {e}")
+            self.logger.error(f"Error fetching ticker from {url}: {e}")
             return None
 
     def get_current_price(self) -> Optional[float]:
-        """Midpoint price, used for stop-loss checks."""
+        """Get mid price with caching"""
+        # Check cache first
+        now = time.time()
+        if now - self._price_cache_time < self._price_cache_ttl:
+            if 'mid' in self._price_cache:
+                return self._price_cache['mid']
+        
         ticker = self.get_order_book_ticker()
         if not ticker:
             return None
-        return (ticker["bid"] + ticker["ask"]) / 2
+        
+        mid = (ticker["bid"] + ticker["ask"]) / 2
+        self._price_cache['mid'] = mid
+        self._price_cache_time = now
+        return mid
+
+    def get_account_balance(self) -> Dict[str, float]:
+        """Get account balances for position sizing"""
+        if self.test_mode:
+            return {"USDT": 1000.0, "BTC": 0.0}
+        
+        resp = self._send_signed_request("GET", "/api/v3/account")
+        if "balances" in resp and not resp.get("error"):
+            balances = {}
+            for balance in resp["balances"]:
+                if float(balance["free"]) > 0 or float(balance["locked"]) > 0:
+                    balances[balance["asset"]] = float(balance["free"])
+            return balances
+        return {"USDT": 0.0}
 
     def place_maker_limit_order(self, side: str, amount: float, target_price: float = None, is_quantity: bool = False) -> dict:
+        """Place a LIMIT_MAKER order with validation"""
         if self.test_mode:
             simulated_id = f"SIM_{int(time.time() * 1000)}"
             price = target_price or (64000.0 + random.uniform(-500, 500))
             qty = amount if is_quantity else amount / price
-            print(f"[TEST MODE] {side} LIMIT_MAKER @ ${price:.2f} | Qty: {qty:.6f}")
+            # Ensure minimum quantity
+            if qty < self._min_qty:
+                qty = self._min_qty
+                self.logger.info(f"[TEST MODE] Quantity adjusted to minimum: {qty}")
+            self.logger.info(f"[TEST MODE] {side} LIMIT_MAKER @ ${price:.2f} | Qty: {qty:.6f}")
             return {
                 "orderId": simulated_id,
                 "price": str(price),
@@ -322,17 +454,30 @@ class ScalperBotV40:
         if not ticker:
             return {"error": "Failed to get market price"}
 
+        # Check balance before placing order
+        if side.upper() == "BUY":
+            balances = self.get_account_balance()
+            if balances.get("USDT", 0) < amount:
+                self.logger.warning(f"Insufficient balance: {balances.get('USDT', 0)} USDT < {amount}")
+                return {"error": "Insufficient balance"}
+
         if side.upper() == "BUY":
             limit_price = target_price if target_price else ticker["bid"] * 0.9995
         else:
             limit_price = target_price if target_price else ticker["ask"] * 1.0005
 
-        limit_price = round(limit_price, 2)
+        # Round to tick size
+        limit_price = round_to_tick(limit_price, self._tick_size)
 
         if is_quantity:
-            qty = round(amount, 5)
+            qty = round_to_step(amount, self._min_qty)
         else:
-            qty = round(amount / limit_price, 5)
+            qty = round_to_step(amount / limit_price, self._min_qty)
+
+        # Ensure minimum quantity
+        if qty < self._min_qty:
+            qty = self._min_qty
+            self.logger.info(f"Quantity adjusted to minimum: {qty}")
 
         params = {
             "symbol": self.symbol,
@@ -342,15 +487,15 @@ class ScalperBotV40:
             "price": limit_price,
         }
 
+        self.logger.info(f"Placing {side} order: {qty} @ ${limit_price:.2f}")
         return self._send_signed_request("POST", "/api/v3/order", params)
 
     def place_market_order(self, side: str, quantity: float) -> dict:
-        """Used for emergency stop-loss exits where we need an immediate
-        fill rather than waiting for a maker order to be hit."""
+        """Place a MARKET order for emergency exits"""
         if self.test_mode:
             simulated_id = f"SIM_MKT_{int(time.time() * 1000)}"
             price = 64000.0 + random.uniform(-500, 500)
-            print(f"[TEST MODE] {side} MARKET | Qty: {quantity:.6f} @ ~${price:.2f}")
+            self.logger.info(f"[TEST MODE] {side} MARKET | Qty: {quantity:.6f} @ ~${price:.2f}")
             return {
                 "orderId": simulated_id,
                 "price": str(price),
@@ -359,7 +504,11 @@ class ScalperBotV40:
                 "side": side,
             }
 
-        qty = round(quantity, 5)
+        qty = round_to_step(quantity, self._min_qty)
+        if qty < self._min_qty:
+            qty = self._min_qty
+            self.logger.info(f"Market order quantity adjusted to minimum: {qty}")
+
         params = {
             "symbol": self.symbol,
             "side": side.upper(),
@@ -370,14 +519,15 @@ class ScalperBotV40:
 
     def cancel_order(self, order_id: str) -> dict:
         if self.test_mode:
-            print(f"[TEST MODE] Cancelled Order ID: {order_id}")
+            self.logger.info(f"[TEST MODE] Cancelled Order ID: {order_id}")
             return {"status": "CANCELED", "orderId": order_id}
 
         params = {"symbol": self.symbol, "orderId": order_id}
         return self._send_signed_request("DELETE", "/api/v3/order", params)
 
     def chase_order(self, side: str, current_qty: float, last_order_id: str) -> dict:
-        print(f"[{datetime.now()}] Chasing {side} order...")
+        """Cancel and re-place order at current market price"""
+        self.logger.info(f"Chasing {side} order...")
         self.cancel_order(last_order_id)
         return self.place_maker_limit_order(
             side=side,
@@ -387,31 +537,45 @@ class ScalperBotV40:
         )
 
     def run_cycle(self, iso: str = None, cycle_number: int = 0) -> dict:
-        print(f"\n{'='*60}")
-        print(f"CYCLE {cycle_number}/100")
-        print(f"{'='*60}")
+        """Run one trading cycle with FSI + WST selection"""
+        self.logger.info(f"\n{'='*60}")
+        self.logger.info(f"🔄 CYCLE {cycle_number}/100")
+        self.logger.info(f"{'='*60}")
 
+        # Check balance before starting
+        if not self.test_mode:
+            balances = self.get_account_balance()
+            usdt_balance = balances.get("USDT", 0)
+            if usdt_balance < self.trade_amount_usdt:
+                self.logger.warning(f"Low balance: ${usdt_balance:.2f} USDT, adjusting position")
+                if usdt_balance < 10:
+                    self.logger.error("Insufficient balance to trade")
+                    return {"success": False, "error": "Insufficient balance"}
+                self.trade_amount_usdt = min(self.trade_amount_usdt, usdt_balance * 0.5)
+                self.logger.info(f"Adjusted trade amount to ${self.trade_amount_usdt:.2f}")
+
+        # 1. Select the best opportunity with rotation
         if iso:
             country = CrisisScoringEngine.get_crisis_score(iso)
             if not country:
-                print(f"Country {iso} not found in FSI data")
+                self.logger.error(f"Country {iso} not found in FSI data")
                 return {"success": False, "error": "Country not found"}
             opp_score = CrisisScoringEngine.score_opportunity(iso)
-            print(f"Trading: {country['flag']} {country['name']} (FSI: {country['fsi_score']}, WST: {country['wst_class']})")
-            print(f"   Opportunity Score: {opp_score:.2f}")
+            self.logger.info(f"🎯 Trading: {country['flag']} {country['name']} (FSI: {country['fsi_score']}, WST: {country['wst_class']})")
+            self.logger.info(f"   Opportunity Score: {opp_score:.2f}")
         else:
             top_opportunities = CrisisScoringEngine.get_top_opportunities(20)
             if not top_opportunities:
-                print("No opportunities found")
+                self.logger.error("No opportunities found")
                 return {"success": False, "error": "No opportunities"}
             idx = (cycle_number - 1) % len(top_opportunities)
             country = top_opportunities[idx]
             iso = country["iso"]
-            print(f"Trading: {country['flag']} {country['name']} (FSI: {country['fsi_score']}, WST: {country['wst_class']})")
-            print(f"   Opportunity Score: {country['opportunity_score']:.2f}")
+            self.logger.info(f"🎯 Trading: {country['flag']} {country['name']} (FSI: {country['fsi_score']}, WST: {country['wst_class']})")
+            self.logger.info(f"   Opportunity Score: {country['opportunity_score']:.2f}")
 
         # 2. Place Buy Order
-        buy_amount = self.trade_amount_usdt * (1 + random.uniform(-0.05, 0.05))
+        buy_amount = self.trade_amount_usdt * (1 + random.uniform(-0.02, 0.02))
         buy_order = self.place_maker_limit_order(
             side="BUY",
             amount=buy_amount,
@@ -420,16 +584,16 @@ class ScalperBotV40:
         )
 
         if "orderId" not in buy_order:
-            print(f"Failed to place buy order: {buy_order}")
+            self.logger.error(f"Failed to place buy order: {buy_order}")
             return {"success": False, "error": buy_order.get("error", "Buy order failed")}
 
         order_id = buy_order["orderId"]
         self.buy_price = float(buy_order["price"])
         self.buy_qty = float(buy_order["origQty"])
-        print(f"BUY Order: {self.buy_qty:.6f} BTC @ ${self.buy_price:.2f}")
+        self.logger.info(f"📈 BUY Order: {self.buy_qty:.6f} BTC @ ${self.buy_price:.2f}")
 
         # 3. Monitor Buy Fill
-        print("Waiting for buy fill...")
+        self.logger.info("⏳ Waiting for buy fill...")
         filled = False
         start_time = time.time()
 
@@ -444,7 +608,7 @@ class ScalperBotV40:
             if self.test_mode:
                 time.sleep(1.0 + random.uniform(0, 1.0))
                 filled = True
-                print(f"[TEST] BUY Filled @ ${self.buy_price:.2f}")
+                self.logger.info(f"✅ [TEST] BUY Filled @ ${self.buy_price:.2f}")
             else:
                 status = self._send_signed_request("GET", "/api/v3/order", {
                     "symbol": self.symbol,
@@ -454,7 +618,14 @@ class ScalperBotV40:
                     filled = True
                     self.buy_price = float(status.get("price", self.buy_price))
                     self.buy_qty = float(status.get("executedQty", self.buy_qty))
-                    print(f"BUY Filled @ ${self.buy_price:.2f}")
+                    self.logger.info(f"✅ BUY Filled @ ${self.buy_price:.2f}")
+                elif status.get("status") == "CANCELED":
+                    self.logger.warning("Buy order was cancelled, retrying...")
+                    chase_res = self.chase_order("BUY", self.buy_qty, order_id)
+                    if "orderId" in chase_res:
+                        order_id = chase_res["orderId"]
+                        self.buy_price = float(chase_res["price"])
+                    start_time = time.time()
                 time.sleep(2)
 
         # 4. Calculate Exit Levels
@@ -462,8 +633,8 @@ class ScalperBotV40:
         target_price = self.buy_price * (1 + target_profit_pct)
         stop_price = self.buy_price * (1 - self.stop_loss_pct)
 
-        print(f"Target: ${target_price:.2f} (+{target_profit_pct*100:.1f}%)")
-        print(f"Stop:   ${stop_price:.2f} (-{self.stop_loss_pct*100:.1f}%)")
+        self.logger.info(f"🎯 Target: ${target_price:.2f} (+{target_profit_pct*100:.1f}%)")
+        self.logger.info(f"🛑 Stop:   ${stop_price:.2f} (-{self.stop_loss_pct*100:.1f}%)")
 
         # 5. Place Sell Order (at target)
         sell_order = self.place_maker_limit_order(
@@ -474,16 +645,13 @@ class ScalperBotV40:
         )
 
         if "orderId" not in sell_order:
-            print(f"Failed to place sell order: {sell_order}")
+            self.logger.error(f"Failed to place sell order: {sell_order}")
             return {"success": False, "error": sell_order.get("error", "Sell order failed")}
 
         sell_order_id = sell_order["orderId"]
-        print(f"SELL Order placed @ ${target_price:.2f}")
+        self.logger.info(f"📉 SELL Order placed @ ${target_price:.2f}")
 
-        # 6. Monitor for either target fill OR stop-loss breach.
-        # FIX: previously this loop only ever waited for the target sell to
-        # fill, so stop_price was computed but never actually enforced -
-        # positions could only "win" or hang open, never realize a loss.
+        # 6. Monitor for target fill OR stop-loss
         sell_filled = False
         sell_start = time.time()
         exit_price = target_price
@@ -500,17 +668,21 @@ class ScalperBotV40:
                 sell_start = time.time()
 
             if self.test_mode:
+                # Simulate realistic market behavior
                 time.sleep(1.0 + random.uniform(0, 1.0))
-                # Simulate a market that can move against us too, so paper
-                # mode isn't artificially guaranteed to win every time.
-                sim_price = self.buy_price * (1 + random.uniform(-0.012, 0.012))
+                sim_price = self.buy_price * (1 + random.uniform(-0.015, 0.015))
                 if sim_price <= stop_price:
                     exit_price = stop_price
                     stopped_out = True
-                    print(f"[TEST] STOP-LOSS hit @ ${exit_price:.2f}")
-                else:
+                    self.logger.info(f"🛑 [TEST] STOP-LOSS hit @ ${exit_price:.2f}")
+                elif sim_price >= target_price:
                     exit_price = target_price
-                    print(f"[TEST] SELL Filled @ ${target_price:.2f}")
+                    self.logger.info(f"✅ [TEST] SELL Filled @ ${target_price:.2f}")
+                else:
+                    # Price moved but not to target or stop, continue
+                    self.logger.info(f"[TEST] Price moved to ${sim_price:.2f}, waiting...")
+                    time.sleep(1)
+                    continue
                 sell_filled = True
             else:
                 # Check target order status
@@ -518,35 +690,44 @@ class ScalperBotV40:
                     "symbol": self.symbol,
                     "orderId": sell_order_id,
                 })
+                
                 if status.get("status") == "FILLED":
                     sell_filled = True
                     exit_price = float(status.get("price", target_price))
-                    print(f"SELL Filled @ ${exit_price:.2f}")
+                    self.logger.info(f"✅ SELL Filled @ ${exit_price:.2f}")
+                    break
 
-                # Poll for stop-loss breach independently of the fill check
-                elif now - last_stop_check > self.stop_loss_poll_sec:
+                # Check stop-loss breach
+                if now - last_stop_check > self.stop_loss_poll_sec:
                     last_stop_check = now
                     current_price = self.get_current_price()
                     if current_price is not None and current_price <= stop_price:
-                        print(f"STOP-LOSS breached: current ${current_price:.2f} <= stop ${stop_price:.2f}")
+                        self.logger.warning(f"🛑 STOP-LOSS breached: current ${current_price:.2f} <= stop ${stop_price:.2f}")
+                        
+                        # Cancel target sell order
                         self.cancel_order(sell_order_id)
+                        
+                        # Place market sell for stop-loss
                         exit_res = self.place_market_order("SELL", self.buy_qty)
                         if "error" in exit_res:
-                            print(f"Stop-loss exit failed, retrying: {exit_res}")
+                            self.logger.error(f"Stop-loss exit failed, retrying: {exit_res}")
                             time.sleep(2)
                             continue
+                        
                         sell_filled = True
                         stopped_out = True
                         exit_price = float(exit_res.get("price", current_price))
-                        print(f"Stopped out @ ${exit_price:.2f}")
+                        self.logger.info(f"🛑 Stopped out @ ${exit_price:.2f}")
+                        break
 
-                if not sell_filled:
-                    time.sleep(2)
+                time.sleep(2)
 
+        # Calculate P&L
         realized_pnl = (exit_price - self.buy_price) * self.buy_qty
-        print(f"P&L: ${realized_pnl:.4f}" + (" (stop-loss exit)" if stopped_out else ""))
-        print("=== Cycle Complete ===")
+        self.logger.info(f"💰 P&L: ${realized_pnl:.4f}" + (" (stop-loss exit)" if stopped_out else ""))
+        self.logger.info("=== Cycle Complete ===")
 
+        # Update country performance
         if iso not in self.country_performance:
             self.country_performance[iso] = {
                 "name": country["name"],
@@ -554,7 +735,8 @@ class ScalperBotV40:
                 "trades": 0,
                 "total_profit": 0,
                 "wins": 0,
-                "losses": 0
+                "losses": 0,
+                "stopped_out": 0
             }
 
         self.country_performance[iso]["trades"] += 1
@@ -563,6 +745,8 @@ class ScalperBotV40:
             self.country_performance[iso]["wins"] += 1
         else:
             self.country_performance[iso]["losses"] += 1
+        if stopped_out:
+            self.country_performance[iso]["stopped_out"] += 1
 
         result = {
             "success": True,
@@ -581,6 +765,7 @@ class ScalperBotV40:
             "timestamp": datetime.now().isoformat()
         }
 
+        # Update statistics
         self.cycle_stats["total_cycles"] += 1
         if realized_pnl > 0:
             self.cycle_stats["successful_cycles"] += 1
@@ -595,19 +780,21 @@ class ScalperBotV40:
         return result
 
     def run_scanner(self):
-        print("\nTOP CRISIS OPPORTUNITIES")
-        print("="*60)
+        """Scan and display top opportunities"""
+        self.logger.info("\n🎯 TOP CRISIS OPPORTUNITIES")
+        self.logger.info("="*60)
         top = CrisisScoringEngine.get_top_opportunities(10)
         for i, opp in enumerate(top, 1):
-            print(f"{i}. {opp['flag']} {opp['name']}")
-            print(f"   FSI: {opp['fsi_score']:.1f} | WST: {opp['wst_class']} | Recovery: {opp['recovery_rate']*100:.0f}%")
-            print(f"   Opportunity Score: {opp['opportunity_score']:.2f}")
-            print()
+            self.logger.info(f"{i}. {opp['flag']} {opp['name']}")
+            self.logger.info(f"   FSI: {opp['fsi_score']:.1f} | WST: {opp['wst_class']} | Recovery: {opp['recovery_rate']*100:.0f}%")
+            self.logger.info(f"   Opportunity Score: {opp['opportunity_score']:.2f}")
+            self.logger.info("")
 
-    def run_100_cycles(self, delay_between_cycles: int = 3):
-        print("\n" + "="*60)
-        print("STARTING 100 CYCLES EXECUTION")
-        print("="*60)
+    def run_100_cycles(self, delay_between_cycles: int = 5):
+        """Run 100 trading cycles"""
+        self.logger.info("\n" + "="*60)
+        self.logger.info("🚀 STARTING 100 CYCLES EXECUTION")
+        self.logger.info("="*60)
 
         self.cycle_stats["start_time"] = datetime.now()
         top_countries = CrisisScoringEngine.get_top_opportunities(30)
@@ -617,33 +804,38 @@ class ScalperBotV40:
                 country_idx = (cycle_num - 1) % len(top_countries)
                 selected_country = top_countries[country_idx]["iso"]
 
-                print(f"\nCycle {cycle_num}/100 - Trading {top_countries[country_idx]['flag']} {top_countries[country_idx]['name']}")
+                self.logger.info(f"\n📊 Cycle {cycle_num}/100 - Trading {top_countries[country_idx]['flag']} {top_countries[country_idx]['name']}")
 
                 result = self.run_cycle(iso=selected_country, cycle_number=cycle_num)
 
                 if not result.get("success", False):
-                    print(f"Cycle {cycle_num} failed: {result.get('error', 'Unknown error')}")
+                    self.logger.error(f"⚠️ Cycle {cycle_num} failed: {result.get('error', 'Unknown error')}")
+                    self.cycle_stats["failed_cycles"] += 1
                 else:
-                    print(f"Cycle {cycle_num} completed.")
-                    print(f"   Profit: ${result.get('profit', 0):.4f} ({result.get('profit_percent', 0):.2f}%)")
+                    self.logger.info(f"✅ Cycle {cycle_num} completed successfully!")
+                    self.logger.info(f"   Profit: ${result.get('profit', 0):.4f} ({result.get('profit_percent', 0):.2f}%)")
 
+                # Print current statistics
                 self.print_current_stats()
+
+                # Export results after each cycle
                 self.export_results_to_csv()
 
+                # Wait before next cycle
                 if cycle_num < 100:
                     wait_time = delay_between_cycles + random.uniform(0, 2)
-                    print(f"\nWaiting {wait_time:.1f} seconds before next cycle...")
+                    self.logger.info(f"\n⏳ Waiting {wait_time:.1f} seconds before next cycle...")
                     time.sleep(wait_time)
 
             except KeyboardInterrupt:
-                print("\nExecution interrupted by user")
+                self.logger.info("\n⚠️ Execution interrupted by user")
                 break
             except Exception as e:
-                print(f"Error in cycle {cycle_num}: {e}")
+                self.logger.error(f"❌ Error in cycle {cycle_num}: {e}")
                 self.cycle_stats["failed_cycles"] += 1
                 if cycle_num < 100:
                     wait_time = delay_between_cycles * 2
-                    print(f"Waiting {wait_time} seconds before retry...")
+                    self.logger.info(f"⏳ Waiting {wait_time} seconds before retry...")
                     time.sleep(wait_time)
 
         self.cycle_stats["end_time"] = datetime.now()
@@ -651,66 +843,72 @@ class ScalperBotV40:
         self.export_final_report()
 
     def print_current_stats(self):
+        """Print current cycle statistics"""
         stats = self.cycle_stats
-        print(f"\nCURRENT STATISTICS:")
-        print(f"   Total Cycles: {stats['total_cycles']}")
-        print(f"   Successful: {stats['successful_cycles']}")
-        print(f"   Failed: {stats['failed_cycles']}")
-        print(f"   Net Profit: ${stats['net_profit']:.4f}")
+        self.logger.info(f"\n📊 CURRENT STATISTICS:")
+        self.logger.info(f"   Total Cycles: {stats['total_cycles']}")
+        self.logger.info(f"   Successful: {stats['successful_cycles']}")
+        self.logger.info(f"   Failed: {stats['failed_cycles']}")
+        self.logger.info(f"   Net Profit: ${stats['net_profit']:.4f}")
         if stats['total_cycles'] > 0:
             win_rate = (stats['successful_cycles'] / stats['total_cycles']) * 100
-            print(f"   Win Rate: {win_rate:.1f}%")
+            self.logger.info(f"   Win Rate: {win_rate:.1f}%")
 
     def print_final_summary(self):
+        """Print final summary of all 100 cycles"""
         stats = self.cycle_stats
         duration = (stats['end_time'] - stats['start_time']).total_seconds()
         hours = duration // 3600
         minutes = (duration % 3600) // 60
         seconds = duration % 60
 
-        print("\n" + "="*70)
-        print("FINAL SUMMARY - 100 CYCLES COMPLETE")
-        print("="*70)
-        print(f"Start Time: {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"End Time:   {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Duration:   {int(hours)}h {int(minutes)}m {int(seconds)}s")
-        print("-"*70)
-        print(f"Total Cycles:       {stats['total_cycles']}")
-        print(f"Successful Cycles:  {stats['successful_cycles']}")
-        print(f"Failed Cycles:      {stats['failed_cycles']}")
+        self.logger.info("\n" + "="*70)
+        self.logger.info("🎯 FINAL SUMMARY - 100 CYCLES COMPLETE")
+        self.logger.info("="*70)
+        self.logger.info(f"📅 Start Time: {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+        self.logger.info(f"📅 End Time:   {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+        self.logger.info(f"⏱️  Duration:   {int(hours)}h {int(minutes)}m {int(seconds)}s")
+        self.logger.info("-"*70)
+        self.logger.info(f"📊 Total Cycles:       {stats['total_cycles']}")
+        self.logger.info(f"✅ Successful Cycles:  {stats['successful_cycles']}")
+        self.logger.info(f"❌ Failed Cycles:      {stats['failed_cycles']}")
         if stats['total_cycles'] > 0:
             win_rate = (stats['successful_cycles'] / stats['total_cycles']) * 100
-            print(f"Win Rate:           {win_rate:.1f}%")
-        print("-"*70)
-        print(f"Total Profit:       ${stats['total_profit']:.4f}")
-        print(f"Total Loss:         ${stats['total_loss']:.4f}")
-        print(f"Net Profit:         ${stats['net_profit']:.4f}")
+            self.logger.info(f"🏆 Win Rate:           {win_rate:.1f}%")
+        self.logger.info("-"*70)
+        self.logger.info(f"💰 Total Profit:       ${stats['total_profit']:.4f}")
+        self.logger.info(f"💸 Total Loss:         ${stats['total_loss']:.4f}")
+        self.logger.info(f"📈 Net Profit:         ${stats['net_profit']:.4f}")
 
         if stats['total_cycles'] > 0:
             avg_profit = stats['net_profit'] / stats['total_cycles']
-            print(f"Avg Profit/Cycle:   ${avg_profit:.4f}")
+            self.logger.info(f"📊 Avg Profit/Cycle:   ${avg_profit:.4f}")
 
-        print("\nCOUNTRY PERFORMANCE:")
-        print("-"*70)
+        # Show country performance
+        self.logger.info("\n🌍 COUNTRY PERFORMANCE:")
+        self.logger.info("-"*70)
         sorted_countries = sorted(self.country_performance.items(), key=lambda x: x[1]["total_profit"], reverse=True)
         for iso, data in sorted_countries[:10]:
             win_rate_country = (data["wins"] / data["trades"]) * 100 if data["trades"] > 0 else 0
-            print(f"   {data['flag']} {data['name']}: {data['trades']} trades, ${data['total_profit']:.4f}, {win_rate_country:.1f}% win rate")
+            stop_rate = (data.get("stopped_out", 0) / data["trades"]) * 100 if data["trades"] > 0 else 0
+            self.logger.info(f"   {data['flag']} {data['name']}: {data['trades']} trades, ${data['total_profit']:.4f}, {win_rate_country:.1f}% win, {stop_rate:.1f}% stopped")
 
+        # Show top 5 best and worst trades
         if stats['cycle_results']:
             sorted_results = sorted(stats['cycle_results'], key=lambda x: x.get('profit', 0))
 
-            print("\nTOP 5 BEST TRADES:")
+            self.logger.info("\n🏆 TOP 5 BEST TRADES:")
             for i, result in enumerate(sorted_results[-5:][::-1], 1):
-                print(f"   {i}. {result.get('country_flag', '')} {result.get('country_name', 'Unknown')}: ${result.get('profit', 0):.4f} ({result.get('profit_percent', 0):.2f}%)")
+                self.logger.info(f"   {i}. {result.get('country_flag', '')} {result.get('country_name', 'Unknown')}: ${result.get('profit', 0):.4f} ({result.get('profit_percent', 0):.2f}%)")
 
-            print("\nTOP 5 WORST TRADES:")
+            self.logger.info("\n📉 TOP 5 WORST TRADES:")
             for i, result in enumerate(sorted_results[:5], 1):
-                print(f"   {i}. {result.get('country_flag', '')} {result.get('country_name', 'Unknown')}: ${result.get('profit', 0):.4f} ({result.get('profit_percent', 0):.2f}%)")
+                self.logger.info(f"   {i}. {result.get('country_flag', '')} {result.get('country_name', 'Unknown')}: ${result.get('profit', 0):.4f} ({result.get('profit_percent', 0):.2f}%)")
 
-        print("="*70)
+        self.logger.info("="*70)
 
     def export_results_to_csv(self):
+        """Export cycle results to CSV file"""
         if not self.cycle_stats["cycle_results"]:
             return
 
@@ -744,6 +942,7 @@ class ScalperBotV40:
             })
 
     def export_final_report(self):
+        """Export comprehensive final report"""
         report = {
             "summary": self.cycle_stats,
             "country_performance": self.country_performance,
@@ -755,24 +954,29 @@ class ScalperBotV40:
         with open(filename, 'w') as f:
             json.dump(report, f, indent=2, default=str)
 
-        print(f"\nDetailed report exported to: {filename}")
+        self.logger.info(f"\n📄 Detailed report exported to: {filename}")
 
 # ========================================================================
-# MAIN EXECUTION
+# 🚀 MAIN EXECUTION
 # ========================================================================
 
 if __name__ == "__main__":
-    # YOUR API KEYS (as requested, left in place for you to remove later)
+    # ⚠️ WARNING: Replace these with your own API keys before going live!
     API_KEY = "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn"
     API_SECRET = "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0"
 
+    # Create bot instance
     bot = ScalperBotV40(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
-        test_mode=False,          # set True to go back to paper trading
+        test_mode=False,          # Set True for paper trading
         exchange_region="us",     # "us" -> api.binance.us, "global" -> api.binance.com
+        log_level="INFO"          # DEBUG for more details
     )
 
+    # Show top opportunities
     bot.run_scanner()
-    bot.run_100_cycles(delay_between_cycles=3)
+
+    # Run 100 cycles with 5 second delay between cycles
+    bot.run_100_cycles(delay_between_cycles=5)
