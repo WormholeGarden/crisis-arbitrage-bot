@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v4.2 - $50 BALANCE OPTIMIZED - FIXED
-- Fixed 'price' key error in order response handling
-- Added comprehensive response validation
+🚀 CRISIS ARBITRAGE SCALPER v4.2 - $50 BALANCE OPTIMIZED - FINAL FIX
+- Fixed quantity formatting (no scientific notation)
+- Fixed 'price' key error handling
 - Optimized for small account ($50 USDT)
 - Conservative position sizing ($5-10 per trade)
-- Tighter stop-loss to preserve capital
 """
 
 import hashlib
@@ -91,7 +90,8 @@ def round_to_tick(value: float, tick: float) -> float:
     return float(rounded)
 
 def format_quantity(value: float) -> str:
-    return f"{Decimal(str(value)):.8f}"
+    """Format quantity without scientific notation"""
+    return f"{Decimal(str(value)):.8f}".rstrip('0').rstrip('.')
 
 def format_price(value: float) -> str:
     return f"{Decimal(str(value)):.2f}"
@@ -139,7 +139,7 @@ class CrisisScoringEngine:
         return opportunities[:limit]
 
 # ========================================================================
-# 🤖 SCALPER BOT - FIXED VERSION
+# 🤖 SCALPER BOT - FULLY FIXED
 # ========================================================================
 
 class ScalperBotV40:
@@ -303,6 +303,12 @@ class ScalperBotV40:
         if params is None:
             params = {}
         
+        # Format quantities properly before sending
+        if "quantity" in params:
+            params["quantity"] = format_quantity(float(params["quantity"]))
+        if "price" in params:
+            params["price"] = format_price(float(params["price"]))
+        
         for attempt in range(retries):
             try:
                 params["timestamp"] = int(time.time() * 1000)
@@ -415,14 +421,14 @@ class ScalperBotV40:
         return {"USDT": 0.0}
 
     def place_maker_limit_order(self, side: str, amount: float, target_price: float = None, is_quantity: bool = False) -> dict:
-        """Place a LIMIT_MAKER order with proper error handling"""
+        """Place a LIMIT_MAKER order with proper quantity formatting"""
         if self.test_mode:
             simulated_id = f"SIM_{int(time.time() * 1000)}"
             price = target_price or (64000.0 + random.uniform(-500, 500))
             qty = amount if is_quantity else amount / price
             if qty < self._min_qty:
                 qty = self._min_qty
-            self.logger.info(f"[TEST MODE] {side} LIMIT_MAKER @ ${price:.2f} | Qty: {qty:.6f}")
+            self.logger.info(f"[TEST MODE] {side} LIMIT_MAKER @ ${price:.2f} | Qty: {qty:.8f}")
             return {
                 "orderId": simulated_id,
                 "price": str(price),
@@ -457,27 +463,27 @@ class ScalperBotV40:
 
         if qty < self._min_qty:
             qty = self._min_qty
-            self.logger.info(f"Quantity adjusted to minimum: {qty}")
+            self.logger.info(f"Quantity adjusted to minimum: {qty:.8f}")
+
+        # Format quantity without scientific notation
+        qty_str = format_quantity(qty)
+        price_str = format_price(limit_price)
+
+        self.logger.info(f"Placing {side} order: {qty_str} @ ${price_str}")
 
         params = {
             "symbol": self.symbol,
             "side": side.upper(),
             "type": "LIMIT_MAKER",
-            "quantity": qty,
-            "price": limit_price,
+            "quantity": qty_str,
+            "price": price_str,
         }
 
-        self.logger.info(f"Placing {side} order: {qty} @ ${limit_price:.2f}")
         response = self._send_signed_request("POST", "/api/v3/order", params)
         
-        # Log the full response for debugging
-        self.logger.debug(f"Order response: {response}")
-        
-        # Ensure response has expected fields
         if "error" in response:
             return response
         
-        # Build a consistent response format
         return {
             "orderId": response.get("orderId", f"ERR_{int(time.time())}"),
             "price": str(response.get("price", limit_price)),
@@ -491,7 +497,7 @@ class ScalperBotV40:
         if self.test_mode:
             simulated_id = f"SIM_MKT_{int(time.time() * 1000)}"
             price = 64000.0 + random.uniform(-500, 500)
-            self.logger.info(f"[TEST MODE] {side} MARKET | Qty: {quantity:.6f} @ ~${price:.2f}")
+            self.logger.info(f"[TEST MODE] {side} MARKET | Qty: {quantity:.8f} @ ~${price:.2f}")
             return {
                 "orderId": simulated_id,
                 "price": str(price),
@@ -504,11 +510,13 @@ class ScalperBotV40:
         if qty < self._min_qty:
             qty = self._min_qty
 
+        qty_str = format_quantity(qty)
+
         params = {
             "symbol": self.symbol,
             "side": side.upper(),
             "type": "MARKET",
-            "quantity": qty,
+            "quantity": qty_str,
         }
         response = self._send_signed_request("POST", "/api/v3/order", params)
         
@@ -587,12 +595,10 @@ class ScalperBotV40:
             is_quantity=False,
         )
 
-        # Check for errors
         if "error" in buy_order:
             self.logger.error(f"Failed to place buy order: {buy_order}")
             return {"success": False, "error": buy_order.get("error", "Buy order failed")}
 
-        # Extract order details with safe defaults
         order_id = buy_order.get("orderId")
         if not order_id:
             self.logger.error(f"Missing orderId in response: {buy_order}")
@@ -605,7 +611,7 @@ class ScalperBotV40:
             self.logger.error(f"Invalid price or quantity: {buy_order}")
             return {"success": False, "error": "Invalid price or quantity"}
 
-        self.logger.info(f"📈 BUY Order: {self.buy_qty:.6f} BTC @ ${self.buy_price:.2f}")
+        self.logger.info(f"📈 BUY Order: {self.buy_qty:.8f} BTC @ ${self.buy_price:.2f}")
 
         # Monitor Buy Fill
         self.logger.info("⏳ Waiting for buy fill...")
@@ -930,7 +936,7 @@ class ScalperBotV40:
                 'wst_class': latest['wst_class'],
                 'entry_price': f"{latest['entry_price']:.2f}",
                 'exit_price': f"{latest['exit_price']:.2f}",
-                'quantity': f"{latest['quantity']:.6f}",
+                'quantity': f"{latest['quantity']:.8f}",
                 'profit': f"{latest['profit']:.4f}",
                 'profit_percent': f"{latest['profit_percent']:.2f}",
                 'stopped_out': latest.get('stopped_out', False),
