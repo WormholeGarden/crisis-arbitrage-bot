@@ -15,6 +15,11 @@ FIXES from v11:
 - Added a backtester (run in test mode against real historical
   klines) so you can measure win rate/expectancy BEFORE risking
   money, instead of assuming it
+- Added a walk-forward parameter search (train/test split) so any
+  parameters that look good aren't just curve-fit to one window -
+  see run_walk_forward_search(). This can legitimately come back
+  empty: that means no tested combination held up out-of-sample,
+  which is itself a real, useful result, not a bug to "fix".
 - Default entrypoint now runs the backtest, not live trading
 ============================================================
 """
@@ -1226,19 +1231,10 @@ class ScalperBotV12:
     # BACKTESTER - run this before trusting the strategy with real money
     # ====================================================================
 
-    def run_backtest(self, days_back: int = 3, verbose: bool = False) -> dict:
-        """
-        Walks forward through real historical 1-minute candles, applies the
-        exact same analyze_market() decision logic used live, and simulates
-        entries/exits with the same target/stop/fee assumptions. This does
-        NOT guarantee future results will match, but it replaces "we assume
-        a 55% win rate" with an actual measurement on real data, which is
-        the minimum bar before trading a strategy like this with money.
-        """
+    def _fetch_historical_klines(self, days_back: int) -> Dict:
         print(f"Fetching ~{days_back} day(s) of 1m history for {self.symbol}...")
         candles_needed = days_back * 24 * 60
         all_klines = {"timestamps": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
-
         end_time = None
         fetched = 0
         while fetched < candles_needed:
@@ -1250,16 +1246,16 @@ class ScalperBotV12:
             fetched += len(batch["timestamps"])
             end_time = batch["timestamps"][0] - 1
             time.sleep(0.2)  # be nice to the public endpoint
+        return all_klines
 
-        total = len(all_klines["closes"])
-        if total < 350:
-            print("Not enough historical data returned to backtest.")
-            return {}
-
-        print(f"Backtesting over {total} candles (~{total/1440:.1f} days)...")
-
+    def _simulate_trades(self, klines: Dict, min_passing_conditions: int,
+                          stop_loss_pct: float, target_profit_pct: float) -> List[float]:
+        """Core walk-forward simulation, parameterized so both run_backtest()
+        and run_walk_forward_search() use the exact same logic. Returns a
+        list of net (post-fee) percentage returns, one per closed trade."""
+        total = len(klines["closes"])
         trades = []
-        i = 300  # need history for indicators
+        i = 300
         in_position = False
         entry_price = entry_i = stop_price = target_price = None
         crisis_score = self.context_country["opportunity_score"] if self.context_country else 0
@@ -1267,49 +1263,83 @@ class ScalperBotV12:
         round_trip_fee_pct = self.maker_fee_rate + self.taker_fee_rate
 
         while i < total:
-            window = {k: all_klines[k][max(0, i-300):i] for k in all_klines}
+            window = {k: klines[k][max(0, i-300):i] for k in klines}
             if not in_position:
                 analysis = EinsteinStrategy.analyze_market(window, crisis_score, wst_class)
-                if (analysis['passing_conditions'] >= self.min_passing_conditions
-                        and self._has_positive_expectancy(analysis)):
-                    entry_price = all_klines["closes"][i]
+                win_rate = analysis.get('expected_win_rate', 0.5)
+                net_target = target_profit_pct - round_trip_fee_pct
+                net_stop = stop_loss_pct + round_trip_fee_pct
+                positive_expectancy = (win_rate * net_target) - ((1 - win_rate) * net_stop) > 0
+
+                if analysis['passing_conditions'] >= min_passing_conditions and positive_expectancy:
+                    entry_price = klines["closes"][i]
                     atr_stop = EinsteinMath.optimal_stop_loss(analysis['atr'], analysis['volatility'], analysis['confidence'])
-                    min_stop = entry_price * (1 - self.stop_loss_pct)
+                    min_stop = entry_price * (1 - stop_loss_pct)
                     max_stop = entry_price * (1 - 0.02)
                     stop_price = min(min_stop, max(max_stop, entry_price - atr_stop))
-                    target_price = entry_price * (1 + self.target_profit_pct)
+                    target_price = entry_price * (1 + target_profit_pct)
                     in_position = True
                     entry_i = i
             else:
-                high = all_klines["highs"][i]
-                low = all_klines["lows"][i]
+                high = klines["highs"][i]
+                low = klines["lows"][i]
                 exit_price = None
                 if low <= stop_price:
                     exit_price = stop_price
                 elif high >= target_price:
                     exit_price = target_price
-                elif i - entry_i > 240:  # 4-hour max hold, mirrors chase_timeout intent
-                    exit_price = all_klines["closes"][i]
+                elif i - entry_i > 240:
+                    exit_price = klines["closes"][i]
 
                 if exit_price is not None:
                     gross_pnl_pct = (exit_price - entry_price) / entry_price
-                    net_pnl_pct = gross_pnl_pct - round_trip_fee_pct
-                    trades.append(net_pnl_pct)
-                    if verbose:
-                        print(f"  trade @{entry_i}: entry {entry_price:.2f} exit {exit_price:.2f} net {net_pnl_pct*100:.3f}%")
+                    trades.append(gross_pnl_pct - round_trip_fee_pct)
                     in_position = False
             i += 1
+
+        return trades
+
+    @staticmethod
+    def _summarize_trades(trades: List[float]) -> Dict:
+        if not trades:
+            return {"trades": 0, "win_rate": 0, "avg_win": 0, "avg_loss": 0, "expectancy_pct": 0, "total_return_pct": 0}
+        wins = [t for t in trades if t > 0]
+        losses = [t for t in trades if t <= 0]
+        return {
+            "trades": len(trades),
+            "win_rate": len(wins) / len(trades),
+            "avg_win": sum(wins) / len(wins) if wins else 0,
+            "avg_loss": sum(losses) / len(losses) if losses else 0,
+            "expectancy_pct": sum(trades) / len(trades),
+            "total_return_pct": sum(trades),
+        }
+
+    def run_backtest(self, days_back: int = 3, verbose: bool = False) -> dict:
+        """
+        Walks forward through real historical 1-minute candles, applies the
+        exact same analyze_market() decision logic used live, and simulates
+        entries/exits with the same target/stop/fee assumptions. This does
+        NOT guarantee future results will match, but it replaces "we assume
+        a 55% win rate" with an actual measurement on real data, which is
+        the minimum bar before trading a strategy like this with money.
+        """
+        all_klines = self._fetch_historical_klines(days_back)
+        total = len(all_klines["closes"])
+        if total < 350:
+            print("Not enough historical data returned to backtest.")
+            return {}
+
+        print(f"Backtesting over {total} candles (~{total/1440:.1f} days)...")
+        trades = self._simulate_trades(all_klines, self.min_passing_conditions,
+                                        self.stop_loss_pct, self.target_profit_pct)
 
         if not trades:
             print("No trades were triggered by the strategy over this window.")
             return {"trades": 0}
 
-        wins = [t for t in trades if t > 0]
-        losses = [t for t in trades if t <= 0]
-        win_rate = len(wins) / len(trades)
-        avg_win = sum(wins) / len(wins) if wins else 0
-        avg_loss = sum(losses) / len(losses) if losses else 0
-        expectancy_pct = sum(trades) / len(trades)
+        summary = self._summarize_trades(trades)
+        win_rate, avg_win, avg_loss, expectancy_pct = (
+            summary["win_rate"], summary["avg_win"], summary["avg_loss"], summary["expectancy_pct"])
 
         print("\n" + "="*60)
         print("BACKTEST RESULTS (net of estimated fees)")
@@ -1333,6 +1363,100 @@ class ScalperBotV12:
         return {"trades": len(trades), "win_rate": win_rate, "avg_win": avg_win,
                 "avg_loss": avg_loss, "expectancy_pct": expectancy_pct, "total_return_pct": sum(trades)}
 
+    def run_walk_forward_search(self, days_back: int = 14, train_frac: float = 0.7,
+                                 min_trades_per_split: int = 15) -> List[Dict]:
+        """
+        Fetches a longer history, splits it CHRONOLOGICALLY into a training
+        segment and a held-out test segment, then sweeps parameter
+        combinations on the training segment only. A combination is only
+        reported as a candidate if it is ALSO positive on the untouched
+        test segment - that's what separates a real signal from a
+        combination that happened to fit noise in one window.
+
+        This can come back with zero candidates. That is a legitimate,
+        informative result: it means nothing tested here held up
+        out-of-sample, on this symbol/timeframe, with this feature set.
+        It is not something to keep tweaking until it "passes" - doing
+        that just moves the overfitting from the code to you.
+        """
+        all_klines = self._fetch_historical_klines(days_back)
+        total = len(all_klines["closes"])
+        if total < 700:
+            print("Not enough historical data for a meaningful train/test split.")
+            return []
+
+        split_idx = int(total * train_frac)
+        # small overlap so the test segment still has 300 candles of prior
+        # history available for indicators at its own start
+        train = {k: all_klines[k][:split_idx] for k in all_klines}
+        test = {k: all_klines[k][max(0, split_idx - 300):] for k in all_klines}
+
+        print(f"Train: {len(train['closes'])} candles (~{len(train['closes'])/1440:.1f}d) | "
+              f"Test: {len(test['closes'])-300} candles (~{(len(test['closes'])-300)/1440:.1f}d)")
+
+        condition_options = [4, 5, 6, 7]
+        stop_options = [0.006, 0.008, 0.010, 0.012]
+        target_options = [0.008, 0.010, 0.012, 0.015]
+
+        results = []
+        combo_count = 0
+        for min_cond in condition_options:
+            for stop_pct in stop_options:
+                for target_pct in target_options:
+                    combo_count += 1
+                    train_trades = self._simulate_trades(train, min_cond, stop_pct, target_pct)
+                    if len(train_trades) < min_trades_per_split:
+                        continue
+                    train_summary = self._summarize_trades(train_trades)
+                    if train_summary["expectancy_pct"] <= 0:
+                        continue  # no point testing something that failed in-sample
+
+                    test_trades = self._simulate_trades(test, min_cond, stop_pct, target_pct)
+                    if len(test_trades) < min_trades_per_split:
+                        continue
+                    test_summary = self._summarize_trades(test_trades)
+
+                    results.append({
+                        "min_passing_conditions": min_cond, "stop_loss_pct": stop_pct,
+                        "target_profit_pct": target_pct,
+                        "train_expectancy_pct": train_summary["expectancy_pct"],
+                        "train_trades": train_summary["trades"],
+                        "test_expectancy_pct": test_summary["expectancy_pct"],
+                        "test_trades": test_summary["trades"],
+                        "test_win_rate": test_summary["win_rate"],
+                        "holds_out_of_sample": test_summary["expectancy_pct"] > 0,
+                    })
+
+        print(f"\nSwept {combo_count} parameter combinations.")
+        candidates = [r for r in results if r["holds_out_of_sample"]]
+        candidates.sort(key=lambda r: r["test_expectancy_pct"], reverse=True)
+
+        print("="*70)
+        if not candidates:
+            print("RESULT: No parameter combination was positive on BOTH the training")
+            print("and the held-out test segment. That means, on this data, this")
+            print("feature set does not show a real edge for BTCUSDT 1m scalping -")
+            print("not that a threshold somewhere is 'wrong' and needs pushing until")
+            print("a number turns green.")
+            print("="*70)
+            return []
+
+        print(f"RESULT: {len(candidates)} combination(s) positive in-sample AND out-of-sample:")
+        print("-"*70)
+        for r in candidates[:10]:
+            print(f"  conditions>={r['min_passing_conditions']} stop={r['stop_loss_pct']*100:.1f}% "
+                  f"target={r['target_profit_pct']*100:.1f}%  |  "
+                  f"train exp/trade={r['train_expectancy_pct']*100:.3f}% ({r['train_trades']} trades)  "
+                  f"test exp/trade={r['test_expectancy_pct']*100:.3f}% ({r['test_trades']} trades, "
+                  f"{r['test_win_rate']*100:.1f}% win rate)")
+        print("-"*70)
+        print("Even these passed one train/test split on historical data with no")
+        print("slippage, latency, or partial-fill modeling. Treat this as a short")
+        print("list to investigate further (e.g. re-test on a different date range),")
+        print("not as a validated live-ready strategy.")
+        print("="*70)
+        return candidates
+
 # ========================================================================
 # MAIN
 # ========================================================================
@@ -1354,14 +1478,19 @@ if __name__ == "__main__":
         log_level="INFO",
     )
 
-    # Default entrypoint runs a backtest, NOT live trading. This is
-    # deliberate: the previous version went straight to run_forever()
-    # with an unvalidated strategy and lost money. Look at the numbers
-    # this prints, and only call bot.run_forever(...) yourself once
-    # you've decided the expectancy is something you're willing to risk
-    # real money on - and ideally after testing on a longer/different
-    # historical window than the 3 days below.
-    bot.run_backtest(days_back=3, verbose=False)
+    # Default entrypoint runs a walk-forward parameter search, NOT live
+    # trading and NOT a single backtest. A single backtest on one window
+    # (what v12 did) can't tell you if a positive number is a real edge
+    # or noise. This trains on the first ~70% of the window and only
+    # reports parameter combinations that ALSO worked on the untouched
+    # remaining ~30% - and it can honestly come back with nothing.
+    #
+    # If you want a quick single-window sanity check instead, use:
+    #   bot.run_backtest(days_back=3, verbose=False)
+    candidates = bot.run_walk_forward_search(days_back=14, train_frac=0.7)
 
-    # Uncomment only after reviewing the backtest output above:
+    # Only if run_walk_forward_search() returned candidates, and only
+    # after you've reviewed them, would you manually set
+    # bot.min_passing_conditions / bot.stop_loss_pct / bot.target_profit_pct
+    # to one of the printed combinations and call:
     # bot.run_forever(delay_between_cycles=10)
