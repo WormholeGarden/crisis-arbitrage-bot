@@ -389,8 +389,8 @@ class ScalperBotV60:
         self.risk_per_trade = 0.01          # 1% risk per trade
         
         # Entry conditions - VERY STRICT
-        self.min_confidence = 0.7           # Minimum confidence to enter
-        self.min_bullish_signals = 5        # Need 5+ bullish signals
+        self.min_confidence = 0.65           # Minimum confidence to enter
+        self.min_bullish_signals = 4        # Need 5+ bullish signals
         self.max_bearish_signals = 2        # Can't have more than 2 bearish signals
         self.min_bb_position = 0.4          # Must be above lower BB
         self.max_bb_position = 0.85         # Can't be too overbought
