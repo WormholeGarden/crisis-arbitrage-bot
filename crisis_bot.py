@@ -473,4 +473,6 @@ if __name__ == "__main__":
     bot.run_scanner()
 
     # Run a cycle on the best opportunity
+    for i in range(10):
     bot.run_cycle()
+    time.sleep(2)
