@@ -1248,24 +1248,44 @@ class ScalperBotV12:
             time.sleep(0.2)  # be nice to the public endpoint
         return all_klines
 
-    def _simulate_trades(self, klines: Dict, min_passing_conditions: int,
-                          stop_loss_pct: float, target_profit_pct: float) -> List[float]:
-        """Core walk-forward simulation, parameterized so both run_backtest()
-        and run_walk_forward_search() use the exact same logic. Returns a
-        list of net (post-fee) percentage returns, one per closed trade."""
+    def _precompute_analyses(self, klines: Dict, label: str = "") -> List[Optional[Dict]]:
+        """Run analyze_market() exactly once per candle. This is the
+        expensive part (RSI/MACD/BB/support-resistance/etc over a rolling
+        300-candle window) and it does NOT depend on stop/target/threshold
+        parameters, so it must only be done once per candle regardless of
+        how many parameter combinations get swept afterward. Returns a
+        list the same length as klines['closes'], with None for indices
+        before there's enough history (i < 300)."""
         total = len(klines["closes"])
-        trades = []
-        i = 300
-        in_position = False
-        entry_price = entry_i = stop_price = target_price = None
         crisis_score = self.context_country["opportunity_score"] if self.context_country else 0
         wst_class = self.context_country["wst_class"] if self.context_country else "Periphery"
+        analyses: List[Optional[Dict]] = [None] * total
+
+        report_every = max(1, (total - 300) // 10)
+        for i in range(300, total):
+            window = {k: klines[k][i-300:i] for k in klines}
+            analyses[i] = EinsteinStrategy.analyze_market(window, crisis_score, wst_class)
+            if label and (i - 300) % report_every == 0:
+                pct = (i - 300) / max(1, total - 300) * 100
+                print(f"  [{label}] analyzing candles: {pct:.0f}%")
+        return analyses
+
+    def _simulate_trades_from_analyses(self, analyses: List[Optional[Dict]], klines: Dict,
+                                        min_passing_conditions: int, stop_loss_pct: float,
+                                        target_profit_pct: float) -> List[float]:
+        """Cheap part of the sweep: given already-computed indicator
+        analyses, apply a given (threshold, stop, target) combination and
+        return the resulting closed-trade returns. Safe/fast to call many
+        times per set of analyses."""
+        total = len(klines["closes"])
+        trades = []
+        in_position = False
+        entry_price = entry_i = stop_price = target_price = None
         round_trip_fee_pct = self.maker_fee_rate + self.taker_fee_rate
 
-        while i < total:
-            window = {k: klines[k][max(0, i-300):i] for k in klines}
+        for i in range(300, total):
             if not in_position:
-                analysis = EinsteinStrategy.analyze_market(window, crisis_score, wst_class)
+                analysis = analyses[i]
                 win_rate = analysis.get('expected_win_rate', 0.5)
                 net_target = target_profit_pct - round_trip_fee_pct
                 net_stop = stop_loss_pct + round_trip_fee_pct
@@ -1295,9 +1315,19 @@ class ScalperBotV12:
                     gross_pnl_pct = (exit_price - entry_price) / entry_price
                     trades.append(gross_pnl_pct - round_trip_fee_pct)
                     in_position = False
-            i += 1
 
         return trades
+
+    def _simulate_trades(self, klines: Dict, min_passing_conditions: int,
+                          stop_loss_pct: float, target_profit_pct: float) -> List[float]:
+        """Convenience wrapper for a single (threshold, stop, target)
+        evaluation - precomputes analyses then simulates once. Used by
+        run_backtest(). The walk-forward search below precomputes analyses
+        ONCE and reuses them across all 64 combinations instead of calling
+        this repeatedly, which is what made the search slow."""
+        analyses = self._precompute_analyses(klines)
+        return self._simulate_trades_from_analyses(analyses, klines, min_passing_conditions,
+                                                     stop_loss_pct, target_profit_pct)
 
     @staticmethod
     def _summarize_trades(trades: List[float]) -> Dict:
@@ -1394,24 +1424,38 @@ class ScalperBotV12:
         print(f"Train: {len(train['closes'])} candles (~{len(train['closes'])/1440:.1f}d) | "
               f"Test: {len(test['closes'])-300} candles (~{(len(test['closes'])-300)/1440:.1f}d)")
 
+        # FIX: this used to call analyze_market() fresh for every candle,
+        # once per parameter combo (64x redundant work - the indicators
+        # don't depend on stop/target/threshold). Precompute once per
+        # split instead; the 64-combo sweep below then only does cheap
+        # threshold/exit-price comparisons.
+        print("Precomputing indicators for train split (one-time cost)...")
+        train_analyses = self._precompute_analyses(train, label="train")
+        print("Precomputing indicators for test split (one-time cost)...")
+        test_analyses = self._precompute_analyses(test, label="test")
+
         condition_options = [4, 5, 6, 7]
         stop_options = [0.006, 0.008, 0.010, 0.012]
         target_options = [0.008, 0.010, 0.012, 0.015]
 
         results = []
         combo_count = 0
+        print(f"Sweeping {len(condition_options)*len(stop_options)*len(target_options)} combinations "
+              f"against precomputed indicators...")
         for min_cond in condition_options:
             for stop_pct in stop_options:
                 for target_pct in target_options:
                     combo_count += 1
-                    train_trades = self._simulate_trades(train, min_cond, stop_pct, target_pct)
+                    train_trades = self._simulate_trades_from_analyses(
+                        train_analyses, train, min_cond, stop_pct, target_pct)
                     if len(train_trades) < min_trades_per_split:
                         continue
                     train_summary = self._summarize_trades(train_trades)
                     if train_summary["expectancy_pct"] <= 0:
                         continue  # no point testing something that failed in-sample
 
-                    test_trades = self._simulate_trades(test, min_cond, stop_pct, target_pct)
+                    test_trades = self._simulate_trades_from_analyses(
+                        test_analyses, test, min_cond, stop_pct, target_pct)
                     if len(test_trades) < min_trades_per_split:
                         continue
                     test_summary = self._summarize_trades(test_trades)
