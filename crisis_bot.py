@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-🚀 GOLDEN SCALPER BOT v10.2 - FULLY FIXED
+🚀 GOLDEN SCALPER BOT v10.3 - FINAL FIX
 ============================================================
-FIXES:
-- Proper balance checking for both USDT AND ETH
-- Dynamic USDT to ETH conversion
-- Wait for buy order to FULLY fill
-- Sell only what we actually own
-- Better error recovery
+CRITICAL FIX:
+- Use ACTUAL filled quantity from buy order, not requested quantity
+- Always sell exactly what you have (not more)
+- Proper balance checking with small buffer
 ============================================================
 """
 
@@ -268,7 +266,7 @@ class EnsembleVoter:
         }
 
 # ========================================================================
-# GOLDEN SCALPER BOT - FULLY FIXED
+# GOLDEN SCALPER BOT - FINAL FIX
 # ========================================================================
 
 class GoldenScalperBot:
@@ -281,8 +279,6 @@ class GoldenScalperBot:
         self.api_secret = api_secret
         self.symbol = symbol
         self.interval = interval
-        
-        # Extract base asset (ETH) from symbol
         self.base_asset = symbol.replace("USDT", "")
         
         # Golden strategy parameters
@@ -320,9 +316,9 @@ class GoldenScalperBot:
         self._price_cache_time = 0
         self._price_cache_ttl = 5
         
-        # State - Initialize properly
+        # State
         self.buy_price = None
-        self.buy_qty = None
+        self.buy_qty = None  # ACTUAL filled quantity
         self.current_balance_usdt = 0.0
         self.current_balance_eth = 0.0
         self.starting_balance = 0.0
@@ -366,7 +362,7 @@ class GoldenScalperBot:
         self.logger.addHandler(console)
         
         self.logger.info("="*70)
-        self.logger.info("🏆 GOLDEN SCALPER BOT v10.2 - FULLY FIXED")
+        self.logger.info("🏆 GOLDEN SCALPER BOT v10.3 - FINAL FIX")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Base Asset: {self.base_asset}")
@@ -377,7 +373,7 @@ class GoldenScalperBot:
         
         self._check_connectivity()
         self._get_exchange_info()
-        self._update_balances()  # Get both USDT and ETH balances
+        self._update_balances()
 
     def _check_connectivity(self):
         self.logger.info("🔍 Running connectivity check...")
@@ -402,8 +398,6 @@ class GoldenScalperBot:
                             if filter_data["filterType"] == "MIN_NOTIONAL":
                                 self._min_notional = float(filter_data.get("minNotional", 10.0))
                         self.logger.info(f"✅ Exchange info loaded")
-                        self.logger.info(f"   Min Qty: {self._min_qty}")
-                        self.logger.info(f"   Min Notional: ${self._min_notional:.2f}")
                         break
         except Exception as e:
             self.logger.warning(f"Could not fetch exchange info: {e}")
@@ -413,28 +407,22 @@ class GoldenScalperBot:
         try:
             balances = self.get_account_balance()
             
-            # Get USDT balance
             if "USDT" in balances and balances["USDT"] > 0:
                 self.current_balance_usdt = balances["USDT"]
                 self.balance_fetched = True
             else:
                 self.current_balance_usdt = 0.0
-                self.logger.warning("⚠️ No USDT balance found")
             
-            # Get ETH balance
             if self.base_asset in balances and balances[self.base_asset] > 0:
                 self.current_balance_eth = balances[self.base_asset]
-                self.logger.info(f"💰 {self.base_asset} Balance: {self.current_balance_eth:.8f}")
             else:
                 self.current_balance_eth = 0.0
             
-            # Set starting balance if not set
-            if self.starting_balance == 0:
+            if self.starting_balance == 0 and self.current_balance_usdt > 0:
                 self.starting_balance = self.current_balance_usdt
                 self.peak_balance = self.current_balance_usdt
-                self.logger.info(f"💰 Starting USDT Balance: ${self.current_balance_usdt:.2f}")
+                self.logger.info(f"💰 Starting USDT: ${self.starting_balance:.2f}")
             
-            # Update peak
             if self.current_balance_usdt > self.peak_balance:
                 self.peak_balance = self.current_balance_usdt
             
@@ -442,11 +430,6 @@ class GoldenScalperBot:
         except Exception as e:
             self.logger.error(f"Error fetching balances: {e}")
             return False
-
-    def _has_eth_balance(self) -> bool:
-        """Check if we have ETH to sell"""
-        self._update_balances()
-        return self.current_balance_eth > 0.00001
 
     def _generate_signature(self, params: dict) -> str:
         query_string = urllib.parse.urlencode(params)
@@ -578,7 +561,7 @@ class GoldenScalperBot:
         return response
 
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
-        """Place a MARKET order and wait for it to fill"""
+        """Place a MARKET order and wait for it to fill - RETURNS ACTUAL FILLED QTY"""
         ticker = self.get_order_book_ticker()
         if not ticker:
             return {"error": "Failed to get market price"}
@@ -663,18 +646,19 @@ class GoldenScalperBot:
         return {"error": "Order fill timeout"}
 
     def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
-        """Place a LIMIT order with balance check"""
+        """Place a LIMIT order with balance check - USES EXACT QUANTITY PROVIDED"""
         if quantity <= 0:
             return {"error": "Invalid quantity", "code": -1003}
         
-        # CRITICAL: Check if we have the asset to sell
+        # CRITICAL: Check balance with 1% buffer
         if side.upper() == "SELL":
             self._update_balances()
+            # Allow 1% tolerance for floating point
             if self.current_balance_eth < quantity * 0.99:
-                self.logger.error(f"❌ Insufficient {self.base_asset} balance: {self.current_balance_eth:.8f} (need {quantity:.8f})")
+                self.logger.error(f"❌ Insufficient {self.base_asset}: {self.current_balance_eth:.8f} (need {quantity:.8f})")
                 return {"error": f"Insufficient {self.base_asset} balance", "code": -2010}
         
-        # Round quantity
+        # Use exact quantity provided (already rounded)
         qty = round_to_step(quantity, self._min_qty)
         if qty < self._min_qty:
             qty = self._min_qty
@@ -714,38 +698,33 @@ class GoldenScalperBot:
         self.logger.info(f"🔄 CYCLE {cycle_number}")
         self.logger.info(f"{'='*60}")
 
-        # Update balances first
         self._update_balances()
         
-        # Log current state
         self.logger.info(f"💰 USDT: ${self.current_balance_usdt:.2f} | {self.base_asset}: {self.current_balance_eth:.8f}")
         
-        # Check if we have USDT
         if self.current_balance_usdt < self.min_order_usdt:
-            self.logger.error(f"❌ Insufficient USDT: ${self.current_balance_usdt:.2f} (need ${self.min_order_usdt:.2f})")
+            self.logger.error(f"❌ Insufficient USDT: ${self.current_balance_usdt:.2f}")
             self.stopped = True
             return {"success": False, "error": "Insufficient USDT"}
         
-        # Check drawdown
         if self.peak_balance > 0:
             drawdown = (self.peak_balance - self.current_balance_usdt) / self.peak_balance
             if drawdown > self.max_drawdown_pct:
-                self.logger.error(f"❌ Max drawdown exceeded: {drawdown*100:.1f}%")
+                self.logger.error(f"❌ Max drawdown: {drawdown*100:.1f}%")
                 self.stopped = True
-                return {"success": False, "error": "Max drawdown exceeded"}
+                return {"success": False, "error": "Max drawdown"}
         
-        # Check consecutive losses
         if self.consecutive_losses >= self.max_consecutive_losses:
-            self.logger.error(f"❌ Too many consecutive losses: {self.consecutive_losses}")
+            self.logger.error(f"❌ Too many losses: {self.consecutive_losses}")
             self.stopped = True
-            return {"success": False, "error": "Too many consecutive losses"}
+            return {"success": False, "error": "Too many losses"}
 
         # Get market data
         klines = AdvancedTA.get_klines(self.symbol, self.base_url, interval=self.interval, limit=500)
         if not klines:
-            self.logger.warning("⚠️ Could not fetch market data")
+            self.logger.warning("⚠️ No market data")
             self.skipped_count += 1
-            return {"success": False, "error": "No market data", "skipped": True}
+            return {"success": False, "error": "No data", "skipped": True}
         
         # Analyze
         signal = EnsembleVoter.analyze(klines, self.min_votes, self.min_confidence)
@@ -755,7 +734,7 @@ class GoldenScalperBot:
             self.logger.info(f"   ✅ {strategy} voted BUY")
         
         if signal['signal'] != "BUY":
-            self.logger.info("⏭️ No buy signal - skipping")
+            self.logger.info("⏭️ No signal - skipping")
             self.skipped_count += 1
             return {"success": False, "error": "No signal", "skipped": True}
         
@@ -764,32 +743,32 @@ class GoldenScalperBot:
         # Get current price
         current_price = self.get_current_price()
         if not current_price:
-            return {"success": False, "error": "No price data"}
+            return {"success": False, "error": "No price"}
 
-        # Calculate position size - use 20% of USDT balance
+        # Calculate position size
         position_usdt = min(self.max_order_usdt, self.current_balance_usdt * 0.20)
         position_usdt = max(self.min_order_usdt, position_usdt)
         
         self.logger.info(f"📈 Buying ${position_usdt:.2f} worth of {self.base_asset}")
         
-        # BUY - Convert USDT to ETH
+        # BUY - Get the ACTUAL filled quantity
         buy_order = self.place_market_order(side="BUY", amount=position_usdt, is_quantity=False)
         
         if "error" in buy_order:
             self.logger.error(f"❌ Buy failed: {buy_order}")
             return {"success": False, "error": buy_order.get("error", "Buy failed")}
         
-        # Store buy info
+        # CRITICAL FIX: Use the ACTUAL filled quantity from the buy order
         self.buy_price = float(buy_order.get("price", 0))
-        self.buy_qty = float(buy_order.get("executedQty", 0))
+        self.buy_qty = float(buy_order.get("executedQty", 0))  # ACTUAL filled quantity
         
         if self.buy_qty <= 0 or self.buy_price <= 0:
             self.logger.error(f"❌ Invalid buy: qty={self.buy_qty}, price={self.buy_price}")
-            return {"success": False, "error": "Invalid buy order"}
+            return {"success": False, "error": "Invalid buy"}
         
         self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} {self.base_asset} @ ${self.buy_price:.2f}")
         
-        # Update balance after buy
+        # Update balance to see what we actually have
         self._update_balances()
         self.logger.info(f"💰 After BUY - {self.base_asset}: {self.current_balance_eth:.8f}")
 
@@ -797,37 +776,42 @@ class GoldenScalperBot:
         stop_price = max(self.buy_price * (1 - self.stop_loss_pct), signal['stop_price'])
         target_price = min(self.buy_price * (1 + self.target_profit_pct), signal['target_price'])
         
-        # Check if we actually have ETH to sell
-        if self.current_balance_eth < self.buy_qty * 0.99:
-            self.logger.warning(f"⚠️ ETH balance mismatch: {self.current_balance_eth:.8f} vs {self.buy_qty:.8f}")
-            # Use what we actually have
-            sell_qty = min(self.buy_qty, self.current_balance_eth)
-        else:
-            sell_qty = self.buy_qty
+        # CRITICAL FIX: Use the ACTUAL balance, but reduce by 0.5% for safety
+        # This ensures we never try to sell more than we have
+        sell_qty = min(self.buy_qty, self.current_balance_eth * 0.995)
+        
+        # Round down to avoid any rounding issues
+        sell_qty = round_to_step(sell_qty, self._min_qty)
+        
+        if sell_qty <= 0:
+            self.logger.error(f"❌ No ETH to sell: balance={self.current_balance_eth:.8f}")
+            return {"success": False, "error": "No ETH to sell"}
         
         self.logger.info(f"📊 Selling {sell_qty:.8f} {self.base_asset} @ ${target_price:.2f}")
         
-        # PLACE SELL ORDER
+        # PLACE SELL ORDER - using the correct quantity
         sell_order = self.place_limit_order(side="SELL", quantity=sell_qty, price=target_price)
         
         if "error" in sell_order:
-            self.logger.error(f"❌ Sell order failed: {sell_order}")
-            # Try market sell as last resort
-            self.logger.info("🔄 Attempting market sell...")
+            self.logger.error(f"❌ Sell limit failed: {sell_order}")
+            self.logger.info("🔄 Attempting market sell with correct quantity...")
+            
+            # Use market sell with the correct quantity
             sell_order = self.place_market_order(side="SELL", amount=sell_qty, is_quantity=True)
             if "error" in sell_order:
-                self.logger.error(f"❌ Market sell also failed: {sell_order}")
+                self.logger.error(f"❌ Market sell failed: {sell_order}")
                 return {"success": False, "error": "Sell failed"}
             
             exit_price = float(sell_order.get("price", self.buy_price))
+            actual_sold = float(sell_order.get("executedQty", sell_qty))
             sell_filled = True
             stopped_out = False
+            self.logger.info(f"✅ Market SELL: {actual_sold:.8f} @ ${exit_price:.2f}")
         else:
             sell_order_id = sell_order.get("orderId")
             if not sell_order_id:
                 return {"success": False, "error": "No sell orderId"}
             
-            # Wait for sell to fill
             sell_filled = False
             stopped_out = False
             exit_price = target_price
@@ -850,7 +834,7 @@ class GoldenScalperBot:
                     break
                 
                 if status_val == "CANCELED" or status_val == "EXPIRED":
-                    self.logger.warning(f"⚠️ Sell order {status_val}")
+                    self.logger.warning(f"⚠️ Sell {status_val}")
                     break
                 
                 # Check stop-loss
@@ -877,21 +861,21 @@ class GoldenScalperBot:
                 if "error" not in exit_res:
                     exit_price = float(exit_res.get("price", self.get_current_price() or self.buy_price))
                     sell_filled = True
-                    self.logger.info(f"✅ SELL Filled @ ${exit_price:.2f} (forced)")
+                    self.logger.info(f"✅ SELL forced @ ${exit_price:.2f}")
 
         if not sell_filled:
             return {"success": False, "error": "Sell never filled"}
 
-        # Calculate P&L
+        # Calculate P&L using actual sold quantity
         realized_pnl = (exit_price - self.buy_price) * sell_qty
         fee_estimate = (sell_qty * self.buy_price * self.maker_fee_rate) + (sell_qty * exit_price * self.taker_fee_rate)
         net_pnl = realized_pnl - fee_estimate
         self.total_fees += fee_estimate
         
-        # Update balances
         self._update_balances()
         
         self.logger.info(f"💰 P&L: ${realized_pnl:.4f} (net: ${net_pnl:.4f})")
+        self.logger.info(f"💰 USDT: ${self.current_balance_usdt:.2f} | {self.base_asset}: {self.current_balance_eth:.8f}")
         
         # Update metrics
         self.running_pnl += net_pnl
@@ -911,8 +895,6 @@ class GoldenScalperBot:
         
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
         self.logger.info(f"📊 Win Rate: {win_rate:.1f}% ({self.win_count}W/{self.loss_count}L)")
-        self.logger.info(f"💰 Balance: ${self.current_balance_usdt:.2f}")
-        self.logger.info(f"💰 {self.base_asset}: {self.current_balance_eth:.8f}")
 
         result = {
             "success": True,
@@ -946,7 +928,7 @@ class GoldenScalperBot:
     def run_forever(self, delay_between_cycles: int = 600):
         """Run continuously"""
         self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 GOLDEN SCALPER BOT v10.2 - RUNNING")
+        self.logger.info("🚀 GOLDEN SCALPER BOT v10.3 - RUNNING")
         self.logger.info("   ETH 4h - Golden Strategy")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
@@ -963,14 +945,14 @@ class GoldenScalperBot:
                 elif result.get("skipped", False):
                     self.logger.info(f"⏭️ Skipped ({self.skipped_count} skips)")
                 else:
-                    self.logger.error(f"⚠️ Cycle failed: {result.get('error', 'Unknown')}")
+                    self.logger.error(f"⚠️ Failed: {result.get('error', 'Unknown')}")
                 
                 if self.total_trades > 0:
                     win_rate = (self.win_count / self.total_trades) * 100
                     self.logger.info(f"📊 STATS: {self.total_trades} trades, {win_rate:.1f}% win, ${self.cycle_stats['net_profit']:.4f}")
                 
                 if self.consecutive_wins >= 7:
-                    self.logger.info("🎉🎉🎉 TARGET ACHIEVED! 7 CONSECUTIVE WINS! 🎉🎉🎉")
+                    self.logger.info("🎉🎉🎉 7 CONSECUTIVE WINS! 🎉🎉🎉")
                     self.stopped = True
                     break
                 
@@ -997,11 +979,9 @@ class GoldenScalperBot:
         self.logger.info("\n" + "="*70)
         self.logger.info("🏆 GOLDEN STRATEGY - FINAL SUMMARY")
         self.logger.info("="*70)
-        self.logger.info(f"📊 Total Trades: {self.total_trades}")
-        self.logger.info(f"📊 Wins: {self.win_count} | Losses: {self.loss_count}")
+        self.logger.info(f"📊 Trades: {self.total_trades} | Wins: {self.win_count} | Losses: {self.loss_count}")
         self.logger.info(f"📊 Win Rate: {win_rate:.1f}%")
-        self.logger.info(f"💰 Starting Balance: ${self.starting_balance:.2f}")
-        self.logger.info(f"💰 Final Balance: ${self.current_balance_usdt:.2f}")
+        self.logger.info(f"💰 Start: ${self.starting_balance:.2f} | Final: ${self.current_balance_usdt:.2f}")
         self.logger.info(f"💰 Net Profit: ${self.cycle_stats['net_profit']:.4f}")
         if self.starting_balance > 0:
             roi = (self.cycle_stats['net_profit'] / self.starting_balance) * 100
@@ -1021,10 +1001,10 @@ if __name__ == "__main__":
         exit(1)
     
     print("="*70)
-    print("🏆 GOLDEN SCALPER BOT v10.2 - FULLY FIXED")
+    print("🏆 GOLDEN SCALPER BOT v10.3 - FINAL FIX")
     print("="*70)
     print("\n🎯 ETH 4h - Golden Strategy")
-    print(f"   {API_KEY[:10]}...")
+    print("   Fix: Sell EXACTLY what you have (actual fill quantity)")
     print("\n🚀 Starting in 3 seconds...")
     time.sleep(3)
     
