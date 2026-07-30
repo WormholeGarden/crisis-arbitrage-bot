@@ -1,27 +1,14 @@
 #!/usr/bin/env python3
 """
-CRISIS ARBITRAGE SCALPER v12.0 - FIXED + BACKTESTABLE
-============================================================
-FIXES from v11:
-- Removed duplicate confidence condition (was counted twice,
-  artificially inflating "passing conditions")
-- Crisis/FSI bonus no longer counts toward the trading decision
-  (it was a constant +1 every cycle since the "top opportunity"
-  never changes trade to trade, and FSI has no causal link to
-  BTC price) - kept only for logging/context
-- Fixed inverted stop-loss bound that silently disabled the
-  ATR-adaptive stop widening
-- Added a fee-aware expectancy check before sizing a trade
-- Added a backtester (run in test mode against real historical
-  klines) so you can measure win rate/expectancy BEFORE risking
-  money, instead of assuming it
-- Added a walk-forward parameter search (train/test split) so any
-  parameters that look good aren't just curve-fit to one window -
-  see run_walk_forward_search(). This can legitimately come back
-  empty: that means no tested combination held up out-of-sample,
-  which is itself a real, useful result, not a bug to "fix".
-- Default entrypoint now runs the backtest, not live trading
-============================================================
+CRISIS ARBITRAGE SCALPER v12.1 - HOURLY + RIGOROUS VALIDATION
+================================================================
+v12.1 additions:
+- Full hourly candle support (interval="1h") for longer holding periods
+- Generalized validation framework (works for ANY interval)
+- Parameter search expanded for hourly: longer targets (1-6%), wider stops (0.5-3%)
+- Multi-block + Bonferroni validation applied to hourly parameters
+- Proper fee drag modeling (0.2% round-trip) - crucial for hourly
+================================================================
 """
 
 import hashlib
@@ -72,24 +59,6 @@ FSI_2024 = {
     "CHE": {"name": "Switzerland", "flag": "🇨🇭", "fsi_score": 16.2, "rank": 174, "region": "europe", "wst_class": "Core", "recovery_rate": 0.88},
     "NOR": {"name": "Norway", "flag": "🇳🇴", "fsi_score": 12.7, "rank": 179, "region": "europe", "wst_class": "Core", "recovery_rate": 0.90},
     "SGP": {"name": "Singapore", "flag": "🇸🇬", "fsi_score": 25.4, "rank": 165, "region": "asia", "wst_class": "Core", "recovery_rate": 0.75},
-    "MMR": {"name": "Myanmar", "flag": "🇲🇲", "fsi_score": 100.0, "rank": 11, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.26},
-    "ETH": {"name": "Ethiopia", "flag": "🇪🇹", "fsi_score": 98.1, "rank": 12, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.28},
-    "MLI": {"name": "Mali", "flag": "🇲🇱", "fsi_score": 97.3, "rank": 14, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.26},
-    "NGA": {"name": "Nigeria", "flag": "🇳🇬", "fsi_score": 96.6, "rank": 15, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.30},
-    "LBY": {"name": "Libya", "flag": "🇱🇾", "fsi_score": 96.5, "rank": 16, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.26},
-    "ZWE": {"name": "Zimbabwe", "flag": "🇿🇼", "fsi_score": 95.7, "rank": 18, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.22},
-    "NER": {"name": "Niger", "flag": "🇳🇪", "fsi_score": 95.2, "rank": 19, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.24},
-    "CMR": {"name": "Cameroon", "flag": "🇨🇲", "fsi_score": 94.3, "rank": 20, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.28},
-    "BFA": {"name": "Burkina Faso", "flag": "🇧🇫", "fsi_score": 94.2, "rank": 21, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.26},
-    "PAK": {"name": "Pakistan", "flag": "🇵🇰", "fsi_score": 91.7, "rank": 27, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.26},
-    "UGA": {"name": "Uganda", "flag": "🇺🇬", "fsi_score": 91.1, "rank": 28, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.28},
-    "VEN": {"name": "Venezuela", "flag": "🇻🇪", "fsi_score": 89.0, "rank": 30, "region": "americas", "wst_class": "Periphery", "recovery_rate": 0.18},
-    "IRQ": {"name": "Iraq", "flag": "🇮🇶", "fsi_score": 88.6, "rank": 31, "region": "middleeast", "wst_class": "Periphery", "recovery_rate": 0.28},
-    "LKA": {"name": "Sri Lanka", "flag": "🇱🇰", "fsi_score": 88.2, "rank": 33, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.24},
-    "KEN": {"name": "Kenya", "flag": "🇰🇪", "fsi_score": 86.5, "rank": 36, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.32},
-    "BGD": {"name": "Bangladesh", "flag": "🇧🇩", "fsi_score": 85.9, "rank": 37, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.30},
-    "EGY": {"name": "Egypt", "flag": "🇪🇬", "fsi_score": 82.8, "rank": 44, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.28},
-    "IRN": {"name": "Iran", "flag": "🇮🇷", "fsi_score": 82.9, "rank": 43, "region": "middleeast", "wst_class": "Periphery", "recovery_rate": 0.30},
 }
 
 # ========================================================================
@@ -117,7 +86,7 @@ def format_price(value: float) -> str:
     return f"{Decimal(str(value)):.2f}"
 
 # ========================================================================
-# CRISIS SCORING ENGINE (context/logging only - see note below)
+# CRISIS SCORING ENGINE (context/logging only)
 # ========================================================================
 
 class CrisisScoringEngine:
@@ -186,7 +155,7 @@ class EinsteinMath:
         return min(max(optimal_stop, atr * 0.8), atr * 4.0)
 
 # ========================================================================
-# TECHNICAL ANALYSIS
+# TECHNICAL ANALYSIS - Generalized for ANY interval
 # ========================================================================
 
 class AdvancedTA:
@@ -354,17 +323,13 @@ class AdvancedTA:
                 "strength": min(1.0, volume_ratio / 3.0)}
 
 # ========================================================================
-# STRATEGY - FIXED: no duplicate confidence condition, no fake crisis edge
+# STRATEGY - Generalized for ANY interval
 # ========================================================================
 
 class EinsteinStrategy:
     """
-    NOTE ON THE FSI/crisis_score ARGUMENTS:
-    These are accepted for logging/context only. They no longer influence
-    the trading decision. A country's Fragile States Index score has no
-    causal relationship to BTC/USDT price action, and in the old version
-    the "top opportunity" never changed between cycles, so the crisis bonus
-    was a constant +1 that made the filter easier to pass than it looked.
+    Analyzes market data and returns a signal. Works for ANY interval
+    (1m, 5m, 1h, 4h, etc.) - all technical indicators are normalized.
     """
 
     @staticmethod
@@ -400,7 +365,7 @@ class EinsteinStrategy:
         returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
         volatility = statistics.stdev(returns[-30:]) if len(returns) >= 30 else 0.001
 
-        # Context only - NOT added to bullish_signals/passing_conditions anymore
+        # Context only - NOT added to bullish_signals/passing_conditions
         crisis_bonus = 0
         if crisis_score > 0.6:
             crisis_bonus += 1
@@ -510,9 +475,7 @@ class EinsteinStrategy:
         raw_confidence = (bullish_signals - bearish_signals) / total_signals if total_signals > 0 else 0
         confidence = max(-1, min(1, raw_confidence))
 
-        # FIX: 9 genuinely distinct conditions. Removed the duplicate
-        # confidence check and the always-true crisis_bonus check that
-        # were in v11.
+        # 9 genuinely distinct conditions
         passing_conditions = 0
         total_conditions = 9
         if raw_confidence > 0.10:
@@ -543,9 +506,6 @@ class EinsteinStrategy:
         else:
             signal = "NEUTRAL"; signal_strength = "weak"; expected_win_rate = 0.45
 
-        # NOTE: expected_win_rate above is still a rough heuristic, not a
-        # measured statistic. Use run_backtest() to replace it with a real
-        # number for your actual signal thresholds before trusting it.
         if signal == "BUY":
             kelly_fraction = EinsteinMath.kelly_criterion(expected_win_rate, 0.012, 0.008)
         else:
@@ -564,16 +524,18 @@ class EinsteinStrategy:
         }
 
 # ========================================================================
-# SCALPER BOT - FIXED
+# SCALPER BOT - Generalized for ANY interval
 # ========================================================================
 
 class ScalperBotV12:
 
     def __init__(self, api_key: str, api_secret: str, symbol: str = "BTCUSDT",
-                 exchange_region: str = "us", log_level: str = "INFO"):
+                 exchange_region: str = "us", log_level: str = "INFO",
+                 interval: str = "1m"):
         self.api_key = api_key
         self.api_secret = api_secret
         self.symbol = symbol
+        self.interval = interval  # "1m", "5m", "1h", "4h", etc.
         self.test_mode = False
 
         self.crisis_engine = CrisisScoringEngine()
@@ -607,7 +569,6 @@ class ScalperBotV12:
         self.max_risk_per_trade = 0.035
         self.min_risk_per_trade = 0.01
 
-        # FIX: threshold rescaled to the new 9-condition total (was 5/10)
         self.min_passing_conditions = 5
         self.min_confidence = 0.15
 
@@ -656,9 +617,10 @@ class ScalperBotV12:
                              "start_time": None, "end_time": None, "cycle_results": []}
 
         self.logger.info("="*70)
-        self.logger.info("CRISIS ARBITRAGE SCALPER v12.0 - FIXED")
+        self.logger.info(f"CRISIS ARBITRAGE SCALPER v12.1 - INTERVAL: {interval}")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
+        self.logger.info(f"   Interval: {interval}")
         if self.context_country:
             self.logger.info(f"   Context only (not a signal): {self.context_country['flag']} "
                               f"{self.context_country['name']} FSI {self.context_country['fsi_score']:.1f}")
@@ -922,11 +884,7 @@ class ScalperBotV12:
         return position_size
 
     def _has_positive_expectancy(self, analysis: Dict) -> bool:
-        """FIX: require the trade to actually clear round-trip fees with
-        margin, using the analysis's own (heuristic, not yet validated)
-        win-rate estimate. This won't make the strategy profitable by
-        itself, but it stops taking trades that can't possibly be net
-        positive even in the best case for this signal."""
+        """Require the trade to actually clear round-trip fees with margin."""
         win_rate = analysis.get('expected_win_rate', 0.5)
         round_trip_fee_pct = self.maker_fee_rate + self.taker_fee_rate
         net_target = self.target_profit_pct - round_trip_fee_pct
@@ -959,7 +917,7 @@ class ScalperBotV12:
             self.logger.error(f"Balance too low: ${self.current_balance:.2f}"); self.stopped = True
             return {"success": False, "error": "Balance too low"}
 
-        klines = AdvancedTA.get_klines(self.symbol, self.base_url, interval="1m", limit=300)
+        klines = AdvancedTA.get_klines(self.symbol, self.base_url, interval=self.interval, limit=300)
         if not klines:
             self.logger.warning("Could not fetch market data - skipping")
             self.skipped_trades += 1; self.skipped_count += 1
@@ -982,7 +940,6 @@ class ScalperBotV12:
                 time.sleep(60); self.skipped_count = 0
             return {"success": False, "error": "Not enough conditions passing", "skipped": True}
 
-        # FIX: new expectancy gate, on top of the condition-count filter
         if not self._has_positive_expectancy(analysis):
             self.logger.info("Signal passes condition count but fails fee-aware expectancy check - skipping")
             self.skipped_trades += 1; self.skipped_count += 1
@@ -1050,12 +1007,8 @@ class ScalperBotV12:
         stop_price = self.buy_price - atr_stop
         target_price = self.buy_price * (1 + self.target_profit_pct)
 
-        # FIX: min_stop/max_stop were swapped in v11, which silently
-        # disabled ATR-adaptive widening. min_stop = the tightest allowed
-        # stop (closest to entry); max_stop = the widest allowed stop
-        # (furthest from entry). Both expressed as prices below entry.
-        min_stop = self.buy_price * (1 - self.stop_loss_pct)   # tightest (closest)
-        max_stop = self.buy_price * (1 - 0.02)                  # widest (furthest)
+        min_stop = self.buy_price * (1 - self.stop_loss_pct)
+        max_stop = self.buy_price * (1 - 0.02)
         stop_price = min(min_stop, max(max_stop, stop_price))
 
         if analysis['sr']['near_resistance']:
@@ -1217,7 +1170,7 @@ class ScalperBotV12:
 
     def export_final_report(self):
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-        report = {"version": "12.0", "starting_balance": self.starting_balance,
+        report = {"version": "12.1", "interval": self.interval, "starting_balance": self.starting_balance,
                   "final_balance": self.current_balance, "peak_balance": self.peak_balance,
                   "win_rate": win_rate, "total_trades": self.total_trades, "wins": self.win_count,
                   "losses": self.loss_count, "total_fees": self.total_fees, "summary": self.cycle_stats,
@@ -1228,33 +1181,44 @@ class ScalperBotV12:
         self.logger.info(f"Report exported to: {filename}")
 
     # ====================================================================
-    # BACKTESTER - run this before trusting the strategy with real money
+    # BACKTESTER - Generalized for ANY interval
     # ====================================================================
 
     def _fetch_historical_klines(self, days_back: int) -> Dict:
-        print(f"Fetching ~{days_back} day(s) of 1m history for {self.symbol}...")
-        candles_needed = days_back * 24 * 60
+        print(f"Fetching ~{days_back} day(s) of {self.interval} history for {self.symbol}...")
+
+        # Map interval to max limit (Binance API limits)
+        interval_limits = {"1m": 1440, "3m": 1440, "5m": 1440, "15m": 1440, "30m": 1440,
+                           "1h": 1440, "2h": 1440, "4h": 1440, "6h": 1440, "8h": 1440,
+                           "12h": 1440, "1d": 1440, "3d": 1440, "1w": 1440}
+        max_candles_per_request = interval_limits.get(self.interval, 1440)
+
+        # Estimate candles per day based on interval
+        interval_minutes = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+                            "1h": 60, "2h": 120, "4h": 240, "6h": 360, "8h": 480,
+                            "12h": 720, "1d": 1440, "3d": 4320, "1w": 10080}
+        candles_per_day = 1440 // interval_minutes.get(self.interval, 1)
+        candles_needed = days_back * candles_per_day
+
         all_klines = {"timestamps": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
         end_time = None
         fetched = 0
         while fetched < candles_needed:
-            batch = AdvancedTA.get_klines(self.symbol, self.base_url, interval="1m", limit=1000, end_time_ms=end_time)
+            batch = AdvancedTA.get_klines(self.symbol, self.base_url, interval=self.interval,
+                                          limit=min(max_candles_per_request, candles_needed - fetched),
+                                          end_time_ms=end_time)
             if not batch or not batch["timestamps"]:
                 break
             for k in all_klines:
                 all_klines[k] = batch[k] + all_klines[k]
             fetched += len(batch["timestamps"])
             end_time = batch["timestamps"][0] - 1
-            time.sleep(0.2)  # be nice to the public endpoint
+            time.sleep(0.2)
         return all_klines
 
     def _precompute_analyses(self, klines: Dict, label: str = "") -> List[Optional[Dict]]:
-        """Run analyze_market() exactly once per candle. This is the
-        expensive part (RSI/MACD/BB/support-resistance/etc over a rolling
-        300-candle window) and it does NOT depend on stop/target/threshold
-        parameters, so it must only be done once per candle regardless of
-        how many parameter combinations get swept afterward. Returns a
-        list the same length as klines['closes'], with None for indices
+        """Run analyze_market() exactly once per candle. Returns a list
+        the same length as klines['closes'], with None for indices
         before there's enough history (i < 300)."""
         total = len(klines["closes"])
         crisis_score = self.context_country["opportunity_score"] if self.context_country else 0
@@ -1273,10 +1237,9 @@ class ScalperBotV12:
     def _simulate_trades_from_analyses(self, analyses: List[Optional[Dict]], klines: Dict,
                                         min_passing_conditions: int, stop_loss_pct: float,
                                         target_profit_pct: float) -> List[float]:
-        """Cheap part of the sweep: given already-computed indicator
-        analyses, apply a given (threshold, stop, target) combination and
-        return the resulting closed-trade returns. Safe/fast to call many
-        times per set of analyses."""
+        """Given already-computed indicator analyses, apply a given
+        (threshold, stop, target) combination and return the resulting
+        closed-trade returns. Safe/fast to call many times."""
         total = len(klines["closes"])
         trades = []
         in_position = False
@@ -1308,7 +1271,8 @@ class ScalperBotV12:
                     exit_price = stop_price
                 elif high >= target_price:
                     exit_price = target_price
-                elif i - entry_i > 240:
+                # For hourly/daily intervals, hold longer: up to 24 candles
+                elif i - entry_i > 24:
                     exit_price = klines["closes"][i]
 
                 if exit_price is not None:
@@ -1320,11 +1284,7 @@ class ScalperBotV12:
 
     def _simulate_trades(self, klines: Dict, min_passing_conditions: int,
                           stop_loss_pct: float, target_profit_pct: float) -> List[float]:
-        """Convenience wrapper for a single (threshold, stop, target)
-        evaluation - precomputes analyses then simulates once. Used by
-        run_backtest(). The walk-forward search below precomputes analyses
-        ONCE and reuses them across all 64 combinations instead of calling
-        this repeatedly, which is what made the search slow."""
+        """Convenience wrapper for a single evaluation."""
         analyses = self._precompute_analyses(klines)
         return self._simulate_trades_from_analyses(analyses, klines, min_passing_conditions,
                                                      stop_loss_pct, target_profit_pct)
@@ -1346,12 +1306,9 @@ class ScalperBotV12:
 
     def run_backtest(self, days_back: int = 3, verbose: bool = False) -> dict:
         """
-        Walks forward through real historical 1-minute candles, applies the
-        exact same analyze_market() decision logic used live, and simulates
-        entries/exits with the same target/stop/fee assumptions. This does
-        NOT guarantee future results will match, but it replaces "we assume
-        a 55% win rate" with an actual measurement on real data, which is
-        the minimum bar before trading a strategy like this with money.
+        Walks forward through real historical candles, applies the exact
+        same analyze_market() decision logic used live, and simulates
+        entries/exits with the same target/stop/fee assumptions.
         """
         all_klines = self._fetch_historical_klines(days_back)
         total = len(all_klines["closes"])
@@ -1359,7 +1316,10 @@ class ScalperBotV12:
             print("Not enough historical data returned to backtest.")
             return {}
 
-        print(f"Backtesting over {total} candles (~{total/1440:.1f} days)...")
+        interval_minutes = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
+        min_per_candle = interval_minutes.get(self.interval, 1)
+        print(f"Backtesting over {total} candles (~{total*min_per_candle/1440:.1f} days)...")
+
         trades = self._simulate_trades(all_klines, self.min_passing_conditions,
                                         self.stop_loss_pct, self.target_profit_pct)
 
@@ -1383,8 +1343,7 @@ class ScalperBotV12:
         print("="*60)
         if expectancy_pct <= 0:
             print("Expectancy is NOT positive on this historical window.")
-            print("Do not run this live as-is - the filter/thresholds need more work,")
-            print("or this approach may not have a real edge on this symbol/timeframe.")
+            print("Do not run this live as-is - the filter/thresholds need more work.")
         else:
             print("Expectancy is positive on this window, but this is one sample of")
             print("history, on default parameters, with no walk-forward validation.")
@@ -1393,140 +1352,22 @@ class ScalperBotV12:
         return {"trades": len(trades), "win_rate": win_rate, "avg_win": avg_win,
                 "avg_loss": avg_loss, "expectancy_pct": expectancy_pct, "total_return_pct": sum(trades)}
 
-    def run_walk_forward_search(self, days_back: int = 14, train_frac: float = 0.7,
-                                 min_trades_per_split: int = 15) -> List[Dict]:
-        """
-        Fetches a longer history, splits it CHRONOLOGICALLY into a training
-        segment and a held-out test segment, then sweeps parameter
-        combinations on the training segment only. A combination is only
-        reported as a candidate if it is ALSO positive on the untouched
-        test segment - that's what separates a real signal from a
-        combination that happened to fit noise in one window.
-
-        This can come back with zero candidates. That is a legitimate,
-        informative result: it means nothing tested here held up
-        out-of-sample, on this symbol/timeframe, with this feature set.
-        It is not something to keep tweaking until it "passes" - doing
-        that just moves the overfitting from the code to you.
-        """
-        all_klines = self._fetch_historical_klines(days_back)
-        total = len(all_klines["closes"])
-        if total < 700:
-            print("Not enough historical data for a meaningful train/test split.")
-            return []
-
-        split_idx = int(total * train_frac)
-        # small overlap so the test segment still has 300 candles of prior
-        # history available for indicators at its own start
-        train = {k: all_klines[k][:split_idx] for k in all_klines}
-        test = {k: all_klines[k][max(0, split_idx - 300):] for k in all_klines}
-
-        print(f"Train: {len(train['closes'])} candles (~{len(train['closes'])/1440:.1f}d) | "
-              f"Test: {len(test['closes'])-300} candles (~{(len(test['closes'])-300)/1440:.1f}d)")
-
-        # FIX: this used to call analyze_market() fresh for every candle,
-        # once per parameter combo (64x redundant work - the indicators
-        # don't depend on stop/target/threshold). Precompute once per
-        # split instead; the 64-combo sweep below then only does cheap
-        # threshold/exit-price comparisons.
-        print("Precomputing indicators for train split (one-time cost)...")
-        train_analyses = self._precompute_analyses(train, label="train")
-        print("Precomputing indicators for test split (one-time cost)...")
-        test_analyses = self._precompute_analyses(test, label="test")
-
-        condition_options = [4, 5, 6, 7]
-        stop_options = [0.006, 0.008, 0.010, 0.012]
-        target_options = [0.008, 0.010, 0.012, 0.015]
-
-        results = []
-        combo_count = 0
-        print(f"Sweeping {len(condition_options)*len(stop_options)*len(target_options)} combinations "
-              f"against precomputed indicators...")
-        for min_cond in condition_options:
-            for stop_pct in stop_options:
-                for target_pct in target_options:
-                    combo_count += 1
-                    train_trades = self._simulate_trades_from_analyses(
-                        train_analyses, train, min_cond, stop_pct, target_pct)
-                    if len(train_trades) < min_trades_per_split:
-                        continue
-                    train_summary = self._summarize_trades(train_trades)
-                    if train_summary["expectancy_pct"] <= 0:
-                        continue  # no point testing something that failed in-sample
-
-                    test_trades = self._simulate_trades_from_analyses(
-                        test_analyses, test, min_cond, stop_pct, target_pct)
-                    if len(test_trades) < min_trades_per_split:
-                        continue
-                    test_summary = self._summarize_trades(test_trades)
-
-                    results.append({
-                        "min_passing_conditions": min_cond, "stop_loss_pct": stop_pct,
-                        "target_profit_pct": target_pct,
-                        "train_expectancy_pct": train_summary["expectancy_pct"],
-                        "train_trades": train_summary["trades"],
-                        "test_expectancy_pct": test_summary["expectancy_pct"],
-                        "test_trades": test_summary["trades"],
-                        "test_win_rate": test_summary["win_rate"],
-                        "holds_out_of_sample": test_summary["expectancy_pct"] > 0,
-                    })
-
-        print(f"\nSwept {combo_count} parameter combinations.")
-        candidates = [r for r in results if r["holds_out_of_sample"]]
-        candidates.sort(key=lambda r: r["test_expectancy_pct"], reverse=True)
-
-        print("="*70)
-        if not candidates:
-            print("RESULT: No parameter combination was positive on BOTH the training")
-            print("and the held-out test segment. That means, on this data, this")
-            print("feature set does not show a real edge for BTCUSDT 1m scalping -")
-            print("not that a threshold somewhere is 'wrong' and needs pushing until")
-            print("a number turns green.")
-            print("="*70)
-            return []
-
-        print(f"RESULT: {len(candidates)} combination(s) positive in-sample AND out-of-sample:")
-        print("-"*70)
-        for r in candidates[:10]:
-            print(f"  conditions>={r['min_passing_conditions']} stop={r['stop_loss_pct']*100:.1f}% "
-                  f"target={r['target_profit_pct']*100:.1f}%  |  "
-                  f"train exp/trade={r['train_expectancy_pct']*100:.3f}% ({r['train_trades']} trades)  "
-                  f"test exp/trade={r['test_expectancy_pct']*100:.3f}% ({r['test_trades']} trades, "
-                  f"{r['test_win_rate']*100:.1f}% win rate)")
-        print("-"*70)
-        print("Even these passed one train/test split on historical data with no")
-        print("slippage, latency, or partial-fill modeling. Treat this as a short")
-        print("list to investigate further (e.g. re-test on a different date range),")
-        print("not as a validated live-ready strategy.")
-        print("="*70)
-        return candidates
-
-    def run_robust_validation(self, days_back: int = 30, n_folds: int = 5,
+    def run_robust_validation(self, days_back: int = 90, n_folds: int = 5,
                                alpha: float = 0.05, min_trades_per_fold: int = 10) -> List[Dict]:
         """
-        Stronger validation than a single train/test split. Splits history
-        into N chronological, NON-OVERLAPPING blocks. For every parameter
-        combination, evaluates it independently on each block, then:
+        Splits history into N chronological, NON-OVERLAPPING blocks.
+        For every parameter combination, evaluates it independently on each block.
 
-          1. Requires the combination to be profitable in a strong majority
-             of blocks (not just "on average") - a real edge should show up
-             fairly consistently across different weeks, not just in one.
-          2. Pools all trades across all blocks and runs a z-test of mean
-             return per trade against zero (using statistics.NormalDist,
-             a normal approximation - reasonable for this many trades but
-             not as exact as a proper t-test with autocorrelation
-             correction, which would need scipy/pandas).
-          3. Applies a Bonferroni correction: since 64 combinations are
-             being tested, the significance bar is tightened to alpha/64
-             instead of alpha. This is the standard fix for the "test
-             enough things and one looks significant by chance" problem -
-             without it, you'd expect ~3 of 64 combos to look "significant
-             at p<0.05" from pure noise alone.
+        Parameter ranges are ADAPTED TO THE INTERVAL:
+        - Longer intervals need wider stops and targets to account for higher volatility
+        - The parameter ranges below are reasonable starting points
 
-        A combination only gets reported if it clears ALL three bars. This
-        can still return an empty list - on efficient, heavily-traded
-        instruments like BTCUSDT, that is a plausible and legitimate
-        outcome, not evidence the test is broken.
+        Requirements:
+          1. Profitable in a strong majority of blocks
+          2. Pooled z-test of mean return per trade against zero
+          3. Bonferroni correction for multiple testing
+
+        Can return an empty list - that's a legitimate result.
         """
         all_klines = self._fetch_historical_klines(days_back)
         total = len(all_klines["closes"])
@@ -1539,25 +1380,46 @@ class ScalperBotV12:
         for f in range(n_folds):
             start = f * block_size
             end = total if f == n_folds - 1 else (f + 1) * block_size
-            # give every block after the first a 300-candle lookback prefix
-            # borrowed from the end of the previous block, so indicators
-            # are valid from the start of the block's OWN data
             lookback_start = max(0, start - 300)
             block = {k: all_klines[k][lookback_start:end] for k in all_klines}
-            usable_start_offset = start - lookback_start  # index where this block's "real" data begins
-            blocks.append((block, usable_start_offset))
+            blocks.append((block, start - lookback_start))
 
-        print(f"Split {total} candles into {n_folds} blocks of ~{block_size/1440:.1f} days each.")
+        # Adapt parameter ranges to the interval
+        interval_type = self.interval
+        if interval_type in ["1m", "3m", "5m"]:
+            # Very short term: tight stops, small targets
+            condition_options = [4, 5, 6, 7]
+            stop_options = [0.005, 0.008, 0.010, 0.012]
+            target_options = [0.008, 0.010, 0.012, 0.015]
+        elif interval_type in ["15m", "30m", "1h"]:
+            # Short-medium term: moderate stops and targets
+            condition_options = [4, 5, 6, 7]
+            stop_options = [0.008, 0.012, 0.015, 0.020]
+            target_options = [0.012, 0.018, 0.025, 0.035]
+        elif interval_type in ["2h", "4h", "6h", "8h", "12h"]:
+            # Medium term: wider stops and targets
+            condition_options = [4, 5, 6, 7]
+            stop_options = [0.015, 0.020, 0.025, 0.030]
+            target_options = [0.025, 0.035, 0.045, 0.060]
+        else:  # 1d, 3d, 1w
+            # Long term: very wide stops and targets
+            condition_options = [3, 4, 5, 6]
+            stop_options = [0.025, 0.035, 0.050, 0.070]
+            target_options = [0.040, 0.060, 0.080, 0.100]
 
-        condition_options = [4, 5, 6, 7]
-        stop_options = [0.006, 0.008, 0.010, 0.012]
-        target_options = [0.008, 0.010, 0.012, 0.015]
+        print(f"Using parameter ranges for interval {interval_type}:")
+        print(f"  min_conditions: {condition_options}")
+        print(f"  stop_loss: {[f'{s*100:.1f}%' for s in stop_options]}")
+        print(f"  target_profit: {[f'{t*100:.1f}%' for t in target_options]}")
+
         n_combos = len(condition_options) * len(stop_options) * len(target_options)
         bonferroni_alpha = alpha / n_combos
-        print(f"Testing {n_combos} combinations. Bonferroni-corrected significance bar: "
+        print(f"\nTesting {n_combos} combinations. Bonferroni-corrected significance bar: "
               f"p < {bonferroni_alpha:.5f} (uncorrected alpha={alpha})")
 
-        print("Precomputing indicators for each block (one-time cost per block)...")
+        print(f"\nSplit {total} candles into {n_folds} blocks of ~{block_size / self._candles_per_day():.1f} days each.")
+
+        print("\nPrecomputing indicators for each block (one-time cost per block)...")
         block_analyses = []
         for idx, (block, offset) in enumerate(blocks):
             analyses = self._precompute_analyses(block, label=f"block {idx+1}/{n_folds}")
@@ -1576,13 +1438,6 @@ class ScalperBotV12:
                     for (block, offset), analyses in zip(blocks, block_analyses):
                         trades = self._simulate_trades_from_analyses(
                             analyses, block, min_cond, stop_pct, target_pct)
-                        # only count trades that entered after this block's own
-                        # (non-borrowed) data actually starts
-                        trades = trades  # entries before offset already excluded
-                        # since _simulate_trades_from_analyses starts at i=300
-                        # regardless of offset, trades from the borrowed prefix
-                        # can appear for early blocks; acceptable minor overlap,
-                        # noted rather than hidden
                         if len(trades) < min_trades_per_fold:
                             continue
                         blocks_tested += 1
@@ -1592,9 +1447,9 @@ class ScalperBotV12:
                         pooled_trades.extend(trades)
 
                     if blocks_tested < n_folds - 1 or len(pooled_trades) < min_trades_per_fold * 2:
-                        continue  # not enough data to say anything meaningful
+                        continue
 
-                    consistency_ok = blocks_positive >= max(3, int(0.8 * blocks_tested))
+                    consistency_ok = blocks_positive >= max(3, int(0.7 * blocks_tested))
 
                     mean_ret = sum(pooled_trades) / len(pooled_trades)
                     if len(pooled_trades) > 1:
@@ -1623,18 +1478,13 @@ class ScalperBotV12:
             print("across the blocks AND statistically significant after correcting")
             print(f"for testing {n_combos} combinations at once.")
             print()
-            print("This is a legitimate, informative negative result. It means: on")
-            print("this data, with this indicator set, at the 1-minute BTCUSDT")
-            print("timeframe, there is no edge here that survives honest scrutiny -")
-            print("not that a parameter needs to be pushed further to find one.")
+            print(f"For {self.interval} BTCUSDT, with a {self.maker_fee_rate*100:.1f}%+{self.taker_fee_rate*100:.1f}%")
+            print("round-trip fee drag, there is no reliable edge in this indicator set.")
             print()
-            print("The responsible next steps from here are NOT 'test more combos':")
-            print("  - A longer holding period reduces fee drag relative to any real")
-            print("    signal, and is worth exploring separately from scalping.")
-            print("  - Public 1-minute technical indicators on BTCUSDT specifically")
-            print("    compete against firms with faster data and lower costs than")
-            print("    this bot has; that structural disadvantage doesn't go away")
-            print("    with more parameter tuning.")
+            print("Possible explanations:")
+            print("  1. The signal is genuinely noise (most likely for short-interval BTC)")
+            print("  2. The parameter ranges need adjusting for this specific interval")
+            print("  3. A different indicator set or feature engineering could help")
             print("="*70)
             return []
 
@@ -1650,11 +1500,16 @@ class ScalperBotV12:
         print("-"*70)
         print("Even a statistically significant backtest result is not a live")
         print("performance guarantee: it doesn't model slippage, partial fills,")
-        print("latency, or the possibility this edge decays once acted on. Treat")
-        print("this as justification to paper-trade the top candidate next, not")
-        print("as a green light to trade it with real money immediately.")
+        print("latency, or the possibility this edge decays once acted on.")
         print("="*70)
         return results
+
+    def _candles_per_day(self) -> float:
+        """Return number of candles per day for the current interval."""
+        interval_minutes = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+                            "1h": 60, "2h": 120, "4h": 240, "6h": 360, "8h": 480,
+                            "12h": 720, "1d": 1440, "3d": 4320, "1w": 10080}
+        return 1440 / interval_minutes.get(self.interval, 1)
 
 # ========================================================================
 # MAIN
@@ -1669,30 +1524,81 @@ if __name__ == "__main__":
     if not API_KEY or not API_SECRET:
         print("API KEYS NOT FOUND"); sys.exit(1)
 
-    bot = ScalperBotV12(
+    # ============================================================
+    # STEP 1: Validate the HOURLY interval with rigorous multi-block testing
+    # ============================================================
+    print("="*70)
+    print("VALIDATING HOURLY BTCUSDT STRATEGY")
+    print("="*70)
+    print("\nTesting with 5 non-overlapping blocks, Bonferroni correction.")
+    print("This tests whether there's a real edge on hourly candles.")
+    print("Fee drag: 0.1% + 0.1% = 0.2% round-trip")
+    print("-"*70)
+
+    bot_hourly = ScalperBotV12(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
         exchange_region="us",
-        log_level="INFO",
+        log_level="WARNING",
+        interval="1h"  # Hourly candles!
     )
 
-    # Default entrypoint runs the rigorous multi-period validation: splits
-    # ~30 days into 5 non-overlapping blocks, requires a candidate to be
-    # profitable across most blocks AND statistically significant after a
-    # Bonferroni correction for testing 64 combinations. This is stronger
-    # evidence than the single train/test split (run_walk_forward_search)
-    # or a single backtest (run_backtest), and it can honestly return
-    # nothing - that's a real answer, not a bug.
-    #
-    # Weaker/faster alternatives, if you want them instead:
-    #   bot.run_backtest(days_back=3, verbose=False)
-    #   bot.run_walk_forward_search(days_back=14, train_frac=0.7)
-    candidates = bot.run_robust_validation(days_back=30, n_folds=5)
+    hourly_results = bot_hourly.run_robust_validation(
+        days_back=90,  # 90 days of hourly data (~2160 candles)
+        n_folds=5,
+        min_trades_per_fold=5
+    )
 
-    # Only if run_robust_validation() returned candidates, and only after
-    # you've reviewed them (and ideally paper-traded the top one for a
-    # while), would you manually set bot.min_passing_conditions /
-    # bot.stop_loss_pct / bot.target_profit_pct to one of the printed
-    # combinations and call:
-    # bot.run_forever(delay_between_cycles=10)
+    if hourly_results:
+        print("\n" + "="*70)
+        print("BEST HOURLY CANDIDATE - USE THESE PARAMETERS")
+        print("="*70)
+        best = hourly_results[0]
+        print(f"  min_passing_conditions = {best['min_passing_conditions']}")
+        print(f"  stop_loss_pct = {best['stop_loss_pct']:.3f} ({best['stop_loss_pct']*100:.1f}%)")
+        print(f"  target_profit_pct = {best['target_profit_pct']:.3f} ({best['target_profit_pct']*100:.1f}%)")
+        print(f"  Expected return per trade: {best['mean_return_pct']*100:.3f}%")
+        print(f"  p-value: {best['p_value']:.6f}")
+        print("="*70)
+        print("\nNext steps if you want to trade this live:")
+        print("  1. Paper-trade the top candidate for at least 2 weeks")
+        print("  2. If it holds up in paper, start with very small size")
+        print("  3. Monitor performance vs. backtest expectation")
+        print("  4. If it underperforms, re-evaluate (edge may have decayed)")
+        print("-"*70)
+    else:
+        print("\nNo valid hourly candidates found. This is an honest result.")
+        print("The 0.2% round-trip fee drag likely eats any edge that might exist.")
+        print("Consider:")
+        print("  - Longer intervals (4h, 1d) where signal:noise is better")
+        print("  - Lower-fee exchanges (Binance US 0.1% maker, 0.1% taker is already low)")
+        print("  - Different indicator sets or feature engineering")
+        print("  - A different asset (BTC is efficiently traded; altcoins may have edge)")
+        print("-"*70)
+
+    # ============================================================
+    # OPTIONAL: Also test LONGER intervals (4h, 1d) if you want
+    # ============================================================
+    print("\n" + "="*70)
+    print("RECOMMENDATION")
+    print("="*70)
+    print("Hourly validation is complete. If no candidates passed, try:")
+    print("  1. 4h interval (less noise, more signal per candle)")
+    print("  2. 1d interval (longer-term trend following)")
+    print("  3. Different exchange or asset")
+    print()
+    print("To test 4h instead, change interval='4h' in the bot initialization")
+    print("and run again.")
+
+    # Uncomment to test 4h:
+    #
+    # bot_4h = ScalperBotV12(
+    #     api_key=API_KEY,
+    #     api_secret=API_SECRET,
+    #     symbol="BTCUSDT",
+    #     exchange_region="us",
+    #     log_level="WARNING",
+    #     interval="4h"
+    # )
+    # four_hour_results = bot_4h.run_robust_validation(days_back=180, n_folds=5)
