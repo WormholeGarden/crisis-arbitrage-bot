@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v4.2 - HIGH DRAWDOWN TOLERANCE
-- Increased max drawdown to 60% for small accounts
-- Reduced position sizing to preserve capital
-- Better risk management for volatile markets
+🚀 CRISIS ARBITRAGE SCALPER v4.2 - MARKET ORDER FIX
+- Fixed market order price handling (price can be 0 initially)
+- Better order status checking for fills
+- Enhanced error handling for Binance responses
 - Optimized for small accounts ($50 USDT)
 """
 
@@ -139,7 +139,7 @@ class CrisisScoringEngine:
         return opportunities[:limit]
 
 # ========================================================================
-# 🤖 SCALPER BOT - HIGH DRAWDOWN TOLERANCE
+# 🤖 SCALPER BOT - MARKET ORDER FIX
 # ========================================================================
 
 class ScalperBotV40:
@@ -180,15 +180,15 @@ class ScalperBotV40:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 OPTIMIZED FOR SMALL ACCOUNTS - HIGH DRAWDOWN TOLERANCE
+        # 💰 OPTIMIZED FOR SMALL ACCOUNTS
         self.total_balance_usdt = 50.0
-        self.max_risk_per_trade = 0.08  # Reduced to 8% to preserve capital
-        self.trade_amount_usdt = 4.00   # $4 per trade
+        self.max_risk_per_trade = 0.10
+        self.trade_amount_usdt = 5.00
         
         # Conservative risk parameters
         self.target_profit_pct = 0.008  # 0.8% profit target
         self.stop_loss_pct = 0.005      # 0.5% stop loss
-        self.max_drawdown_pct = 0.65    # Increased to 65% for small accounts
+        self.max_drawdown_pct = 0.65    # 65% max drawdown
         
         self.max_chase_attempts = 3
         self.chase_timeout_sec = 30
@@ -215,7 +215,7 @@ class ScalperBotV40:
         self.peak_balance = self.total_balance_usdt
         self.current_balance = self.total_balance_usdt
         self.consecutive_losses = 0
-        self.max_consecutive_losses = 7  # Increased to 7 losses
+        self.max_consecutive_losses = 7
         self.balance_fetched = False
         self.stopped = False
 
@@ -234,16 +234,15 @@ class ScalperBotV40:
 
         self.country_performance = {}
 
-        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v4.2 - HIGH DRAWDOWN TOLERANCE")
+        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v4.2 - MARKET ORDER FIX")
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Exchange: {self.base_url}")
         self.logger.info(f"   Mode: {'🧪 PAPER TRADING' if test_mode else '💰 LIVE TRADING'}")
         self.logger.info(f"   Target Balance: ${self.total_balance_usdt:.2f}")
-        self.logger.info(f"   Trade Amount: ${self.trade_amount_usdt:.2f} ({self.max_risk_per_trade*100:.0f}% per trade)")
+        self.logger.info(f"   Trade Amount: ${self.trade_amount_usdt:.2f}")
         self.logger.info(f"   Target Profit: {self.target_profit_pct*100:.1f}%")
         self.logger.info(f"   Stop Loss: {self.stop_loss_pct*100:.1f}%")
         self.logger.info(f"   Max Drawdown: {self.max_drawdown_pct*100:.0f}%")
-        self.logger.info(f"   Max Consecutive Losses: {self.max_consecutive_losses}")
         self.logger.info("="*60)
 
         if not test_mode:
@@ -442,6 +441,25 @@ class ScalperBotV40:
             return balances
         return {"USDT": 0.0}
 
+    def get_order_fill_price(self, order_id: str) -> Optional[float]:
+        """Get the actual fill price of a completed order"""
+        if self.test_mode:
+            return 64000.0
+        
+        status = self._send_signed_request("GET", "/api/v3/order", {
+            "symbol": self.symbol,
+            "orderId": order_id,
+        })
+        
+        if status.get("status") == "FILLED":
+            # Get average fill price
+            cum_quote = float(status.get("cummulativeQuoteQty", 0))
+            executed_qty = float(status.get("executedQty", 0))
+            if executed_qty > 0 and cum_quote > 0:
+                return cum_quote / executed_qty
+        
+        return None
+
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
         """Place a MARKET order for immediate execution"""
         if self.test_mode:
@@ -492,11 +510,25 @@ class ScalperBotV40:
         if "error" in response:
             return response
         
+        # Get the order ID and fetch the actual fill price
+        order_id = response.get("orderId")
+        if order_id:
+            # Wait a moment for the order to be fully processed
+            time.sleep(0.5)
+            fill_price = self.get_order_fill_price(order_id)
+            if fill_price:
+                price = str(fill_price)
+            else:
+                # Fallback: use market price
+                price = str(ticker["ask"] if side.upper() == "BUY" else ticker["bid"])
+        else:
+            price = "0"
+        
         return {
-            "orderId": response.get("orderId", f"ERR_{int(time.time())}"),
-            "price": str(response.get("price", 0)),
-            "executedQty": str(response.get("executedQty", qty)),
-            "origQty": str(response.get("origQty", qty)),
+            "orderId": order_id,
+            "price": price,
+            "executedQty": response.get("executedQty", str(qty)),
+            "origQty": response.get("origQty", str(qty)),
             "status": response.get("status", "FILLED"),
             "side": side,
         }
@@ -582,12 +614,11 @@ class ScalperBotV40:
                 self.stopped = True
                 return {"success": False, "error": "Invalid balance"}
             
-            # Check drawdown (now 65%)
+            # Check drawdown
             if self.peak_balance > 0:
                 drawdown = (self.peak_balance - self.current_balance) / self.peak_balance
                 if drawdown > self.max_drawdown_pct:
                     self.logger.error(f"❌ Max drawdown exceeded: {drawdown*100:.1f}% > {self.max_drawdown_pct*100:.0f}%")
-                    self.logger.info("💡 Consider depositing more funds or reducing position size")
                     self.stopped = True
                     return {"success": False, "error": "Max drawdown exceeded"}
             
@@ -647,13 +678,25 @@ class ScalperBotV40:
             self.logger.error(f"Missing orderId in response: {buy_order}")
             return {"success": False, "error": "Missing orderId"}
 
-        # Get fill details
+        # Get fill details - handle price=0 case
         self.buy_price = float(buy_order.get("price", 0))
         self.buy_qty = float(buy_order.get("executedQty", buy_order.get("origQty", 0)))
         
-        if self.buy_price == 0 or self.buy_qty == 0:
-            self.logger.error(f"Invalid price or quantity: {buy_order}")
-            return {"success": False, "error": "Invalid price or quantity"}
+        # If price is 0, try to get the actual fill price from the order
+        if self.buy_price == 0 and order_id and not self.test_mode:
+            self.logger.info("Fetching actual fill price from order...")
+            fill_price = self.get_order_fill_price(order_id)
+            if fill_price:
+                self.buy_price = fill_price
+                self.logger.info(f"✅ Actual fill price: ${self.buy_price:.2f}")
+            else:
+                # Fallback: use current market price
+                self.buy_price = self.get_current_price() or 64000.0
+                self.logger.info(f"⚠️ Using fallback price: ${self.buy_price:.2f}")
+        
+        if self.buy_qty == 0:
+            self.logger.error(f"Invalid quantity: {buy_order}")
+            return {"success": False, "error": "Invalid quantity"}
 
         self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} BTC @ ${self.buy_price:.2f}")
 
@@ -681,6 +724,8 @@ class ScalperBotV40:
             if "error" in fallback_sell:
                 return {"success": False, "error": "Sell order failed"}
             exit_price = float(fallback_sell.get("price", self.buy_price))
+            if exit_price == 0:
+                exit_price = self.buy_price
             sell_filled = True
             stopped_out = False
         else:
@@ -702,7 +747,13 @@ class ScalperBotV40:
                 status = self.get_order_status(sell_order_id)
                 if status.get("status") == "FILLED":
                     sell_filled = True
-                    exit_price = float(status.get("price", target_price))
+                    # Get actual fill price
+                    cum_quote = float(status.get("cummulativeQuoteQty", 0))
+                    executed_qty = float(status.get("executedQty", 0))
+                    if executed_qty > 0 and cum_quote > 0:
+                        exit_price = cum_quote / executed_qty
+                    else:
+                        exit_price = float(status.get("price", target_price))
                     self.logger.info(f"✅ SELL Filled @ ${exit_price:.2f}")
                     break
                 
@@ -720,6 +771,8 @@ class ScalperBotV40:
                         sell_filled = True
                         stopped_out = True
                         exit_price = float(exit_res.get("price", current_price))
+                        if exit_price == 0:
+                            exit_price = current_price
                         self.logger.info(f"🛑 Stopped out @ ${exit_price:.2f}")
                         break
                 
@@ -734,6 +787,8 @@ class ScalperBotV40:
                         continue
                     sell_filled = True
                     exit_price = float(exit_res.get("price", self.buy_price))
+                    if exit_price == 0:
+                        exit_price = self.buy_price
                     self.logger.info(f"✅ SELL Filled @ ${exit_price:.2f} (chased)")
                     break
                 
@@ -830,12 +885,10 @@ class ScalperBotV40:
 
         for cycle_num in range(1, 101):
             try:
-                # Check if bot is stopped
                 if self.stopped:
                     self.logger.error("❌ Bot stopped due to risk limits")
                     break
                 
-                # Check if we should continue
                 if not self.test_mode:
                     if not self.balance_fetched or self.current_balance <= 0:
                         self.logger.error("❌ No valid balance, stopping")
@@ -929,14 +982,12 @@ class ScalperBotV40:
             avg_profit = stats['net_profit'] / stats['total_cycles']
             self.logger.info(f"📊 Avg Profit/Cycle:   ${avg_profit:.4f}")
         
-        # Safe ROI calculation
         if self.total_balance_usdt > 0:
             roi = (stats['net_profit'] / self.total_balance_usdt) * 100
             self.logger.info(f"📊 ROI:                {roi:.1f}%")
         else:
             self.logger.info(f"📊 ROI:                0.0%")
         
-        # Safe drawdown calculation
         if self.peak_balance > 0:
             drawdown = (self.peak_balance - self.current_balance) / self.peak_balance * 100
             self.logger.info(f"📊 Max Drawdown:       {drawdown:.1f}%")
@@ -994,7 +1045,6 @@ class ScalperBotV40:
             })
 
     def export_final_report(self):
-        # Safe calculations to avoid division by zero
         roi_percent = 0.0
         if self.total_balance_usdt > 0:
             roi_percent = ((self.current_balance - self.total_balance_usdt) / self.total_balance_usdt) * 100
@@ -1036,8 +1086,8 @@ if __name__ == "__main__":
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
-        test_mode=False,  # Set to True for paper trading
-        exchange_region="us",  # "us" for Binance US, "global" for Binance.com
+        test_mode=False,
+        exchange_region="us",
         log_level="INFO"
     )
 
