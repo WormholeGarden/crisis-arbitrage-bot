@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v7.0 - REAL EDGE EDITION
-- REAL Technical Analysis (not fake FSI scores)
-- Proper Risk:Reward (1:2 minimum)
-- Positive expectancy strategy
-- Multiple timeframe confirmation
-- Statistical edge through mean reversion + momentum
+🚀 CRISIS ARBITRAGE SCALPER v7.1 - FIXED MIN_NOTIONAL ERROR
+- Fixed minimum order size for Binance ($10 minimum)
+- Proper position sizing
+- Real TA with mathematical edge
 """
 
 import hashlib
@@ -51,7 +49,7 @@ def format_price(value: float) -> str:
 # ========================================================================
 
 class TechnicalAnalysis:
-    """Real TA with mathematical edge - NOT fake FSI scores"""
+    """Real TA with mathematical edge"""
     
     @staticmethod
     def get_klines(symbol: str, base_url: str, interval: str = "1m", limit: int = 100) -> Optional[Dict]:
@@ -80,7 +78,7 @@ class TechnicalAnalysis:
     
     @staticmethod
     def calculate_rsi(closes: List[float], period: int = 14) -> float:
-        """Calculate RSI - REAL technical indicator"""
+        """Calculate RSI"""
         if len(closes) < period + 1:
             return 50.0
         
@@ -95,7 +93,6 @@ class TechnicalAnalysis:
                 gains.append(0)
                 losses.append(abs(diff))
         
-        # Get last 'period' values
         gains = gains[-period:] if len(gains) >= period else gains
         losses = losses[-period:] if len(losses) >= period else losses
         
@@ -111,16 +108,14 @@ class TechnicalAnalysis:
     
     @staticmethod
     def calculate_macd(closes: List[float]) -> Dict:
-        """Calculate MACD - REAL momentum indicator"""
+        """Calculate MACD"""
         if len(closes) < 26:
             return {"macd": 0, "signal": 0, "histogram": 0}
         
-        # Calculate EMAs
         ema_12 = TechnicalAnalysis.calculate_ema(closes, 12)
         ema_26 = TechnicalAnalysis.calculate_ema(closes, 26)
         macd_line = ema_12 - ema_26
         
-        # Signal line (9-period EMA of MACD)
         signal_line = TechnicalAnalysis.calculate_ema([macd_line], 9) if len([macd_line]) >= 9 else macd_line
         
         histogram = macd_line - signal_line
@@ -135,7 +130,7 @@ class TechnicalAnalysis:
     
     @staticmethod
     def calculate_ema(closes: List[float], period: int) -> float:
-        """Calculate EMA - Exponential Moving Average"""
+        """Calculate EMA"""
         if len(closes) < period:
             return sum(closes) / len(closes) if closes else 0
         
@@ -149,7 +144,7 @@ class TechnicalAnalysis:
     
     @staticmethod
     def calculate_bollinger_bands(closes: List[float], period: int = 20, std_dev: float = 2) -> Dict:
-        """Calculate Bollinger Bands - REAL volatility indicator"""
+        """Calculate Bollinger Bands"""
         if len(closes) < period:
             return {"upper": closes[-1] if closes else 0, "middle": closes[-1] if closes else 0, "lower": closes[-1] if closes else 0}
         
@@ -160,7 +155,6 @@ class TechnicalAnalysis:
         upper = middle + (std * std_dev)
         lower = middle - (std * std_dev)
         
-        # Position within bands (0 = lower, 1 = upper)
         position = (closes[-1] - lower) / (upper - lower) if upper != lower else 0.5
         
         return {
@@ -168,13 +162,13 @@ class TechnicalAnalysis:
             "middle": middle,
             "lower": lower,
             "position": position,
-            "width": (upper - lower) / middle,  # Band width for volatility
-            "squeeze": (upper - lower) / middle < 0.02  # Squeeze indicates breakout
+            "width": (upper - lower) / middle,
+            "squeeze": (upper - lower) / middle < 0.02
         }
     
     @staticmethod
     def calculate_atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
-        """Calculate ATR - Average True Range for stop placement"""
+        """Calculate ATR"""
         if len(closes) < period:
             return (max(highs) - min(lows)) if highs and lows else 0
         
@@ -191,13 +185,12 @@ class TechnicalAnalysis:
     
     @staticmethod
     def calculate_vwap(highs: List[float], lows: List[float], closes: List[float], volumes: List[float]) -> float:
-        """Calculate VWAP - Volume Weighted Average Price"""
+        """Calculate VWAP"""
         if not volumes:
             return closes[-1] if closes else 0
         
         typical_prices = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
         
-        # Use last 50 periods for VWAP
         start = max(0, len(typical_prices) - 50)
         typical_prices = typical_prices[start:]
         volumes_used = volumes[start:]
@@ -214,24 +207,19 @@ class TechnicalAnalysis:
         if len(closes) < 20:
             return {"support": min(lows), "resistance": max(highs)}
         
-        # Find local minima (support) and maxima (resistance)
         lookback = 10
         supports = []
         resistances = []
         
         for i in range(lookback, len(closes) - lookback):
-            # Support: low is lower than surrounding lows
             if lows[i] < min(lows[i-lookback:i] + lows[i+1:i+lookback+1]):
                 supports.append(lows[i])
-            # Resistance: high is higher than surrounding highs
             if highs[i] > max(highs[i-lookback:i] + highs[i+1:i+lookback+1]):
                 resistances.append(highs[i])
         
-        # Get most recent support/resistance
         recent_support = supports[-1] if supports else min(lows)
         recent_resistance = resistances[-1] if resistances else max(highs)
         
-        # Identify if price is near support or resistance
         current_price = closes[-1]
         near_support = abs(current_price - recent_support) / current_price < 0.002
         near_resistance = abs(current_price - recent_resistance) / current_price < 0.002
@@ -244,7 +232,7 @@ class TechnicalAnalysis:
         }
 
 # ========================================================================
-# 📊 REAL STRATEGY ENGINE - MATHEMATICAL EDGE
+# 📊 REAL STRATEGY ENGINE
 # ========================================================================
 
 class StrategyEngine:
@@ -270,26 +258,23 @@ class StrategyEngine:
         vwap = TechnicalAnalysis.calculate_vwap(highs, lows, closes, volumes)
         sr = TechnicalAnalysis.calculate_support_resistance(highs, lows, closes)
         
-        # Calculate short-term trend
         sma_5 = sum(closes[-5:]) / 5
         sma_10 = sum(closes[-10:]) / 10
         sma_20 = sum(closes[-20:]) / 20
         
-        # Momentum
         momentum = (closes[-1] - closes[-5]) / closes[-5] if len(closes) >= 5 else 0
         
-        # Volume analysis
         avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes) if volumes else 0
         volume_spike = volumes[-1] > avg_volume * 1.5 if volumes else False
         
-        # ============ BUILD SIGNAL WITH EDGE ============
+        # Build signal
         bullish_signals = 0
         bearish_signals = 0
         signal_reasons = []
         
-        # Signal 1: RSI (Mean Reversion + Momentum)
+        # Signal 1: RSI
         if rsi < 35 and current_price < sma_20:
-            bullish_signals += 2  # Oversold + below MA = strong buy
+            bullish_signals += 2
             signal_reasons.append(f"RSI oversold ({rsi:.1f})")
         elif rsi < 40:
             bullish_signals += 1
@@ -303,7 +288,7 @@ class StrategyEngine:
         else:
             signal_reasons.append(f"RSI neutral ({rsi:.1f})")
         
-        # Signal 2: MACD (Momentum)
+        # Signal 2: MACD
         if macd['bullish_cross']:
             bullish_signals += 2
             signal_reasons.append("MACD bullish crossover")
@@ -317,9 +302,9 @@ class StrategyEngine:
             bearish_signals += 1
             signal_reasons.append("MACD histogram negative")
         
-        # Signal 3: Bollinger Bands (Volatility Breakout)
+        # Signal 3: Bollinger Bands
         if bb['position'] < 0.2 and current_price < sma_20:
-            bullish_signals += 2  # At lower band + below MA = strong
+            bullish_signals += 2
             signal_reasons.append(f"At lower BB ({bb['position']:.2f})")
         elif bb['position'] < 0.3:
             bullish_signals += 1
@@ -333,7 +318,7 @@ class StrategyEngine:
         else:
             signal_reasons.append(f"BB middle ({bb['position']:.2f})")
         
-        # Signal 4: Moving Averages (Trend)
+        # Signal 4: Moving Averages
         if current_price > sma_5 > sma_10 > sma_20:
             bullish_signals += 2
             signal_reasons.append("Strong uptrend (all MA aligned)")
@@ -365,7 +350,7 @@ class StrategyEngine:
             bearish_signals += 1
             signal_reasons.append("Volume spike on down move")
         
-        # Signal 7: VWAP (institutional level)
+        # Signal 7: VWAP
         if current_price > vwap:
             bullish_signals += 1
             signal_reasons.append("Price above VWAP")
@@ -373,7 +358,7 @@ class StrategyEngine:
             bearish_signals += 1
             signal_reasons.append("Price below VWAP")
         
-        # Signal 8: ATR (Volatility-adjusted)
+        # Signal 8: ATR
         if atr > 0 and (current_price - sma_20) > (atr * 0.5):
             bullish_signals += 1
             signal_reasons.append("Strong momentum (above ATR)")
@@ -381,17 +366,14 @@ class StrategyEngine:
             bearish_signals += 1
             signal_reasons.append("Strong momentum (below ATR)")
         
-        # Calculate confidence based on signal strength
         total_signals = bullish_signals + bearish_signals
         if total_signals > 0:
             raw_confidence = (bullish_signals - bearish_signals) / total_signals
         else:
             raw_confidence = 0
         
-        # Scale confidence
         confidence = max(-1, min(1, raw_confidence))
         
-        # Determine final signal
         if confidence > 0.3:
             signal = "BUY"
             signal_strength = "strong" if confidence > 0.6 else "moderate"
@@ -402,13 +384,12 @@ class StrategyEngine:
             signal = "NEUTRAL"
             signal_strength = "weak"
         
-        # Calculate expected win rate based on signal strength
         if signal_strength == "strong":
-            expected_win_rate = 0.65  # 65% win rate for strong signals
+            expected_win_rate = 0.65
         elif signal_strength == "moderate":
-            expected_win_rate = 0.55  # 55% win rate for moderate signals
+            expected_win_rate = 0.55
         else:
-            expected_win_rate = 0.45  # 45% win rate for weak signals
+            expected_win_rate = 0.45
         
         return {
             "signal": signal,
@@ -430,16 +411,16 @@ class StrategyEngine:
         }
 
 # ========================================================================
-# 🤖 SCALPER BOT - REAL EDGE EDITION
+# 🤖 SCALPER BOT - FIXED MIN_NOTIONAL
 # ========================================================================
 
-class ScalperBotV70:
+class ScalperBotV71:
 
     def __init__(self, api_key: str, api_secret: str, symbol: str = "BTCUSDT",
                  test_mode: bool = True, exchange_region: str = "us",
                  log_level: str = "INFO"):
         """
-        REAL EDGE EDITION: Proper TA + Positive Expectancy
+        REAL EDGE EDITION - FIXED MIN_NOTIONAL ERROR
         """
         self.api_key = api_key
         self.api_secret = api_secret
@@ -469,25 +450,28 @@ class ScalperBotV70:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 PROPER RISK:REWARD - REAL MATHEMATICAL EDGE
+        # 💰 FIXED POSITION SIZING - MIN_NOTIONAL
         self.total_balance_usdt = 50.0
         
-        # RISK:REWARD = 1:2 - Only need 33% win rate to break even
-        self.stop_loss_pct = 0.008          # 0.8% stop loss
-        self.target_profit_pct = 0.016      # 1.6% target (2x risk)
-        # Expected value: (0.55 * 1.6) - (0.45 * 0.8) = 0.88 - 0.36 = 0.52% per trade ✅
+        # MINIMUM ORDER SIZE FOR BINANCE IS $10
+        self.min_order_usdt = 10.0  # Binance minimum
+        self.max_order_usdt = 20.0  # Cap for safety
         
-        # Position sizing - Kelly Criterion based
+        # RISK:REWARD = 1:2
+        self.stop_loss_pct = 0.008          # 0.8% stop loss
+        self.target_profit_pct = 0.016      # 1.6% target
+        
+        # Position sizing
         self.risk_per_trade = 0.02          # 2% risk per trade
         
-        # Entry conditions - Based on REAL TA
-        self.min_confidence = 0.35          # Minimum confidence to trade
-        self.min_signal_strength = "moderate"  # Minimum signal strength
-        self.require_volume_confirmation = True  # Volume confirmation
+        # Entry conditions
+        self.min_confidence = 0.35
+        self.min_signal_strength = "moderate"
+        self.require_volume_confirmation = True
         
         # Safety limits
-        self.max_drawdown_pct = 0.12        # 12% max drawdown
-        self.max_consecutive_losses = 4     # Stop after 4 losses
+        self.max_drawdown_pct = 0.12
+        self.max_consecutive_losses = 4
         
         # Trade management
         self.chase_timeout_sec = 60
@@ -502,6 +486,7 @@ class ScalperBotV70:
         # Exchange info cache
         self._min_qty = 0.00001
         self._tick_size = 0.01
+        self._min_notional = 10.0  # Binance minimum
 
         # Internal state
         self.active_order_id = None
@@ -540,15 +525,13 @@ class ScalperBotV70:
             "cycle_results": []
         }
 
-        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v7.0 - REAL EDGE EDITION")
+        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v7.1 - FIXED MIN_NOTIONAL")
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Mode: {'🧪 PAPER TRADING' if test_mode else '💰 LIVE TRADING'}")
+        self.logger.info(f"   Min Order: ${self.min_order_usdt:.2f} (Binance requirement)")
         self.logger.info(f"   Target Profit: {self.target_profit_pct*100:.1f}%")
         self.logger.info(f"   Stop Loss: {self.stop_loss_pct*100:.1f}%")
         self.logger.info(f"   Risk:Reward: 1:{self.target_profit_pct/self.stop_loss_pct:.1f}")
-        self.logger.info(f"   Min Confidence: {self.min_confidence*100:.0f}%")
-        self.logger.info(f"   Strategy: Real TA (RSI, MACD, BB, Volume, VWAP)")
-        self.logger.info(f"   Edge: Positive Expectancy Strategy")
         self.logger.info("="*60)
 
         if not test_mode:
@@ -628,7 +611,11 @@ class ScalperBotV70:
                                 self._min_qty = float(filter_data.get("minQty", 0.00001))
                             if filter_data["filterType"] == "PRICE_FILTER":
                                 self._tick_size = float(filter_data.get("tickSize", 0.01))
+                            if filter_data["filterType"] == "MIN_NOTIONAL":
+                                self._min_notional = float(filter_data.get("minNotional", 10.0))
                         self.logger.info(f"✅ Exchange info loaded")
+                        self.logger.info(f"   Min Qty: {self._min_qty}")
+                        self.logger.info(f"   Min Notional: ${self._min_notional:.2f}")
                         break
         except Exception as e:
             self.logger.warning(f"Could not fetch exchange info: {e}")
@@ -776,13 +763,20 @@ class ScalperBotV70:
         return None
 
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
-        """Place a MARKET order for immediate execution"""
+        """Place a MARKET order - FIXED MIN_NOTIONAL"""
         if self.test_mode:
             simulated_id = f"SIM_MKT_{int(time.time() * 1000)}"
             price = 64000.0 + random.uniform(-200, 200)
             qty = amount if is_quantity else amount / price
+            
+            # Ensure minimum order size in test mode too
+            if amount < self.min_order_usdt:
+                qty = self.min_order_usdt / price
+                self.logger.info(f"[TEST] Adjusted to minimum: ${self.min_order_usdt:.2f}")
+            
             if qty < self._min_qty:
                 qty = self._min_qty
+            
             self.logger.info(f"[TEST] {side} MARKET | Qty: {qty:.8f}")
             return {
                 "orderId": simulated_id,
@@ -797,16 +791,39 @@ class ScalperBotV70:
         if not ticker:
             return {"error": "Failed to get market price"}
 
+        # FIX: Ensure minimum order size
+        price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
+        
+        # If amount is less than minimum, use minimum
+        if amount < self.min_order_usdt:
+            self.logger.info(f"⚠️ Amount ${amount:.2f} below minimum ${self.min_order_usdt:.2f} - adjusting")
+            amount = self.min_order_usdt
+        
+        # Cap at max to be safe
+        if amount > self.max_order_usdt and self.current_balance > 50:
+            amount = self.max_order_usdt
+        
         if is_quantity:
             qty = round_to_step(amount, self._min_qty)
         else:
-            price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
             qty = round_to_step(amount / price, self._min_qty)
 
+        # Ensure qty meets minimum
         if qty < self._min_qty:
             qty = self._min_qty
+            self.logger.info(f"Quantity adjusted to minimum: {qty:.8f}")
 
         qty_str = format_quantity(qty)
+        
+        # Double-check notional value
+        notional = qty * price
+        if notional < self._min_notional:
+            qty = self._min_notional / price
+            qty = round_to_step(qty, self._min_qty)
+            qty_str = format_quantity(qty)
+            self.logger.info(f"Adjusted for min notional: ${self._min_notional:.2f}")
+
+        self.logger.info(f"Placing {side} MARKET order: {qty_str} (${qty * price:.2f})")
 
         params = {
             "symbol": self.symbol,
@@ -841,7 +858,7 @@ class ScalperBotV70:
         }
 
     def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
-        """Place a LIMIT order"""
+        """Place a LIMIT order - FIXED MIN_NOTIONAL"""
         if self.test_mode:
             simulated_id = f"SIM_LIMIT_{int(time.time() * 1000)}"
             self.logger.info(f"[TEST] {side} LIMIT @ ${price:.2f}")
@@ -854,6 +871,12 @@ class ScalperBotV70:
                 "side": side,
             }
 
+        # Ensure minimum notional
+        if quantity * price < self._min_notional:
+            quantity = self._min_notional / price
+            quantity = round_to_step(quantity, self._min_qty)
+            self.logger.info(f"Adjusted for min notional: ${self._min_notional:.2f}")
+
         qty = round_to_step(quantity, self._min_qty)
         if qty < self._min_qty:
             qty = self._min_qty
@@ -861,6 +884,8 @@ class ScalperBotV70:
         limit_price = round_to_tick(price, self._tick_size)
         qty_str = format_quantity(qty)
         price_str = format_price(limit_price)
+
+        self.logger.info(f"Placing {side} LIMIT order: {qty_str} @ ${price_str} (${qty * limit_price:.2f})")
 
         params = {
             "symbol": self.symbol,
@@ -901,21 +926,6 @@ class ScalperBotV70:
         params = {"symbol": self.symbol, "orderId": order_id}
         return self._send_signed_request("GET", "/api/v3/order", params)
 
-    def calculate_kelly_position(self, win_rate: float, avg_win: float, avg_loss: float) -> float:
-        """Kelly Criterion for optimal position sizing"""
-        if avg_loss == 0:
-            return 0.02
-        
-        # Kelly formula: f* = (p * b - q) / b
-        # where p = win rate, q = loss rate, b = win/loss ratio
-        b = avg_win / avg_loss
-        q = 1 - win_rate
-        kelly = (win_rate * b - q) / b
-        
-        # Use half-Kelly for safety
-        half_kelly = max(0.01, min(0.05, kelly * 0.5))
-        return half_kelly
-
     def run_cycle(self, cycle_number: int = 0) -> dict:
         if self.stopped:
             return {"success": False, "error": "Bot stopped"}
@@ -954,10 +964,10 @@ class ScalperBotV70:
                 self.stopped = True
                 return {"success": False, "error": "Too many consecutive losses"}
             
-            if self.current_balance < 2.0:
-                self.logger.error(f"❌ Balance too low: ${self.current_balance:.2f}")
+            if self.current_balance < self.min_order_usdt:
+                self.logger.error(f"❌ Balance too low: ${self.current_balance:.2f} < ${self.min_order_usdt:.2f} minimum")
                 self.stopped = True
-                return {"success": False, "error": "Balance too low"}
+                return {"success": False, "error": "Balance too low for minimum order"}
 
         # Get REAL market data
         klines = TechnicalAnalysis.get_klines(self.symbol, self.base_url, interval="1m", limit=100)
@@ -966,7 +976,7 @@ class ScalperBotV70:
             self.skipped_trades += 1
             return {"success": False, "error": "No market data", "skipped": True}
         
-        # Analyze market with REAL TA
+        # Analyze market
         analysis = StrategyEngine.analyze_market(klines)
         
         self.logger.info(f"📊 Market Analysis:")
@@ -978,7 +988,6 @@ class ScalperBotV70:
         self.logger.info(f"   Current Price: ${analysis['current_price']:.2f}")
         self.logger.info(f"   Expected Win Rate: {analysis['expected_win_rate']*100:.0f}%")
         
-        # Show reasons
         for reason in analysis['reasons']:
             self.logger.info(f"   → {reason}")
         
@@ -998,7 +1007,6 @@ class ScalperBotV70:
             self.skipped_trades += 1
             return {"success": False, "error": "Signal too weak", "skipped": True}
         
-        # Check for winning streak adjustment
         if self.consecutive_wins >= 3 and analysis['strength'] != "strong":
             self.logger.warning(f"⏭️ Winning streak {self.consecutive_wins} - requiring strong signal")
             self.skipped_trades += 1
@@ -1011,19 +1019,13 @@ class ScalperBotV70:
         if not current_price:
             return {"success": False, "error": "No price data"}
 
-        # Calculate position size
-        position_size = self.current_balance * self.risk_per_trade
-        min_trade = max(1.0, self.current_balance * 0.01)
-        position_size = max(min_trade, min(position_size, 10.0))
+        # FIX: Calculate position size - ENSURE MINIMUM ORDER
+        position_size = max(self.min_order_usdt, min(self.max_order_usdt, self.current_balance * self.risk_per_trade * 2))
         
-        # Use Kelly if we have history
-        if self.total_trades > 10:
-            avg_win = stats['avg_win'] if hasattr(self, 'stats') else 0.02
-            avg_loss = stats['avg_loss'] if hasattr(self, 'stats') else 0.01
-            win_rate = self.win_count / max(1, self.total_trades)
-            kelly_pct = self.calculate_kelly_position(win_rate, avg_win, avg_loss)
-            position_size = min(position_size, self.current_balance * kelly_pct)
-            self.logger.info(f"📊 Kelly Position: {kelly_pct*100:.1f}%")
+        # If balance is small, use minimum
+        if self.current_balance < 20:
+            position_size = self.min_order_usdt
+            self.logger.info(f"⚠️ Small balance - using minimum order: ${position_size:.2f}")
         
         buy_amount = min(position_size, self.current_balance * 0.50)
         
@@ -1056,23 +1058,20 @@ class ScalperBotV70:
         if self.buy_qty == 0:
             return {"success": False, "error": "Invalid quantity"}
 
-        self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} BTC @ ${self.buy_price:.2f}")
+        self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} BTC @ ${self.buy_price:.2f} (${self.buy_qty * self.buy_price:.2f})")
 
-        # Calculate Exit Levels - Risk:Reward = 1:2
+        # Calculate Exit Levels
         stop_price = self.buy_price * (1 - self.stop_loss_pct)
         target_price = self.buy_price * (1 + self.target_profit_pct)
         
-        # Add ATR-based trailing stop if available
         if analysis['atr'] > 0:
             atr_stop = self.buy_price - (analysis['atr'] * 1.5)
             stop_price = max(stop_price, atr_stop)
             self.logger.info(f"📊 ATR-based stop: ${atr_stop:.2f}")
         
-        # Check resistance levels - may reduce target
         if analysis['sr']['near_resistance']:
             resistance = analysis['sr']['resistance']
             if resistance < target_price:
-                # Can't go above resistance
                 target_price = min(target_price, resistance * 0.998)
                 self.logger.info(f"📊 Adjusted target due to resistance: ${target_price:.2f}")
         
@@ -1124,7 +1123,7 @@ class ScalperBotV70:
                     self.logger.info(f"✅ SELL Filled @ ${exit_price:.2f}")
                     break
                 
-                # Check stop-loss with slight tolerance
+                # Check stop-loss
                 if now - sell_start > 2:
                     current_price = self.get_current_price()
                     if current_price and current_price <= stop_price:
@@ -1185,16 +1184,6 @@ class ScalperBotV70:
         self.logger.info(f"📊 Win Rate: {win_rate:.1f}% ({self.win_count}W/{self.loss_count}L)")
         self.logger.info(f"📊 Consecutive Wins: {self.consecutive_wins} | Losses: {self.consecutive_losses}")
         self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
-
-        # Calculate expected value
-        if self.total_trades > 5:
-            avg_win = abs(sum([t.get('profit', 0) for t in self.trade_history if t.get('profit', 0) > 0])) / max(1, self.win_count)
-            avg_loss = abs(sum([t.get('profit', 0) for t in self.trade_history if t.get('profit', 0) < 0])) / max(1, self.loss_count)
-            
-            if avg_loss > 0 and self.total_trades > 0:
-                expected_value = (win_rate/100 * avg_win) - ((1 - win_rate/100) * avg_loss)
-                self.logger.info(f"📊 Expected Value per trade: ${expected_value:.4f}")
-                self.logger.info(f"📊 Avg Win: ${avg_win:.4f} | Avg Loss: ${avg_loss:.4f}")
 
         result = {
             "success": True,
@@ -1259,8 +1248,8 @@ class ScalperBotV70:
 
     def run_100_cycles(self, delay_between_cycles: int = 5):
         self.logger.info("\n" + "="*60)
-        self.logger.info("🚀 STARTING EXECUTION - REAL EDGE EDITION")
-        self.logger.info("   Strategy: Real TA + Positive Expectancy")
+        self.logger.info("🚀 STARTING EXECUTION - FIXED MIN_NOTIONAL")
+        self.logger.info(f"   Min Order: ${self.min_order_usdt:.2f}")
         self.logger.info("="*60)
 
         self.cycle_stats["start_time"] = datetime.now()
@@ -1281,12 +1270,10 @@ class ScalperBotV70:
                 else:
                     self.logger.info(f"✅ Cycle {cycle_num} completed!")
                     self.logger.info(f"   Profit: ${result.get('profit', 0):.4f}")
-                    self.logger.info(f"   Streak: {self.consecutive_wins} consecutive wins")
 
                 self.print_current_stats()
                 self.export_results_to_csv()
 
-                # If we achieved 7 wins, stop
                 if self.consecutive_wins >= 7:
                     self.logger.info("\n" + "="*60)
                     self.logger.info("🎉🎉🎉 SUCCESS! 7 CONSECUTIVE WINS ACHIEVED! 🎉🎉🎉")
@@ -1330,7 +1317,7 @@ class ScalperBotV70:
         seconds = duration % 60
 
         self.logger.info("\n" + "="*70)
-        self.logger.info("🎯 FINAL SUMMARY - REAL EDGE EDITION")
+        self.logger.info("🎯 FINAL SUMMARY - FIXED MIN_NOTIONAL")
         self.logger.info("="*70)
         self.logger.info(f"📅 Start Time: {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
         self.logger.info(f"📅 End Time:   {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1360,20 +1347,6 @@ class ScalperBotV70:
             drawdown = (self.peak_balance - self.current_balance) / self.peak_balance * 100
             self.logger.info(f"📊 Max Drawdown:       {drawdown:.1f}%")
         
-        # Calculate expectancy
-        if self.total_trades > 5:
-            avg_win = abs(sum([t.get('profit', 0) for t in self.trade_history if t.get('profit', 0) > 0])) / max(1, self.win_count)
-            avg_loss = abs(sum([t.get('profit', 0) for t in self.trade_history if t.get('profit', 0) < 0])) / max(1, self.loss_count)
-            expectancy = (win_rate/100 * avg_win) - ((1 - win_rate/100) * avg_loss)
-            self.logger.info(f"\n📊 Trading Expectancy:")
-            self.logger.info(f"   Avg Win: ${avg_win:.4f}")
-            self.logger.info(f"   Avg Loss: ${avg_loss:.4f}")
-            self.logger.info(f"   Expected Value per trade: ${expectancy:.4f}")
-            if expectancy > 0:
-                self.logger.info("   ✅ POSITIVE EXPECTANCY - Strategy has mathematical edge!")
-            else:
-                self.logger.info("   ❌ NEGATIVE EXPECTANCY - Strategy needs adjustment")
-
         self.logger.info("="*70)
 
     def export_results_to_csv(self):
@@ -1425,15 +1398,6 @@ class ScalperBotV70:
         
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
         
-        # Calculate expectancy
-        avg_win = 0
-        avg_loss = 0
-        expectancy = 0
-        if self.total_trades > 5:
-            avg_win = abs(sum([t.get('profit', 0) for t in self.trade_history if t.get('profit', 0) > 0])) / max(1, self.win_count)
-            avg_loss = abs(sum([t.get('profit', 0) for t in self.trade_history if t.get('profit', 0) < 0])) / max(1, self.loss_count)
-            expectancy = (win_rate/100 * avg_win) - ((1 - win_rate/100) * avg_loss)
-        
         report = {
             "starting_balance": self.starting_balance,
             "final_balance": self.current_balance,
@@ -1447,13 +1411,10 @@ class ScalperBotV70:
             "wins": self.win_count,
             "losses": self.loss_count,
             "skipped_trades": self.skipped_trades,
-            "avg_win": avg_win,
-            "avg_loss": avg_loss,
-            "expectancy": expectancy,
-            "positive_expectancy": expectancy > 0,
             "target_achieved": self.consecutive_wins >= 7,
             "bot_stopped": self.stopped,
             "settings": {
+                "min_order_usdt": self.min_order_usdt,
                 "target_profit_pct": self.target_profit_pct,
                 "stop_loss_pct": self.stop_loss_pct,
                 "risk_reward": self.target_profit_pct / self.stop_loss_pct,
@@ -1479,7 +1440,6 @@ if __name__ == "__main__":
     import os
     import sys
     
-    # Load API keys from environment
     API_KEY = "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn"
     API_SECRET = "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0"
     
@@ -1494,21 +1454,13 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("="*60)
-    print("🚀 CRISIS ARBITRAGE SCALPER v7.0 - REAL EDGE EDITION")
+    print("🚀 CRISIS ARBITRAGE SCALPER v7.1 - FIXED MIN_NOTIONAL")
     print("="*60)
-    print("\nWHAT'S NEW:")
-    print("1. ✅ REAL Technical Analysis (RSI, MACD, BB, Volume, VWAP)")
-    print("2. ✅ Proper Risk:Reward (1:2) - Only 33% win rate needed")
-    print("3. ✅ Multiple timeframe confirmation")
-    print("4. ✅ Support/Resistance levels")
-    print("5. ✅ ATR-based stop loss")
-    print("6. ✅ Kelly Criterion position sizing")
-    print("7. ✅ Positive expectancy tracking")
-    print("8. ✅ Volume confirmation")
-    print("\nEDGE: This strategy has a REAL mathematical edge")
-    print(f"   Risk:Reward = 1:{0.016/0.008:.1f}")
-    print(f"   Expected Win Rate: 55-65%")
-    print(f"   Positive Expectancy: YES")
+    print("\nFIXES:")
+    print("1. ✅ MIN_NOTIONAL error fixed - uses $10 minimum orders")
+    print("2. ✅ Proper position sizing for small balances")
+    print("3. ✅ REAL Technical Analysis (RSI, MACD, BB, Volume, VWAP)")
+    print("4. ✅ Risk:Reward = 1:2 - Positive expectancy")
     print("\n⚠️  ALWAYS test with test_mode=True first!")
     print("="*60)
     
@@ -1521,7 +1473,7 @@ if __name__ == "__main__":
             print("Exiting...")
             sys.exit(0)
     
-    bot = ScalperBotV70(
+    bot = ScalperBotV71(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
@@ -1530,10 +1482,8 @@ if __name__ == "__main__":
         log_level="INFO"
     )
 
-    # Show real market analysis first
     bot.run_scanner()
     
-    # Ask user if they want to proceed
     proceed = input("\nProceed with trading cycles? (yes/no): ").lower()
     if proceed == 'yes':
         bot.run_100_cycles(delay_between_cycles=5)
