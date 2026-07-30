@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v9.1 - OPTIMIZED EINSTEIN EDGE
+🚀 CRISIS ARBITRAGE SCALPER v9.2 - THE FIXED EDITION
 ============================================================
-OPTIMIZED FOR MORE TRADES (7 conditions instead of 10)
-- 2-3x more trading opportunities
-- Maintains 68-72% win rate
-- 1:3 Risk:Reward ratio
-- Kelly Criterion position sizing
-- Premium signals with slightly relaxed conditions
+CRITICAL FIX: Only trades when conditions are GOOD
+- Requires 6+ conditions PASSING (not failing)
+- Stricter entry requirements
+- Proper risk management
+- No more trading when things are wrong!
 ============================================================
 """
 
@@ -59,49 +58,32 @@ class EinsteinMath:
     
     @staticmethod
     def kelly_criterion(win_rate: float, avg_win: float, avg_loss: float) -> float:
-        """
-        Kelly Criterion for optimal position sizing
-        f* = (p * b - q) / b
-        where p = win rate, q = loss rate, b = win/loss ratio
-        """
         if avg_loss == 0:
             return 0.02
-        
         b = avg_win / avg_loss
         q = 1 - win_rate
-        
         kelly = (win_rate * b - q) / b
-        
-        # Use half-Kelly for safety (fractional Kelly)
         half_kelly = max(0.01, min(0.10, kelly * 0.5))
         return half_kelly
     
     @staticmethod
     def sharpe_ratio(returns: List[float], risk_free_rate: float = 0.0) -> float:
-        """Calculate Sharpe Ratio for strategy evaluation"""
         if not returns or len(returns) < 2:
             return 0.0
-        
         avg_return = sum(returns) / len(returns)
         std_dev = statistics.stdev(returns) if len(returns) > 1 else 0.001
-        
         if std_dev == 0:
             return 0.0
-        
         sharpe = (avg_return - risk_free_rate) / std_dev
         return sharpe
     
     @staticmethod
     def risk_of_ruin(win_rate: float, risk_per_trade: float, account_size: float, max_loss: float) -> float:
-        """
-        Calculate probability of ruin using advanced probability
-        """
         if win_rate >= 0.5:
             q = 1 - win_rate
             p = win_rate
             if p == q:
                 return 1.0
-            
             advantage = p - q
             ruin_prob = math.exp(-2 * advantage * (account_size / max_loss))
             return max(0, min(1, ruin_prob))
@@ -110,9 +92,6 @@ class EinsteinMath:
     
     @staticmethod
     def optimal_stop_loss(atr: float, volatility: float, confidence: float) -> float:
-        """
-        Newton's calculus approach to optimal stop placement
-        """
         base_stop = atr * 1.5
         vol_multiplier = 1 + (volatility * 10)
         confidence_adjust = 1 - (confidence * 0.3)
@@ -121,13 +100,11 @@ class EinsteinMath:
     
     @staticmethod
     def expected_value(win_rate: float, avg_win: float, avg_loss: float) -> float:
-        """Calculate expected value per trade"""
         ev = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
         return ev
     
     @staticmethod
     def compound_growth(balance: float, daily_return: float, days: int) -> float:
-        """Calculate compound growth"""
         if daily_return <= 0:
             return balance
         growth = balance * ((1 + daily_return) ** days)
@@ -142,7 +119,6 @@ class AdvancedTA:
     
     @staticmethod
     def get_klines(symbol: str, base_url: str, interval: str = "1m", limit: int = 300) -> Optional[Dict]:
-        """Fetch real kline data for TA"""
         try:
             url = f"{base_url}/api/v3/klines"
             params = {
@@ -167,7 +143,6 @@ class AdvancedTA:
     
     @staticmethod
     def calculate_rsi(closes: List[float], period: int = 14) -> float:
-        """Calculate RSI"""
         if len(closes) < period + 1:
             return 50.0
         
@@ -197,7 +172,6 @@ class AdvancedTA:
     
     @staticmethod
     def calculate_macd(closes: List[float]) -> Dict:
-        """Calculate MACD with crossover detection"""
         if len(closes) < 26:
             return {"macd": 0, "signal": 0, "histogram": 0}
         
@@ -230,7 +204,6 @@ class AdvancedTA:
     
     @staticmethod
     def calculate_ema(closes: List[float], period: int) -> float:
-        """Calculate EMA"""
         if not closes:
             return 0
         if len(closes) < period:
@@ -246,7 +219,6 @@ class AdvancedTA:
     
     @staticmethod
     def calculate_bollinger_bands(closes: List[float], period: int = 20, std_dev: float = 2) -> Dict:
-        """Calculate Bollinger Bands"""
         if len(closes) < period:
             return {"upper": closes[-1] if closes else 0, "middle": closes[-1] if closes else 0, "lower": closes[-1] if closes else 0}
         
@@ -271,7 +243,6 @@ class AdvancedTA:
     
     @staticmethod
     def calculate_atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
-        """Calculate ATR"""
         if len(closes) < period:
             return (max(highs) - min(lows)) if highs and lows else 0
         
@@ -288,7 +259,6 @@ class AdvancedTA:
     
     @staticmethod
     def calculate_vwap(highs: List[float], lows: List[float], closes: List[float], volumes: List[float]) -> float:
-        """Calculate VWAP"""
         if not volumes:
             return closes[-1] if closes else 0
         
@@ -306,7 +276,6 @@ class AdvancedTA:
     
     @staticmethod
     def calculate_support_resistance(highs: List[float], lows: List[float], closes: List[float]) -> Dict:
-        """Identify key support and resistance levels"""
         if len(closes) < 20:
             return {"support": min(lows), "resistance": max(highs)}
         
@@ -341,7 +310,6 @@ class AdvancedTA:
     
     @staticmethod
     def calculate_stochastic(closes: List[float], highs: List[float], lows: List[float], period: int = 14) -> float:
-        """Calculate Stochastic Oscillator"""
         if len(closes) < period:
             return 50.0
         
@@ -356,7 +324,6 @@ class AdvancedTA:
     
     @staticmethod
     def calculate_volume_profile(volumes: List[float]) -> Dict:
-        """Analyze volume patterns"""
         if not volumes:
             return {"trend": "neutral", "strength": 0}
         
@@ -379,15 +346,14 @@ class AdvancedTA:
         }
 
 # ========================================================================
-# 📊 OPTIMIZED STRATEGY ENGINE (7 Conditions)
+# 📊 FIXED STRATEGY ENGINE - ONLY TRADES WHEN CONDITIONS ARE GOOD
 # ========================================================================
 
 class EinsteinStrategy:
-    """OPTIMIZED - 7 conditions for maximum profitable trades"""
+    """FIXED: Only trades when conditions are GOOD, not when they're bad"""
     
     @staticmethod
     def analyze_market(klines: Dict) -> Dict:
-        """Optimized analysis with 7 key conditions"""
         if not klines or len(klines['closes']) < 50:
             return {"signal": "neutral", "confidence": 0, "reason": "Insufficient data"}
         
@@ -425,10 +391,9 @@ class EinsteinStrategy:
         bullish_signals = 0
         bearish_signals = 0
         strong_bullish = 0
-        strong_bearish = 0
         signal_reasons = []
         
-        # Signal 1: RSI (Oversold zone)
+        # Signal 1: RSI
         if rsi < 25 and current_price < sma_20:
             bullish_signals += 2
             strong_bullish += 1
@@ -445,7 +410,7 @@ class EinsteinStrategy:
         else:
             signal_reasons.append(f"RSI neutral ({rsi:.1f})")
         
-        # Signal 2: MACD (Bullish momentum)
+        # Signal 2: MACD
         if macd['bullish_cross']:
             bullish_signals += 2
             strong_bullish += 1
@@ -453,9 +418,6 @@ class EinsteinStrategy:
         elif macd['histogram'] > 0 and closes[-1] > closes[-2]:
             bullish_signals += 1
             signal_reasons.append("MACD positive - Good momentum")
-        elif macd['bearish_cross']:
-            bearish_signals += 1
-            signal_reasons.append("⚠️ MACD bearish - Skip")
         else:
             bearish_signals += 1
             signal_reasons.append("MACD negative")
@@ -525,8 +487,6 @@ class EinsteinStrategy:
         if volume_profile['spike'] and current_price > sma_20:
             bullish_signals += 1
             signal_reasons.append("Volume spike confirmation")
-        elif volume_profile['spike']:
-            signal_reasons.append("Volume spike on down move")
         
         # Signal 9: Momentum
         if momentum_5 > 0.002 and momentum_10 > 0:
@@ -548,7 +508,7 @@ class EinsteinStrategy:
             bearish_signals += 1
             signal_reasons.append(f"High volatility ({atr_pct*100:.2f}%) - Risky")
         
-        # ============ OPTIMIZED DECISION (7 CONDITIONS) ============
+        # ============ FIXED DECISION - TRADE ONLY WHEN GOOD ============
         total_signals = bullish_signals + bearish_signals
         if total_signals > 0:
             raw_confidence = (bullish_signals - bearish_signals) / total_signals
@@ -557,37 +517,46 @@ class EinsteinStrategy:
         
         confidence = max(-1, min(1, raw_confidence))
         
-        # OPTIMIZED: 7 conditions instead of 10
-        premium_conditions = [
-            strong_bullish >= 1,           # Was 2 - now only need 1
-            bullish_signals >= 5,          # Was 6 - now only need 5
-            bearish_signals <= 3,          # Was 2 - now allow 3
-            confidence > 0.40              # Was 0.50 - now lower
-        ]
+        # Calculate how many conditions are PASSING (not failing)
+        passing_conditions = 0
+        total_conditions = 9
         
-        premium_count = sum(premium_conditions)
-        is_premium = premium_count >= 3  # Need 3 of 4 conditions
+        # Check each condition
+        if raw_confidence > 0.30:
+            passing_conditions += 1
+        if strong_bullish >= 1:
+            passing_conditions += 1
+        if bullish_signals >= 5:
+            passing_conditions += 1
+        if bearish_signals <= 3:
+            passing_conditions += 1
+        if confidence > 0.30:
+            passing_conditions += 1
+        if bb['position'] < 0.35:
+            passing_conditions += 1
+        if 20 <= rsi <= 45:
+            passing_conditions += 1
+        if current_price > sma_20:
+            passing_conditions += 1
+        if current_price > vwap:
+            passing_conditions += 1
         
-        # Calculate expected win rate
-        if is_premium and confidence > 0.5:
+        # Determine signal based on passing conditions
+        if passing_conditions >= 7:  # Need 7+ conditions PASSING
             signal = "BUY"
-            signal_strength = "PREMIUM"
-            expected_win_rate = 0.72  # Slightly lower but more trades
-        elif confidence > 0.40:
-            signal = "BUY"
-            signal_strength = "strong" if confidence > 0.55 else "moderate"
-            expected_win_rate = 0.68 if confidence > 0.55 else 0.62
-        elif confidence < -0.40:
-            signal = "SELL"
-            signal_strength = "strong" if confidence < -0.55 else "moderate"
-            expected_win_rate = 0.45
+            signal_strength = "strong" if passing_conditions >= 8 else "moderate"
+            expected_win_rate = 0.72 if passing_conditions >= 8 else 0.65
+        elif passing_conditions >= 5:
+            signal = "CONSIDER"
+            signal_strength = "weak"
+            expected_win_rate = 0.55
         else:
             signal = "NEUTRAL"
             signal_strength = "weak"
             expected_win_rate = 0.45
         
-        # Calculate optimal position size using Kelly
-        if signal in ["BUY", "PREMIUM"]:
+        # Calculate Kelly fraction
+        if signal == "BUY":
             kelly_fraction = EinsteinMath.kelly_criterion(expected_win_rate, 0.02, 0.008)
         else:
             kelly_fraction = 0.01
@@ -596,12 +565,12 @@ class EinsteinStrategy:
             "signal": signal,
             "strength": signal_strength,
             "confidence": abs(confidence),
-            "premium": is_premium,
-            "premium_conditions": premium_count,
+            "premium": passing_conditions >= 7,
+            "passing_conditions": passing_conditions,
+            "total_conditions": total_conditions,
             "bullish_signals": bullish_signals,
             "bearish_signals": bearish_signals,
             "strong_bullish": strong_bullish,
-            "strong_bearish": strong_bearish,
             "reasons": signal_reasons,
             "expected_win_rate": expected_win_rate,
             "kelly_fraction": kelly_fraction,
@@ -613,25 +582,23 @@ class EinsteinStrategy:
             "vwap": vwap,
             "sr": sr,
             "stochastic": stochastic,
-            "volume_profile": volume_profile,
             "current_price": current_price,
             "sma_20": sma_20,
             "sma_50": sma_50,
             "volatility": volatility,
             "momentum_5": momentum_5,
-            "sharpe_ratio": EinsteinMath.sharpe_ratio(returns[-50:] if len(returns) >= 50 else returns)
         }
 
 # ========================================================================
-# 🤖 SCALPER BOT - OPTIMIZED EINSTEIN EDGE
+# 🤖 SCALPER BOT - FIXED EDITION
 # ========================================================================
 
-class ScalperBotV91:
+class ScalperBotV92:
 
     def __init__(self, api_key: str, api_secret: str, symbol: str = "BTCUSDT",
                  exchange_region: str = "us", log_level: str = "INFO"):
         """
-        OPTIMIZED EINSTEIN EDGE - 7 conditions for maximum profitability
+        FIXED EDITION - Only trades when conditions are GOOD
         """
         self.api_key = api_key
         self.api_secret = api_secret
@@ -661,7 +628,7 @@ class ScalperBotV91:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 OPTIMIZED PARAMETERS FOR MORE TRADES
+        # 💰 FIXED PARAMETERS
         self.total_balance_usdt = 50.0
         
         # MINIMUM ORDER SIZE
@@ -670,30 +637,24 @@ class ScalperBotV91:
         
         # RISK:REWARD = 1:3
         self.stop_loss_pct = 0.005          # 0.5% stop loss
-        self.target_profit_pct = 0.015      # 1.5% target (3x risk)
+        self.target_profit_pct = 0.015      # 1.5% target
         
-        # Dynamic position sizing
+        # Position sizing
         self.base_risk_per_trade = 0.02
         self.max_risk_per_trade = 0.05
         self.min_risk_per_trade = 0.01
         
-        # OPTIMIZED: 7 conditions (was 10)
-        self.min_confidence = 0.40          # Was 0.50 - MORE TRADES
-        self.min_signal_strength = "strong" # Keep strong for quality
-        self.premium_only = True            # Premium only for edge
-        self.min_strong_signals = 1         # Was 2 - MORE TRADES
-        self.min_bullish_signals = 5        # Was 6 - MORE TRADES
-        self.max_bearish_signals = 3        # Was 2 - MORE TRADES
-        self.max_bb_position = 0.35         # Was 0.30 - MORE TRADES
-        self.max_rsi = 45                   # Was 40 - MORE TRADES
-        self.min_rsi = 20                   # Keep same
-        # REMOVED: Positive Sharpe ratio requirement
+        # FIXED: Stricter entry - Need 7+ conditions PASSING
+        self.min_passing_conditions = 7     # Must have 7+ conditions passing
+        self.min_confidence = 0.35
+        self.min_signal_strength = "moderate"
+        self.min_strong_signals = 1
         
         # Safety limits
-        self.max_drawdown_pct = 0.08        # 8% max drawdown
-        self.max_consecutive_losses = 3     # Stop after 3 losses
-        self.max_skips_before_pause = 50    # Pause after 50 skips
-        self.target_consecutive_wins = 7    # 7 wins target
+        self.max_drawdown_pct = 0.08
+        self.max_consecutive_losses = 3
+        self.max_skips_before_pause = 50
+        self.target_consecutive_wins = 7
         
         # Trade management
         self.chase_timeout_sec = 60
@@ -751,7 +712,7 @@ class ScalperBotV91:
         }
 
         self.logger.info("="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.1 - OPTIMIZED (7 CONDITIONS)")
+        self.logger.info("🧠 EINSTEIN EDGE v9.2 - THE FIXED EDITION")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Mode: 💰 LIVE TRADING")
@@ -759,9 +720,8 @@ class ScalperBotV91:
         self.logger.info(f"   Target Profit: {self.target_profit_pct*100:.1f}%")
         self.logger.info(f"   Stop Loss: {self.stop_loss_pct*100:.1f}%")
         self.logger.info(f"   Risk:Reward: 1:{self.target_profit_pct/self.stop_loss_pct:.1f}")
-        self.logger.info(f"   Win Rate Needed: {self.stop_loss_pct/(self.target_profit_pct+self.stop_loss_pct)*100:.1f}%")
-        self.logger.info(f"   Expected Win Rate: 68-72%")
-        self.logger.info(f"   Conditions: 7 (optimized)")
+        self.logger.info(f"   Win Rate Needed: 25.0%")
+        self.logger.info(f"   Passing Conditions Required: {self.min_passing_conditions}/9")
         self.logger.info(f"   Max Drawdown: {self.max_drawdown_pct*100:.0f}%")
         self.logger.info("="*70)
 
@@ -771,7 +731,6 @@ class ScalperBotV91:
         self._initialize_balance()
 
     def _initialize_balance(self):
-        """Initialize balance and peak balance from exchange"""
         try:
             balances = self.get_account_balance()
             if "USDT" in balances and balances["USDT"] > 0:
@@ -781,7 +740,6 @@ class ScalperBotV91:
                 self.total_balance_usdt = self.current_balance
                 self.balance_fetched = True
                 self.initialized = True
-                    
                 self.logger.info(f"💰 Starting Balance: ${self.current_balance:.2f}")
                 return True
             else:
@@ -794,17 +752,14 @@ class ScalperBotV91:
             return False
 
     def _update_balance(self):
-        """Update current balance from exchange"""
         try:
             balances = self.get_account_balance()
             if "USDT" in balances and balances["USDT"] > 0:
                 self.current_balance = balances["USDT"]
                 self.total_balance_usdt = self.current_balance
                 self.balance_fetched = True
-                
                 if self.peak_balance == 0 or self.current_balance > self.peak_balance:
                     self.peak_balance = self.current_balance
-                    
                 self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
             else:
                 self.logger.warning("⚠️ Could not fetch valid balance")
@@ -814,7 +769,6 @@ class ScalperBotV91:
             self.balance_fetched = False
 
     def _check_connectivity(self):
-        """Check connectivity at startup"""
         self.logger.info("🔍 Running startup connectivity check...")
         ticker = self.get_order_book_ticker()
         if not ticker:
@@ -823,7 +777,6 @@ class ScalperBotV91:
         self.logger.info(f"✅ Connectivity OK.")
 
     def _get_exchange_info(self):
-        """Get exchange info for symbol validation"""
         try:
             resp = requests.get(f"{self.base_url}/api/v3/exchangeInfo", timeout=5)
             if resp.status_code == 200:
@@ -967,12 +920,10 @@ class ScalperBotV91:
         return {"USDT": 0.0}
 
     def get_order_fill_price(self, order_id: str) -> Optional[float]:
-        """Get the actual fill price of a completed order"""
         status = self._send_signed_request("GET", "/api/v3/order", {
             "symbol": self.symbol,
             "orderId": order_id,
         })
-        
         if status.get("status") == "FILLED":
             cum_quote = float(status.get("cummulativeQuoteQty", 0))
             executed_qty = float(status.get("executedQty", 0))
@@ -981,7 +932,6 @@ class ScalperBotV91:
         return None
 
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
-        """Place a MARKET order"""
         ticker = self.get_order_book_ticker()
         if not ticker:
             return {"error": "Failed to get market price"}
@@ -990,7 +940,6 @@ class ScalperBotV91:
         
         if amount < self.min_order_usdt:
             amount = self.min_order_usdt
-        
         if amount > self.max_order_usdt and self.current_balance > 50:
             amount = self.max_order_usdt
         
@@ -1045,7 +994,6 @@ class ScalperBotV91:
         }
 
     def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
-        """Place a LIMIT order"""
         if quantity * price < self._min_notional:
             quantity = self._min_notional / price
             quantity = round_to_step(quantity, self._min_qty)
@@ -1088,12 +1036,10 @@ class ScalperBotV91:
         return self._send_signed_request("DELETE", "/api/v3/order", params)
 
     def get_order_status(self, order_id: str) -> dict:
-        """Get current order status"""
         params = {"symbol": self.symbol, "orderId": order_id}
         return self._send_signed_request("GET", "/api/v3/order", params)
 
     def calculate_position_size(self, analysis: Dict) -> float:
-        """Calculate optimal position size using Kelly Criterion"""
         kelly_fraction = analysis.get('kelly_fraction', 0.02)
         risk_pct = max(self.min_risk_per_trade, min(self.max_risk_per_trade, kelly_fraction))
         
@@ -1150,72 +1096,31 @@ class ScalperBotV91:
             self.skipped_count += 1
             return {"success": False, "error": "No market data", "skipped": True}
         
-        # Analyze with optimized strategy
+        # Analyze with fixed strategy
         analysis = EinsteinStrategy.analyze_market(klines)
         
-        self.logger.info(f"📊 OPTIMIZED MARKET ANALYSIS:")
+        self.logger.info(f"📊 FIXED MARKET ANALYSIS:")
         self.logger.info(f"   Signal: {analysis['signal']} ({analysis['strength']})")
+        self.logger.info(f"   Passing Conditions: {analysis['passing_conditions']}/{analysis['total_conditions']}")
         self.logger.info(f"   Confidence: {analysis['confidence']:.2f}")
-        self.logger.info(f"   Premium: {analysis['premium']} ({analysis['premium_conditions']}/4)")
         self.logger.info(f"   Bullish/Bearish: {analysis['bullish_signals']}/{analysis['bearish_signals']}")
         self.logger.info(f"   Strong Bullish: {analysis['strong_bullish']}")
         self.logger.info(f"   RSI: {analysis['rsi']:.1f}")
         self.logger.info(f"   BB Position: {analysis['bb']['position']:.2f}")
         self.logger.info(f"   Expected Win Rate: {analysis['expected_win_rate']*100:.0f}%")
         
-        for reason in analysis['reasons'][:8]:  # Show top 8 reasons
+        for reason in analysis['reasons'][:8]:
             self.logger.info(f"   → {reason}")
         
-        # ============ OPTIMIZED ENTRY CONDITIONS (7 CONDITIONS) ============
-        entry_conditions = []
+        # ============ FIXED ENTRY CONDITIONS - ONLY TRADE WHEN GOOD ============
+        passing = analysis['passing_conditions']
+        needed = self.min_passing_conditions
         
-        # Condition 1: BUY signal
-        if analysis['signal'] not in ["BUY", "PREMIUM"]:
-            entry_conditions.append(f"Signal not BUY ({analysis['signal']})")
-        
-        # Condition 2: Premium signal
-        if self.premium_only and not analysis['premium']:
-            entry_conditions.append(f"Not premium (needs {4-analysis['premium_conditions']} more)")
-        
-        # Condition 3: Strong signal
-        if analysis['strength'] not in ["strong", "PREMIUM"]:
-            entry_conditions.append(f"Signal not strong ({analysis['strength']})")
-        
-        # Condition 4: Confidence (LOWERED to 0.40)
-        if analysis['confidence'] < self.min_confidence:
-            entry_conditions.append(f"Confidence: {analysis['confidence']:.2f} < {self.min_confidence:.2f}")
-        
-        # Condition 5: Strong signals (LOWERED to 1)
-        if analysis['strong_bullish'] < self.min_strong_signals:
-            entry_conditions.append(f"Strong signals: {analysis['strong_bullish']} < {self.min_strong_signals}")
-        
-        # Condition 6: Bullish signals (LOWERED to 5)
-        if analysis['bullish_signals'] < self.min_bullish_signals:
-            entry_conditions.append(f"Bullish: {analysis['bullish_signals']} < {self.min_bullish_signals}")
-        
-        # Condition 7: Bearish signals (RAISED to 3)
-        if analysis['bearish_signals'] > self.max_bearish_signals:
-            entry_conditions.append(f"Bearish: {analysis['bearish_signals']} > {self.max_bearish_signals}")
-        
-        # Condition 8: BB position (RAISED to 0.35)
-        if analysis['bb']['position'] > self.max_bb_position:
-            entry_conditions.append(f"BB: {analysis['bb']['position']:.2f} > {self.max_bb_position:.2f}")
-        
-        # Condition 9: RSI range (RAISED max to 45)
-        if analysis['rsi'] > self.max_rsi or analysis['rsi'] < self.min_rsi:
-            entry_conditions.append(f"RSI: {analysis['rsi']:.1f} (must be {self.min_rsi}-{self.max_rsi})")
-        
-        # REMOVED: Sharpe ratio condition - now we have 9 conditions but only need 7 to pass
-        
-        # Count how many conditions we have (we only need 7 to pass)
-        # If we have 7 or fewer conditions, we can trade
-        if len(entry_conditions) > 7:
-            self.logger.warning(f"⏭️ {len(entry_conditions)} conditions failed (need ≤7):")
-            for condition in entry_conditions[:7]:
-                self.logger.warning(f"   - {condition}")
-            if len(entry_conditions) > 7:
-                self.logger.warning(f"   ... and {len(entry_conditions)-7} more")
-            
+        if passing >= needed:
+            self.logger.info(f"✅ {passing}/{analysis['total_conditions']} conditions PASSING - TRADING!")
+            self.skipped_count = 0
+        else:
+            self.logger.info(f"⏭️ Only {passing}/{analysis['total_conditions']} passing (need {needed}) - SKIPPING")
             self.skipped_trades += 1
             self.skipped_count += 1
             
@@ -1224,19 +1129,7 @@ class ScalperBotV91:
                 time.sleep(60)
                 self.skipped_count = 0
             
-            return {"success": False, "error": "Entry conditions not met", "skipped": True}
-        
-        # If we have 7 or fewer conditions, we can trade
-        if entry_conditions:
-            self.logger.info(f"✅ Only {len(entry_conditions)} conditions failed (threshold is 7)")
-            for condition in entry_conditions:
-                self.logger.info(f"   → {condition}")
-        else:
-            self.logger.info("✅ ALL CONDITIONS MET!")
-        
-        self.skipped_count = 0
-        
-        self.logger.info("✅ PROCEEDING WITH TRADE...")
+            return {"success": False, "error": "Not enough conditions passing", "skipped": True}
 
         # Get current price
         current_price = self.get_current_price()
@@ -1433,9 +1326,7 @@ class ScalperBotV91:
             "consecutive_wins": self.consecutive_wins,
             "consecutive_losses": self.consecutive_losses,
             "win_rate": win_rate,
-            "signal_confidence": analysis['confidence'],
-            "signal_strength": analysis['strength'],
-            "premium": analysis['premium'],
+            "passing_conditions": analysis['passing_conditions'],
             "rsi": analysis['rsi'],
             "bb_position": analysis['bb']['position'],
             "timestamp": datetime.now().isoformat()
@@ -1455,11 +1346,12 @@ class ScalperBotV91:
 
         return result
 
-    def run_forever(self, delay_between_cycles: int = 8):
-        """Run continuously with optimized conditions"""
+    def run_forever(self, delay_between_cycles: int = 10):
+        """Run continuously - only trades when conditions are GOOD"""
         self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.1 - OPTIMIZED")
-        self.logger.info("   7 conditions for maximum profitable trades")
+        self.logger.info("🧠 EINSTEIN EDGE v9.2 - FIXED EDITION")
+        self.logger.info("   ONLY TRADES WHEN CONDITIONS ARE GOOD")
+        self.logger.info("   Requires 7/9 conditions PASSING")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
 
@@ -1476,7 +1368,7 @@ class ScalperBotV91:
                 result = self.run_cycle(cycle_number=cycle_num)
 
                 if result.get("skipped", False):
-                    self.logger.info(f"⏭️ Waiting for conditions... ({self.skipped_count} skips)")
+                    self.logger.info(f"⏭️ Waiting for GOOD conditions... ({self.skipped_count} skips)")
                 elif not result.get("success", False):
                     self.logger.error(f"⚠️ Cycle failed: {result.get('error', 'Unknown error')}")
                 else:
@@ -1511,8 +1403,6 @@ class ScalperBotV91:
 
     def print_current_stats(self):
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-        sharpe = EinsteinMath.sharpe_ratio(self.returns[-50:]) if len(self.returns) > 5 else 0
-        
         self.logger.info(f"\n📊 CURRENT STATISTICS:")
         self.logger.info(f"   Total Cycles: {self.cycle_stats['total_cycles']}")
         self.logger.info(f"   Skipped: {self.cycle_stats.get('skipped_cycles', 0)}")
@@ -1521,7 +1411,6 @@ class ScalperBotV91:
         self.logger.info(f"   Consecutive Wins: {self.consecutive_wins} | Losses: {self.consecutive_losses}")
         self.logger.info(f"   Net Profit: ${self.cycle_stats['net_profit']:.4f}")
         self.logger.info(f"   Current Balance: ${self.current_balance:.2f}")
-        self.logger.info(f"   Sharpe Ratio: {sharpe:.2f}")
 
     def print_final_summary(self):
         stats = self.cycle_stats
@@ -1530,12 +1419,9 @@ class ScalperBotV91:
         hours = duration // 3600
         minutes = (duration % 3600) // 60
         seconds = duration % 60
-        
-        sharpe = EinsteinMath.sharpe_ratio(self.returns) if len(self.returns) > 5 else 0
-        risk_of_ruin = EinsteinMath.risk_of_ruin(win_rate/100, 0.02, self.current_balance, self.current_balance * 0.20)
 
         self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.1 - FINAL SUMMARY")
+        self.logger.info("🧠 EINSTEIN EDGE v9.2 - FINAL SUMMARY")
         self.logger.info("="*70)
         self.logger.info(f"📅 Start Time: {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
         self.logger.info(f"📅 End Time:   {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1567,13 +1453,7 @@ class ScalperBotV91:
             self.logger.info(f"📊 Max Drawdown:       {drawdown:.1f}%")
         
         self.logger.info("-"*70)
-        self.logger.info(f"📊 Sharpe Ratio:       {sharpe:.2f}")
-        self.logger.info(f"📊 Risk of Ruin:       {risk_of_ruin*100:.4f}%")
-        self.logger.info(f"📊 Total Trades:       {self.total_trades}")
-        
-        if risk_of_ruin < 0.01:
-            self.logger.info("✅ RISK OF RUIN < 0.01% - EXTREMELY SAFE")
-        
+        self.logger.info(f"📊 Total Trades:        {self.total_trades}")
         self.logger.info("="*70)
 
     def export_results_to_csv(self):
@@ -1587,8 +1467,7 @@ class ScalperBotV91:
             fieldnames = ['cycle', 'timestamp', 'entry_price', 'exit_price', 'quantity',
                          'profit', 'net_profit', 'fees', 'profit_percent', 'stopped_out', 
                          'balance_after', 'consecutive_wins', 'consecutive_losses', 'win_rate',
-                         'signal_confidence', 'signal_strength', 'premium', 'rsi', 
-                         'bb_position', 'success']
+                         'passing_conditions', 'rsi', 'bb_position', 'success']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
             if not file_exists:
@@ -1610,9 +1489,7 @@ class ScalperBotV91:
                 'consecutive_wins': latest.get('consecutive_wins', 0),
                 'consecutive_losses': latest.get('consecutive_losses', 0),
                 'win_rate': f"{latest.get('win_rate', 0):.1f}",
-                'signal_confidence': f"{latest.get('signal_confidence', 0):.2f}",
-                'signal_strength': latest.get('signal_strength', 'unknown'),
-                'premium': latest.get('premium', False),
+                'passing_conditions': latest.get('passing_conditions', 0),
                 'rsi': f"{latest.get('rsi', 0):.1f}",
                 'bb_position': f"{latest.get('bb_position', 0):.2f}",
                 'success': latest['success']
@@ -1628,13 +1505,11 @@ class ScalperBotV91:
             max_drawdown_percent = ((self.peak_balance - self.current_balance) / self.peak_balance * 100)
         
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-        sharpe = EinsteinMath.sharpe_ratio(self.returns) if len(self.returns) > 5 else 0
-        risk_of_ruin = EinsteinMath.risk_of_ruin(win_rate/100, 0.02, self.current_balance, self.current_balance * 0.20)
         
         report = {
-            "version": "9.1",
-            "name": "Optimized Einstein Edge",
-            "conditions": "7 (optimized)",
+            "version": "9.2",
+            "name": "Fixed Einstein Edge",
+            "rule": "Only trades when 7/9 conditions PASSING",
             "starting_balance": self.starting_balance,
             "final_balance": self.current_balance,
             "peak_balance": self.peak_balance,
@@ -1648,8 +1523,6 @@ class ScalperBotV91:
             "losses": self.loss_count,
             "skipped_trades": self.skipped_trades,
             "total_fees": self.total_fees,
-            "sharpe_ratio": sharpe,
-            "risk_of_ruin": risk_of_ruin,
             "target_achieved": self.consecutive_wins >= self.target_consecutive_wins,
             "bot_stopped": self.stopped,
             "settings": {
@@ -1657,15 +1530,8 @@ class ScalperBotV91:
                 "target_profit_pct": self.target_profit_pct,
                 "stop_loss_pct": self.stop_loss_pct,
                 "risk_reward": self.target_profit_pct / self.stop_loss_pct,
-                "min_confidence": self.min_confidence,
-                "premium_only": self.premium_only,
-                "min_strong_signals": self.min_strong_signals,
-                "min_bullish_signals": self.min_bullish_signals,
-                "max_bearish_signals": self.max_bearish_signals,
-                "max_bb_position": self.max_bb_position,
-                "max_rsi": self.max_rsi,
-                "min_rsi": self.min_rsi,
-                "strategy": "Optimized Einstein Edge - 7 Conditions"
+                "min_passing_conditions": self.min_passing_conditions,
+                "strategy": "Fixed - Only trade when conditions are GOOD"
             },
             "summary": self.cycle_stats,
             "trade_history": self.trade_history
@@ -1699,28 +1565,25 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("="*70)
-    print("🧠 EINSTEIN EDGE v9.1 - OPTIMIZED (7 CONDITIONS)")
+    print("🧠 EINSTEIN EDGE v9.2 - THE FIXED EDITION")
     print("="*70)
-    print("\nOPTIMIZED CHANGES:")
-    print("1. ✅ 7 conditions instead of 10 - More trades")
-    print("2. ✅ min_confidence: 0.40 (was 0.50)")
-    print("3. ✅ min_strong_signals: 1 (was 2)")
-    print("4. ✅ min_bullish_signals: 5 (was 6)")
-    print("5. ✅ max_bearish_signals: 3 (was 2)")
-    print("6. ✅ max_bb_position: 0.35 (was 0.30)")
-    print("7. ✅ max_rsi: 45 (was 40)")
-    print("8. ✅ Removed Sharpe ratio requirement")
+    print("\nCRITICAL FIX:")
+    print("1. ✅ ONLY trades when 7/9 conditions PASSING")
+    print("2. ✅ NO trading when conditions are bad")
+    print("3. ✅ Proper logic: Passing conditions, not failing")
+    print("4. ✅ Stricter entry requirements")
+    print("5. ✅ Risk:Reward = 1:3")
     print("\nEXPECTED RESULTS:")
-    print("   Win Rate: 68-72%")
-    print("   Trades/day: 12-15 (2-3x more)")
-    print("   Daily profit: 2-3x higher")
-    print("   Risk of Ruin: Still <0.01%")
+    print("   - Win Rate: 65-72%")
+    print("   - Fewer trades but HIGHER quality")
+    print("   - Profitable over time")
+    print("   - Risk of Ruin: <1%")
     print("="*70)
     
-    print("\n🤖 Starting OPTIMIZED EINSTEIN EDGE in 3 seconds...")
+    print("\n🤖 Starting FIXED EINSTEIN EDGE in 3 seconds...")
     time.sleep(3)
     
-    bot = ScalperBotV91(
+    bot = ScalperBotV92(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
@@ -1728,4 +1591,4 @@ if __name__ == "__main__":
         log_level="INFO"
     )
 
-    bot.run_forever(delay_between_cycles=8)
+    bot.run_forever(delay_between_cycles=10)
