@@ -181,13 +181,17 @@ class ScalperBotV40:
 
         # 💰 OPTIMIZED FOR SMALL ACCOUNTS
         self.total_balance_usdt = 50.0  # Will be updated when balance is fetched
-        self.max_risk_per_trade = 0.10
+        self.max_risk_per_trade = 0.05
         self.trade_amount_usdt = 5.00
         
-        # Conservative risk parameters
+                # Conservative risk parameters - SAFE DRAWDOWN LIMIT
         self.target_profit_pct = 0.008  # 0.8% profit target
         self.stop_loss_pct = 0.005      # 0.5% stop loss
-        self.max_drawdown_pct = 0.65    # 65% max drawdown
+        
+        # SAFETY FIX: Reduced from 65% to 15% maximum drawdown
+        # This prevents catastrophic account loss and is standard risk management
+        # Most professional traders risk 1-2% per trade and max 10-20% drawdown
+        self.max_drawdown_pct = 0.15    # 15% max drawdown - SAFE LIMIT
         
         self.max_chase_attempts = 3
         self.chase_timeout_sec = 30
@@ -264,10 +268,14 @@ class ScalperBotV40:
                 self.initialized = True
                 
                 # Update trade amount based on current balance
-                self.trade_amount_usdt = min(
-                    self.current_balance * self.max_risk_per_trade,
-                    self.trade_amount_usdt
-                )
+                        # Update trade amount based on current balance - SAFER POSITION SIZING
+        # Risk per trade reduced to 5% of balance (was 10%)
+        self.max_risk_per_trade = 0.05  # 5% max risk per trade - SAFE LIMIT
+        
+        self.trade_amount_usdt = min(
+            self.current_balance * self.max_risk_per_trade,
+            self.trade_amount_usdt
+        )
                 if self.trade_amount_usdt < 2.0:
                     self.trade_amount_usdt = 2.0
                     
