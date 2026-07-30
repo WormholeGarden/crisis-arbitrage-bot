@@ -1,276 +1,294 @@
+import os
+import sys
 import time
-import hmac
-import hashlib
-import requests
-import json
 import math
 import random
-from typing import Dict, Any, Optional, Tuple
+import logging
 
-class BinanceTrader:
-    def __init__(self, api_key: str, api_secret: str, test_mode: bool = True):
-        self.api_key = api_key
-        self.api_secret = api_secret
+# Set up clean logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+try:
+    from binance.client import Client
+    from binance.exceptions import BinanceAPIException, BinanceOrderException
+except ImportError:
+    logging.warning("python-binance is not installed. Live trading mode will raise errors.")
+    Client = None
+
+# =====================================================================
+# CONFIGURATION & HARDCODED KEYS
+# =====================================================================
+API_KEY = "Your_Binance_API_Key_Here"
+API_SECRET = "Your_Binance_API_Secret_Here"
+
+SYMBOL = "BTCUSDT"
+TRADE_AMOUNT_USDT = 50.0   # Base trade size in USDT
+PROFIT_TARGET_PCT = 0.008  # 0.80% Take-Profit Target
+TIMEOUT_SECONDS = 300      # Time before chasing order (5 minutes)
+TEST_MODE = True           # Set to False ONLY when ready for real execution
+
+# =====================================================================
+# BOT ENGINE
+# =====================================================================
+class RefactoredTradingEngine:
+    def __init__(self, api_key: str, api_secret: str, symbol: str, test_mode: bool = True):
+        self.symbol = symbol
         self.test_mode = test_mode
+        self.client = None
         
-        # Base URLs for Spot Live vs Spot Testnet
-        if self.test_mode:
-            self.base_url = "https://testnet.binance.vision"
+        # Symbol filter precisions
+        self.price_precision = 2
+        self.qty_precision = 5
+        self.min_notional = 10.0
+
+        if not self.test_mode:
+            if not Client:
+                raise RuntimeError("python-binance dependency missing. Run `pip install python-binance`.")
+            self.client = Client(api_key, api_secret)
+            self._load_symbol_filters()
+            logging.info(f"Initialized Live Trading Engine for {self.symbol}")
         else:
-            self.base_url = "https://api.binance.com"
-            
-        self.session = requests.Session()
-        self.session.headers.update({
-            "X-MBX-APIKEY": self.api_key,
-            "Content-Type": "application/x-www-form-urlencoded"
-        })
+            logging.info(f"Initialized Paper Trading Simulator for {self.symbol}")
 
-    def _generate_signature(self, params: Dict[str, Any]) -> str:
-        query_string = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
-        return hmac.new(
-            self.api_secret.encode("utf-8"),
-            query_string.encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
-
-    def _send_request(self, method: str, endpoint: str, params: Optional[Dict[str, Any]] = None, signed: bool = False) -> Dict[str, Any]:
-        if params is None:
-            params = {}
-            
-        if signed:
-            params["timestamp"] = int(time.time() * 1000)
-            params["signature"] = self._generate_signature(params)
-
-        url = f"{self.base_url}{endpoint}"
+    def _load_symbol_filters(self):
+        """Fetch step size and tick size filters directly from Binance."""
         try:
-            if method.upper() == "GET":
-                response = self.session.get(url, params=params, timeout=10)
-            elif method.upper() == "POST":
-                response = self.session.post(url, data=params, timeout=10)
-            elif method.upper() == "DELETE":
-                response = self.session.delete(url, params=params, timeout=10)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
+            info = self.client.get_symbol_info(self.symbol)
+            for f in info['filters']:
+                if f['filterType'] == 'PRICE_FILTER':
+                    tick_size = float(f['tickSize'])
+                    self.price_precision = int(round(-math.log10(tick_size)))
+                elif f['filterType'] == 'LOT_SIZE':
+                    step_size = float(f['stepSize'])
+                    self.qty_precision = int(round(-math.log10(step_size)))
+                elif f['filterType'] == 'NOTIONAL' or f['filterType'] == 'MIN_NOTIONAL':
+                    self.min_notional = float(f.get('minNotional', 10.0))
+        except Exception as e:
+            logging.error(f"Failed to fetch market filters: {e}. Using defaults.")
 
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            if hasattr(e, 'response') and e.response is not None:
-                print(f"[API ERROR] {e.response.status_code}: {e.response.text}")
-            else:
-                print(f"[NETWORK ERROR] {str(e)}")
-            return {"error": str(e)}
-
-    def get_btc_price((self) -> float:
-        """Fetches current BTCUSDT spot price."""
-        if self.test_mode:
-            # Fallback simulated price if testnet public endpoints fluctuate
-            res = self._send_request("GET", "/api/v3/ticker/price", {"symbol": "BTCUSDT"})
-            if "price" in res:
-                return float(res["price"])
-            return 64250.00
-        
-        res = self._send_request("GET", "/api/v3/ticker/price", {"symbol": "BTCUSDT"})
-        return float(res.get("price", 0.0))
-
-    def get_order_book(self) -> Dict[str, float]:
-        """Fetches top bid/ask prices to prevent Post-Only limit maker rejections."""
-        res = self._send_request("GET", "/api/v3/ticker/bookTicker", {"symbol": "BTCUSDT"})
-        if "bidPrice" in res and "askPrice" in res:
-            return {
-                "bid": float(res["bidPrice"]),
-                "ask": float(res["askPrice"])
-            }
-        # Fallback
-        price = self.get_btc_price()
-        return {"bid": price - 0.5, "ask": price + 0.5}
-
-    def _format_price(self, price: float) -> str:
-        """Truncates price to Binance 2 decimal places tick size."""
-        return f"{price:.2f}"
-
-    def _format_quantity(self, qty: float) -> str:
-        """Truncates BTC quantity to 5 decimal places step size."""
-        return f"{qty:.5f}"
-
-    def place_maker_limit_order(
-        self,
-        side: str,
-        amount: float,
-        target_price: Optional[float] = None,
-        is_quantity: bool = False,
-        test_mode: Optional[bool] = None
-    ) -> Dict[str, Any]:
-        """
-        Places a LIMIT_MAKER (Post-Only) order on Binance.
-        Ensures execution won't cross the spread to trigger API Error -2010.
-        """
-        is_test = self.test_mode if test_mode is None else test_mode
-        book = self.get_order_book()
-        
-        # Calculate pricing
-        if side.upper() == "BUY":
-            # Must be placed at or below best bid to guarantee Post-Only status
-            limit_price = target_price if target_price and target_price <= book["bid"] else book["bid"]
-        else: # SELL
-            # Must be placed at or above best ask
-            limit_price = target_price if target_price and target_price >= book["ask"] else book["ask"]
-
-        # Determine quantity
-        if is_quantity:
-            btc_qty = amount
+    def get_current_price(self) -> float:
+        """Fetch ticker price or generate simulated market price."""
+        if not self.test_mode:
+            try:
+                ticker = self.client.get_symbol_ticker(symbol=self.symbol)
+                return float(ticker['price'])
+            except BinanceAPIException as e:
+                logging.error(f"API exception while fetching price: {e}")
+                return 0.0
         else:
-            btc_qty = amount / limit_price
+            # Fixed simulated price point for baseline
+            return 64250.00
 
-        formatted_price = self._format_price(limit_price)
-        formatted_qty = self._format_quantity(btc_qty)
+    def place_maker_limit_order(self, side: str, amount: float, target_price: float = None, 
+                                is_quantity: bool = False) -> dict:
+        """
+        Place a Limit Maker (Post-Only) order.
+        If target_price is omitted, order is priced at or slightly inside the spread.
+        """
+        current_mkt_price = self.get_current_price()
+        if current_mkt_price <= 0:
+            return {"status": "FAILED", "reason": "Invalid market price"}
 
-        print(f"[{'TEST' if is_test else 'LIVE'}] Submitting LIMIT_MAKER {side}: {formatted_qty} BTC @ ${formatted_price}")
+        # Calculate Price & Quantity
+        if side.upper() == "BUY":
+            price = target_price if target_price else round(current_mkt_price * 0.9998, self.price_precision)
+        else:
+            price = target_price if target_price else round(current_mkt_price * 1.0002, self.price_precision)
 
-        if is_test:
-            # Simulate local paper trading order object
+        if is_quantity:
+            qty = round(amount, self.qty_precision)
+        else:
+            qty = round(amount / price, self.qty_precision)
+
+        # Check Minimum Notional Requirement
+        if (qty * price) < self.min_notional:
+            logging.error(f"Order value ${qty * price:.2f} is below minimum notional requirement ${self.min_notional}")
+            return {"status": "FAILED", "reason": "MIN_NOTIONAL_FAILURE"}
+
+        logging.info(f"[{'TEST' if self.test_mode else 'LIVE'}] Placing LIMIT_MAKER {side} Order: {qty} {self.symbol} @ ${price}")
+
+        if self.test_mode:
             return {
-                "symbol": "BTCUSDT",
-                "orderId": random.randint(100000, 999999),
+                "orderId": random.randint(1000000, 9999999),
+                "symbol": self.symbol,
                 "side": side.upper(),
-                "price": formatted_price,
-                "origQty": formatted_qty,
-                "status": "NEW",
-                "type": "LIMIT_MAKER"
+                "price": price,
+                "origQty": qty,
+                "status": "NEW"
             }
 
-        params = {
-            "symbol": "BTCUSDT",
-            "side": side.upper(),
-            "type": "LIMIT_MAKER",
-            "quantity": formatted_qty,
-            "price": formatted_price
-        }
-
-        return self._send_request("POST", "/api/v3/order", params=params, signed=True)
-
-    def cancel_order(self, order_id: int) -> Dict[str, Any]:
-        if self.test_mode:
-            return {"symbol": "BTCUSDT", "orderId": order_id, "status": "CANCELED"}
-            
-        params = {"symbol": "BTCUSDT", "orderId": order_id}
-        return self._send_request("DELETE", "/api/v3/order", params=params, signed=True)
-
-    def chase_order(self, side: str, current_qty: float, max_attempts: int = 3) -> Optional[Dict[str, Any]]:
-        """
-        Attempts to update order placement if maker order remains unfilled.
-        Fixed parameter signature so is_quantity=True is explicitly assigned.
-        """
-        print(f"[CHASE] Updating {side} limit maker order for {current_qty:.5f} BTC...")
-        
-        for attempt in range(1, max_attempts + 1):
-            print(f"[CHASE] Attempt {attempt}/{max_attempts}")
-            
-            # FIXED: Explicit keyword arguments prevent target_price receiving positional booleans
-            result = self.place_maker_limit_order(
-                side=side,
-                amount=current_qty,
-                target_price=None,
-                is_quantity=True,
-                test_mode=self.test_mode
+        try:
+            order = self.client.create_order(
+                symbol=self.symbol,
+                side=side.upper(),
+                type="LIMIT_MAKER",
+                quantity=f"{qty:.{self.qty_precision}f}",
+                price=f"{price:.{self.price_precision}f}"
             )
-            
-            if "orderId" in result:
-                return result
-            time.sleep(1)
-            
-        return None
+            return order
+        except BinanceAPIException as e:
+            logging.error(f"Binance Order Execution Error: {e}")
+            return {"status": "FAILED", "reason": str(e)}
 
-class TradingStrategy:
-    def __init__(self, api_key: str, api_secret: str, test_mode: bool = True):
-        self.test_mode = test_mode
-        self.trader = BinanceTrader(api_key, api_secret, test_mode=test_mode)
+    def cancel_order(self, order_id: int) -> bool:
+        """Cancel an open order on the exchange."""
+        if self.test_mode:
+            logging.info(f"[TEST] Cancelled order #{order_id}")
+            return True
+        try:
+            self.client.cancel_order(symbol=self.symbol, orderId=order_id)
+            return True
+        except BinanceAPIException as e:
+            logging.error(f"Failed to cancel order #{order_id}: {e}")
+            return False
 
-    def evaluate_market() -> Dict[str, Any]:
-        """Evaluates entry targets relative to current BTC spot price."""
-        current_btc_price = self.trader.get_btc_price()
+    def chase_order(self, side: str, qty: float, timeout: int = 300) -> dict:
+        """
+        If a Limit Maker order goes unfilled within timeout, update the order price
+        closer to current market level without triggering matching engine rejects.
+        """
+        logging.info(f"Initiating order chase logic for {side} {qty} {self.symbol}...")
+        start_time = time.time()
         
-        # In live mode, targets should be within real market spread thresholds
-        target_discount = 0.0005 if not self.test_mode else 0.001 
-        target_entry = current_btc_price * (1 - target_discount)
-        
-        return {
-            "current_price": current_btc_price,
-            "target_entry": target_entry,
-            "should_trade": True
-        }
+        while time.time() - start_time < timeout:
+            mkt_price = self.get_current_price()
+            # Standard Limit order (IOC/GTC) instead of LIMIT_MAKER to guarantee fill during a chase
+            adjusted_price = round(mkt_price * (1.0001 if side.upper() == "BUY" else 0.9999), self.price_precision)
+            
+            if self.test_mode:
+                logging.info(f"[TEST] Chased order filled at ${adjusted_price}")
+                return {"status": "FILLED", "price": adjusted_price, "executedQty": qty}
 
-    def run_cycle(self, trade_amount_usdt: float = 100.0) -> None:
-        print("\n==========================================")
-        print(f" Starting Cycle | Mode: {'PAPER TRADING' if self.test_mode else 'LIVE TRADING'}")
-        print("==========================================")
+            try:
+                # Execution via standard LIMIT order for aggressive fill
+                order = self.client.create_order(
+                    symbol=self.symbol,
+                    side=side.upper(),
+                    type="LIMIT",
+                    timeInForce="IOC",
+                    quantity=f"{qty:.{self.qty_precision}f}",
+                    price=f"{adjusted_price:.{self.price_precision}f}"
+                )
+                if order.get("status") in ["FILLED", "PARTIALLY_FILLED"]:
+                    return order
+            except BinanceAPIException as e:
+                logging.warning(f"Chase attempt failed: {e}. Retrying in 5s...")
+            
+            time.sleep(5)
 
-        market = self.evaluate_market()
-        current_price = market["current_price"]
-        entry_target = market["target_entry"]
+        return {"status": "FAILED", "reason": "Chase timeout reached"}
 
-        print(f"BTC Spot Price : ${current_price:,.2f}")
-        print(f"Target Entry   : ${entry_target:,.2f}")
+    def simulate_unbiased_price_tick(self, current_price: float) -> float:
+        """Symmetric random walk (Unbiased Gaussian Drift) for realistic testing."""
+        drift = random.gauss(0, 0.0005) # 0 mean, 0.05% standard deviation
+        return round(current_price * (1 + drift), self.price_precision)
 
-        # Step 1: Place Buy Order
-        buy_order = self.trader.place_maker_limit_order(
-            side="BUY",
-            amount=trade_amount_usdt,
-            target_price=entry_target,
-            is_quantity=False
-        )
+    def run_cycle(self):
+        """Execute one full Buy-then-Sell trade cycle."""
+        logging.info("==========================================")
+        logging.info("Starting Execution Cycle")
+        logging.info("==========================================")
 
-        if "orderId" not in buy_order:
-            print("[ERROR] Failed to place buy order. Aborting cycle.")
+        # 1. Place Limit Maker BUY
+        buy_order = self.place_maker_limit_order(side="BUY", amount=TRADE_AMOUNT_USDT)
+        if buy_order.get("status") == "FAILED":
+            logging.error("Failed to place initial buy order. Aborting cycle.")
             return
 
-        order_id = buy_order["orderId"]
-        btc_qty = float(buy_order["origQty"])
-        fill_price = float(buy_order["price"])
+        order_id = buy_order.get("orderId")
+        buy_price = float(buy_order.get("price"))
+        qty = float(buy_order.get("origQty"))
 
-        # Step 2: Wait/Simulate Fill
-        print(f"Order #{order_id} active. Waiting for fill...")
-        time.sleep(2)
+        # 2. Monitor or Chase Buy Order
+        filled = False
+        start_time = time.time()
+        curr_sim_price = buy_price
 
-        # In paper mode, simulate an unbiased price oscillation
-        if self.test_mode:
-            # FIXED: Removed (+0.002) positive drift bias to reflect balanced market movement
-            simulated_movement = random.uniform(-0.0015, 0.0015)
-            simulated_price = fill_price * (1 + simulated_movement)
-            print(f"[PAPER SIM] Price updated to ${simulated_price:,.2f}")
-        
-        # Step 3: Handle Take Profit
-        take_profit_target = fill_price * 1.008  # +0.80% TP target
-        print(f"Target Exit (+0.80%): ${take_profit_target:,.2f}")
+        while time.time() - start_time < TIMEOUT_SECONDS:
+            if self.test_mode:
+                curr_sim_price = self.simulate_unbiased_price_tick(curr_sim_price)
+                if curr_sim_price <= buy_price:
+                    filled = True
+                    logging.info(f"[TEST] Limit Buy filled @ ${buy_price}")
+                    break
+            else:
+                # Check actual status on Binance
+                check = self.client.get_order(symbol=self.symbol, orderId=order_id)
+                if check.get("status") == "FILLED":
+                    filled = True
+                    logging.info(f"Live Limit Buy filled @ ${buy_price}")
+                    break
 
-        sell_order = self.trader.place_maker_limit_order(
-            side="SELL",
-            amount=btc_qty,
-            target_price=take_profit_target,
+            time.sleep(2)
+
+        if not filled:
+            logging.info("Buy order not filled within timeout. Cancelling and chasing...")
+            self.cancel_order(order_id)
+            chase_result = self.chase_order(side="BUY", qty=qty, timeout=60)
+            if chase_result.get("status") != "FILLED":
+                logging.error("Failed to acquire position during chase. Aborting cycle.")
+                return
+            buy_price = float(chase_result.get("price", buy_price))
+
+        # 3. Calculate Take Profit Target
+        tp_price = round(buy_price * (1 + PROFIT_TARGET_PCT), self.price_precision)
+        logging.info(f"Target acquired. Profit Target set to: ${tp_price:.2f} (+{PROFIT_TARGET_PCT*100:.2f}%)")
+
+        # 4. Place Take Profit SELL Order
+        sell_order = self.place_maker_limit_order(
+            side="SELL", 
+            amount=qty, 
+            target_price=tp_price, 
             is_quantity=True
         )
+        if sell_order.get("status") == "FAILED":
+            logging.error("Failed to place sell order. Manual intervention required!")
+            return
 
-        if "orderId" not in sell_order:
-            print("[WARNING] Sell order failed. Triggering order chase...")
-            chase_result = self.trader.chase_order(side="SELL", current_qty=btc_qty)
-            if chase_result:
-                print(f"[SUCCESS] Order chased and re-placed: Order #{chase_result['orderId']}")
+        sell_order_id = sell_order.get("orderId")
+
+        # 5. Monitor Take Profit Execution
+        tp_filled = False
+        start_time = time.time()
+        
+        while time.time() - start_time < TIMEOUT_SECONDS:
+            if self.test_mode:
+                curr_sim_price = self.simulate_unbiased_price_tick(curr_sim_price)
+                if curr_sim_price >= tp_price:
+                    tp_filled = True
+                    logging.info(f"[TEST] Take-profit target reached @ ${tp_price}!")
+                    break
             else:
-                print("[CRITICAL] Order chase failed.")
-        else:
-            print(f"[SUCCESS] Take Profit order active: Order #{sell_order['orderId']}")
+                check = self.client.get_order(symbol=self.symbol, orderId=sell_order_id)
+                if check.get("status") == "FILLED":
+                    tp_filled = True
+                    logging.info(f"Live Take-profit filled @ ${tp_price}!")
+                    break
+            
+            time.sleep(2)
 
-# ==========================================
-# Script Execution
-# ==========================================
+        if not tp_filled:
+            logging.info("Take-profit target not reached. Exiting via order chase...")
+            self.cancel_order(sell_order_id)
+            self.chase_order(side="SELL", qty=qty, timeout=60)
+
+        logging.info("Cycle complete.\n")
+
+
+# =====================================================================
+# ENTRY POINT
+# =====================================================================
 if __name__ == "__main__":
-    # Credentials (Use Binance Spot Testnet keys when test_mode=True)
-    API_KEY = "YOUR_BINANCE_API_KEY"
-    API_SECRET = "YOUR_BINANCE_API_SECRET"
-
-    # Set test_mode=True to execute via paper mode / Binance Spot Testnet
-    # Set test_mode=False for Live Exchange Trading
-    bot = TradingStrategy(api_key=API_KEY, api_secret=API_SECRET, test_mode=True)
+    bot = RefactoredTradingEngine(
+        api_key=API_KEY, 
+        api_secret=API_SECRET, 
+        symbol=SYMBOL, 
+        test_mode=TEST_MODE
+    )
     
-    # Run a test cycle with $100 allocation
-    bot.run_cycle(trade_amount_usdt=100.0)
+    # Run a test cycle
+    bot.run_cycle()
