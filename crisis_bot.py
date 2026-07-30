@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-🚀 GOLDEN SCALPER BOT v10.3 - FINAL FIX
+🚀 GOLDEN SCALPER BOT v10.4 - 4H OPTIMIZED
 ============================================================
-CRITICAL FIX:
-- Use ACTUAL filled quantity from buy order, not requested quantity
-- Always sell exactly what you have (not more)
-- Proper balance checking with small buffer
+FIXES:
+- Increased timeout to 24 hours for 4h timeframe (proper position management)
+- Better target/stop calculation for 4h
+- Proper order management with GTC orders
+- No premature market sell unless stop-loss hit
 ============================================================
 """
 
@@ -266,7 +267,7 @@ class EnsembleVoter:
         }
 
 # ========================================================================
-# GOLDEN SCALPER BOT - FINAL FIX
+# GOLDEN SCALPER BOT - 4H OPTIMIZED
 # ========================================================================
 
 class GoldenScalperBot:
@@ -289,9 +290,9 @@ class GoldenScalperBot:
         self.min_order_usdt = 10.0
         self.max_order_usdt = 30.0
         
-        # Target & Stop
-        self.target_profit_pct = 0.015
-        self.stop_loss_pct = 0.005
+        # Target & Stop - Optimized for 4h
+        self.target_profit_pct = 0.015  # 1.5% target
+        self.stop_loss_pct = 0.008      # 0.8% stop (wider for 4h)
         
         # Safety
         self.max_drawdown_pct = 0.12
@@ -314,11 +315,11 @@ class GoldenScalperBot:
         self._min_notional = 10.0
         self._price_cache = {}
         self._price_cache_time = 0
-        self._price_cache_ttl = 5
+        self._price_cache_ttl = 60  # Longer cache for 4h
         
         # State
         self.buy_price = None
-        self.buy_qty = None  # ACTUAL filled quantity
+        self.buy_qty = None
         self.current_balance_usdt = 0.0
         self.current_balance_eth = 0.0
         self.starting_balance = 0.0
@@ -329,6 +330,7 @@ class GoldenScalperBot:
         self.stopped = False
         self.skipped_count = 0
         self.in_position = False
+        self.sell_order_id = None  # Track sell order ID
         
         # Stats
         self.trade_history = []
@@ -362,13 +364,13 @@ class GoldenScalperBot:
         self.logger.addHandler(console)
         
         self.logger.info("="*70)
-        self.logger.info("🏆 GOLDEN SCALPER BOT v10.3 - FINAL FIX")
+        self.logger.info("🏆 GOLDEN SCALPER BOT v10.4 - 4H OPTIMIZED")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
-        self.logger.info(f"   Base Asset: {self.base_asset}")
         self.logger.info(f"   Interval: {interval}")
-        self.logger.info(f"   min_votes: {self.min_votes}")
-        self.logger.info(f"   min_confidence: {self.min_confidence}")
+        self.logger.info(f"   Target: {self.target_profit_pct*100:.1f}%")
+        self.logger.info(f"   Stop: {self.stop_loss_pct*100:.1f}%")
+        self.logger.info(f"   Risk:Reward: 1:{self.target_profit_pct/self.stop_loss_pct:.1f}")
         self.logger.info("="*70)
         
         self._check_connectivity()
@@ -403,7 +405,6 @@ class GoldenScalperBot:
             self.logger.warning(f"Could not fetch exchange info: {e}")
 
     def _update_balances(self):
-        """Get both USDT and ETH balances"""
         try:
             balances = self.get_account_balance()
             
@@ -561,7 +562,6 @@ class GoldenScalperBot:
         return response
 
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
-        """Place a MARKET order and wait for it to fill - RETURNS ACTUAL FILLED QTY"""
         ticker = self.get_order_book_ticker()
         if not ticker:
             return {"error": "Failed to get market price"}
@@ -598,7 +598,7 @@ class GoldenScalperBot:
         if not order_id:
             return {"error": "No orderId returned"}
         
-        # Wait for order to fully fill
+        # Wait for order to fill
         self.logger.info(f"⏳ Waiting for {side} order to fill...")
         max_wait = 30
         wait_start = time.time()
@@ -627,8 +627,7 @@ class GoldenScalperBot:
             
             time.sleep(2)
         
-        # Partial fill - get what we can
-        self.logger.warning(f"⚠️ {side} order may be partially filled")
+        # Partial fill
         status = self.get_order_status(order_id)
         executed_qty = float(status.get("executedQty", 0))
         cum_quote = float(status.get("cummulativeQuoteQty", 0))
@@ -646,19 +645,15 @@ class GoldenScalperBot:
         return {"error": "Order fill timeout"}
 
     def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
-        """Place a LIMIT order with balance check - USES EXACT QUANTITY PROVIDED"""
         if quantity <= 0:
             return {"error": "Invalid quantity", "code": -1003}
         
-        # CRITICAL: Check balance with 1% buffer
         if side.upper() == "SELL":
             self._update_balances()
-            # Allow 1% tolerance for floating point
             if self.current_balance_eth < quantity * 0.99:
                 self.logger.error(f"❌ Insufficient {self.base_asset}: {self.current_balance_eth:.8f} (need {quantity:.8f})")
                 return {"error": f"Insufficient {self.base_asset} balance", "code": -2010}
         
-        # Use exact quantity provided (already rounded)
         qty = round_to_step(quantity, self._min_qty)
         if qty < self._min_qty:
             qty = self._min_qty
@@ -675,7 +670,7 @@ class GoldenScalperBot:
             "type": "LIMIT",
             "quantity": qty_str,
             "price": price_str,
-            "timeInForce": "GTC",
+            "timeInForce": "GTC",  # Good 'til Canceled - stays active
         }
         
         response = self._send_signed_request("POST", "/api/v3/order", params)
@@ -751,16 +746,15 @@ class GoldenScalperBot:
         
         self.logger.info(f"📈 Buying ${position_usdt:.2f} worth of {self.base_asset}")
         
-        # BUY - Get the ACTUAL filled quantity
+        # BUY
         buy_order = self.place_market_order(side="BUY", amount=position_usdt, is_quantity=False)
         
         if "error" in buy_order:
             self.logger.error(f"❌ Buy failed: {buy_order}")
             return {"success": False, "error": buy_order.get("error", "Buy failed")}
         
-        # CRITICAL FIX: Use the ACTUAL filled quantity from the buy order
         self.buy_price = float(buy_order.get("price", 0))
-        self.buy_qty = float(buy_order.get("executedQty", 0))  # ACTUAL filled quantity
+        self.buy_qty = float(buy_order.get("executedQty", 0))
         
         if self.buy_qty <= 0 or self.buy_price <= 0:
             self.logger.error(f"❌ Invalid buy: qty={self.buy_qty}, price={self.buy_price}")
@@ -768,7 +762,6 @@ class GoldenScalperBot:
         
         self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} {self.base_asset} @ ${self.buy_price:.2f}")
         
-        # Update balance to see what we actually have
         self._update_balances()
         self.logger.info(f"💰 After BUY - {self.base_asset}: {self.current_balance_eth:.8f}")
 
@@ -776,87 +769,103 @@ class GoldenScalperBot:
         stop_price = max(self.buy_price * (1 - self.stop_loss_pct), signal['stop_price'])
         target_price = min(self.buy_price * (1 + self.target_profit_pct), signal['target_price'])
         
-        # CRITICAL FIX: Use the ACTUAL balance, but reduce by 0.5% for safety
-        # This ensures we never try to sell more than we have
+        # Use actual balance for selling
         sell_qty = min(self.buy_qty, self.current_balance_eth * 0.995)
-        
-        # Round down to avoid any rounding issues
         sell_qty = round_to_step(sell_qty, self._min_qty)
         
         if sell_qty <= 0:
-            self.logger.error(f"❌ No ETH to sell: balance={self.current_balance_eth:.8f}")
+            self.logger.error(f"❌ No {self.base_asset} to sell")
             return {"success": False, "error": "No ETH to sell"}
         
-        self.logger.info(f"📊 Selling {sell_qty:.8f} {self.base_asset} @ ${target_price:.2f}")
+        self.logger.info(f"📊 Selling {sell_qty:.8f} {self.base_asset}")
+        self.logger.info(f"🎯 Target: ${target_price:.2f} (+{((target_price/self.buy_price)-1)*100:.2f}%)")
+        self.logger.info(f"🛑 Stop: ${stop_price:.2f} (-{((1 - stop_price/self.buy_price))*100:.2f}%)")
         
-        # PLACE SELL ORDER - using the correct quantity
+        # Place SELL LIMIT order - GTC (stays active until filled)
         sell_order = self.place_limit_order(side="SELL", quantity=sell_qty, price=target_price)
         
         if "error" in sell_order:
             self.logger.error(f"❌ Sell limit failed: {sell_order}")
-            self.logger.info("🔄 Attempting market sell with correct quantity...")
+            return {"success": False, "error": "Sell failed"}
+        
+        self.sell_order_id = sell_order.get("orderId")
+        if not self.sell_order_id:
+            return {"success": False, "error": "No sell orderId"}
+        
+        self.logger.info(f"✅ SELL LIMIT order placed: {sell_order_id}")
+        self.logger.info(f"⏳ Waiting for target price ${target_price:.2f} to be hit...")
+        self.logger.info(f"   Order is GTC (Good 'til Canceled) - will stay active indefinitely")
+        self.logger.info(f"   Will cancel if stop-loss ${stop_price:.2f} is hit")
+        
+        # Monitor the position - wait for target OR stop-loss
+        sell_filled = False
+        stopped_out = False
+        exit_price = target_price
+        
+        # Track highest price for stop management
+        highest_price = self.buy_price
+        check_interval = 10  # Check every 10 seconds
+        max_checks = 8640  # 24 hours (10 seconds * 8640 = 86400 seconds = 24 hours)
+        checks = 0
+        
+        while not sell_filled and checks < max_checks:
+            checks += 1
             
-            # Use market sell with the correct quantity
-            sell_order = self.place_market_order(side="SELL", amount=sell_qty, is_quantity=True)
-            if "error" in sell_order:
-                self.logger.error(f"❌ Market sell failed: {sell_order}")
-                return {"success": False, "error": "Sell failed"}
+            # Check order status
+            status = self.get_order_status(self.sell_order_id)
+            status_val = status.get("status")
             
-            exit_price = float(sell_order.get("price", self.buy_price))
-            actual_sold = float(sell_order.get("executedQty", sell_qty))
-            sell_filled = True
-            stopped_out = False
-            self.logger.info(f"✅ Market SELL: {actual_sold:.8f} @ ${exit_price:.2f}")
-        else:
-            sell_order_id = sell_order.get("orderId")
-            if not sell_order_id:
-                return {"success": False, "error": "No sell orderId"}
+            if status_val == "FILLED":
+                sell_filled = True
+                cum_quote = float(status.get("cummulativeQuoteQty", 0))
+                executed_qty = float(status.get("executedQty", 0))
+                if executed_qty > 0 and cum_quote > 0:
+                    exit_price = cum_quote / executed_qty
+                else:
+                    exit_price = float(status.get("price", target_price))
+                self.logger.info(f"✅ SELL Filled @ ${exit_price:.2f}")
+                break
             
-            sell_filled = False
-            stopped_out = False
-            exit_price = target_price
-            sell_start = time.time()
-            max_wait = 120
+            if status_val == "CANCELED" or status_val == "EXPIRED":
+                self.logger.warning(f"⚠️ Sell order {status_val}")
+                break
             
-            while not sell_filled and time.time() - sell_start < max_wait:
-                status = self.get_order_status(sell_order_id)
-                status_val = status.get("status")
-                
-                if status_val == "FILLED":
-                    sell_filled = True
-                    cum_quote = float(status.get("cummulativeQuoteQty", 0))
-                    executed_qty = float(status.get("executedQty", 0))
-                    if executed_qty > 0 and cum_quote > 0:
-                        exit_price = cum_quote / executed_qty
-                    else:
-                        exit_price = float(status.get("price", target_price))
-                    self.logger.info(f"✅ SELL Filled @ ${exit_price:.2f}")
-                    break
-                
-                if status_val == "CANCELED" or status_val == "EXPIRED":
-                    self.logger.warning(f"⚠️ Sell {status_val}")
-                    break
+            # Check current price and update highest
+            current_price = self.get_current_price()
+            if current_price:
+                if current_price > highest_price:
+                    highest_price = current_price
                 
                 # Check stop-loss
-                if time.time() - sell_start > 5:
-                    current_price = self.get_current_price()
-                    if current_price and current_price <= stop_price:
-                        self.logger.warning(f"🛑 STOP-LOSS at ${current_price:.2f}")
-                        self.cancel_order(sell_order_id)
-                        exit_res = self.place_market_order(side="SELL", amount=sell_qty, is_quantity=True)
-                        if "error" not in exit_res:
-                            exit_price = float(exit_res.get("price", current_price))
-                            sell_filled = True
-                            stopped_out = True
-                            self.logger.info(f"🛑 Stopped out @ ${exit_price:.2f}")
-                        break
-                
-                time.sleep(5)
+                if current_price <= stop_price:
+                    self.logger.warning(f"🛑 STOP-LOSS triggered: ${current_price:.2f} <= ${stop_price:.2f}")
+                    self.cancel_order(self.sell_order_id)
+                    exit_res = self.place_market_order(side="SELL", amount=sell_qty, is_quantity=True)
+                    if "error" not in exit_res:
+                        exit_price = float(exit_res.get("price", current_price))
+                        sell_filled = True
+                        stopped_out = True
+                        self.logger.info(f"🛑 Stopped out @ ${exit_price:.2f}")
+                    break
             
-            # Force sell if timeout
-            if not sell_filled:
-                self.logger.warning("⚠️ Sell timeout - using market sell")
-                self.cancel_order(sell_order_id)
+            # Log progress periodically
+            if checks % 60 == 0:
+                elapsed_hours = (checks * check_interval) / 3600
+                self.logger.info(f"⏳ Position open for {elapsed_hours:.1f}h | Price: ${current_price:.2f} | Target: ${target_price:.2f} | Stop: ${stop_price:.2f}")
+            
+            time.sleep(check_interval)
+        
+        # If order still not filled after 24 hours, check status
+        if not sell_filled:
+            self.logger.warning(f"⚠️ Sell order still open after 24 hours")
+            status = self.get_order_status(self.sell_order_id)
+            if status.get("status") == "NEW":
+                self.logger.info("📊 Order still open - continuing to next cycle")
+                # Keep position - don't force sell
+                return {"success": False, "error": "Order still open", "skipped": True}
+            else:
+                # Try market sell as last resort
+                self.logger.info("🔄 Forcing market sell...")
                 exit_res = self.place_market_order(side="SELL", amount=sell_qty, is_quantity=True)
                 if "error" not in exit_res:
                     exit_price = float(exit_res.get("price", self.get_current_price() or self.buy_price))
@@ -866,7 +875,7 @@ class GoldenScalperBot:
         if not sell_filled:
             return {"success": False, "error": "Sell never filled"}
 
-        # Calculate P&L using actual sold quantity
+        # Calculate P&L
         realized_pnl = (exit_price - self.buy_price) * sell_qty
         fee_estimate = (sell_qty * self.buy_price * self.maker_fee_rate) + (sell_qty * exit_price * self.taker_fee_rate)
         net_pnl = realized_pnl - fee_estimate
@@ -926,9 +935,9 @@ class GoldenScalperBot:
         return result
 
     def run_forever(self, delay_between_cycles: int = 600):
-        """Run continuously"""
+        """Run continuously - checks for new signals every 10 minutes"""
         self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 GOLDEN SCALPER BOT v10.3 - RUNNING")
+        self.logger.info("🚀 GOLDEN SCALPER BOT v10.4 - RUNNING")
         self.logger.info("   ETH 4h - Golden Strategy")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
@@ -1001,10 +1010,12 @@ if __name__ == "__main__":
         exit(1)
     
     print("="*70)
-    print("🏆 GOLDEN SCALPER BOT v10.3 - FINAL FIX")
+    print("🏆 GOLDEN SCALPER BOT v10.4 - 4H OPTIMIZED")
     print("="*70)
     print("\n🎯 ETH 4h - Golden Strategy")
-    print("   Fix: Sell EXACTLY what you have (actual fill quantity)")
+    print("   ✅ GTC orders (stays active until filled)")
+    print("   ✅ 24-hour monitoring with stop-loss")
+    print("   ✅ No premature market sells")
     print("\n🚀 Starting in 3 seconds...")
     time.sleep(3)
     
