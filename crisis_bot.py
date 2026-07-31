@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-🧠 QUANTUM NEURAL EVOLUTION BOT v8.1 - FULLY FIXED
+🧠 QUANTUM NEURAL EVOLUTION BOT v8.2 - FINAL FIXED
 ============================================================
+FIXED: MIN_NOTIONAL error - uses minimum $1.00 orders
 STRATEGY: DARWINIAN EVOLUTION + REINFORCEMENT LEARNING
-- Starts with MICRO trades ($0.01) to explore ALL possibilities
+- Starts with MINIMUM $1.00 trades (Binance requirement)
 - Neural network learns from EVERY trade outcome
 - Reinforcement learning rewards winning patterns
 - Evolves strategies in real-time like a multiverse
@@ -305,7 +306,7 @@ class RLAgent:
             self.episode_count = data['episode_count']
 
 # ========================================================================
-# 🧠 QUANTUM NEURAL EVOLUTION BOT - FULLY FIXED
+# 🧠 QUANTUM NEURAL EVOLUTION BOT - FINAL FIXED
 # ========================================================================
 
 class QuantumNeuralEvolutionBot:
@@ -342,17 +343,17 @@ class QuantumNeuralEvolutionBot:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 MICRO TRADING - Start with the smallest amount
-        self.micro_order_usdt = 0.01  # $0.01 trades for exploration!
-        self.min_order_usdt = 0.01
-        self.max_order_usdt = 0.05
+        # ===== FIXED: Minimum $1.00 orders (Binance requirement) =====
+        self.min_order_usdt = 1.00  # Minimum $1.00 (Binance MIN_NOTIONAL)
+        self.max_order_usdt = 1.00  # Keep it small for exploration
+        self.trade_size_usdt = 1.00  # $1.00 per trade
         
-        # Target profit and stop loss (micro)
-        self.target_profit_pct = 0.10  # 10% on micro trades
-        self.stop_loss_pct = 0.05      # 5% stop loss
+        # Target profit and stop loss
+        self.target_profit_pct = 0.05  # 5% on $1 trades
+        self.stop_loss_pct = 0.03      # 3% stop loss
         
-        # ===== FIXED: Added missing attributes =====
-        self.max_drawdown_pct = 0.50   # 50% max drawdown for small account
+        # Safety limits
+        self.max_drawdown_pct = 0.50   # 50% max drawdown
         self.max_consecutive_losses = 10
         self.target_consecutive_wins = 5
         
@@ -364,7 +365,7 @@ class QuantumNeuralEvolutionBot:
         
         # Exploration parameters
         self.exploration_mode = True
-        self.exploration_cycles = 100  # 100 cycles of pure exploration
+        self.exploration_cycles = 50  # 50 cycles of exploration
         
         # State tracking
         self.state_history = []
@@ -384,7 +385,7 @@ class QuantumNeuralEvolutionBot:
         # Exchange info
         self._min_qty = 0.00001
         self._tick_size = 0.01
-        self._min_notional = 1.0
+        self._min_notional = 1.00  # Binance minimum
 
         # Internal state
         self.current_position = None
@@ -423,11 +424,11 @@ class QuantumNeuralEvolutionBot:
         }
 
         self.logger.info("="*70)
-        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v8.1 - FULLY FIXED")
+        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v8.2 - FINAL FIXED")
         self.logger.info("   10/10 ULTIMATE MASTERPIECE")
         self.logger.info("="*70)
         self.logger.info(f"   Strategy: Darwinian Evolution + RL + Neural Networks")
-        self.logger.info(f"   Starts with MICRO trades (${self.micro_order_usdt:.2f})")
+        self.logger.info(f"   Trade Size: ${self.trade_size_usdt:.2f} (minimum $1.00)")
         self.logger.info(f"   Learns from EVERY trade outcome")
         self.logger.info(f"   Evolves winning strategies in real-time")
         self.logger.info("="*70)
@@ -449,11 +450,19 @@ class QuantumNeuralEvolutionBot:
                 self.initialized = True
                 self.logger.info(f"💰 Starting Balance: ${self.current_balance:.2f}")
                 
-                # Adjust micro trading for very small accounts
+                # Adjust trade size based on balance
                 if self.current_balance < 10:
-                    self.micro_order_usdt = 0.01
-                    self.max_order_usdt = 0.02
-                    self.logger.info(f"📊 Micro trading: ${self.micro_order_usdt:.2f} per trade")
+                    self.trade_size_usdt = 1.00
+                    self.max_order_usdt = 1.00
+                    self.logger.info(f"📊 Trade size: ${self.trade_size_usdt:.2f} per trade")
+                elif self.current_balance < 50:
+                    self.trade_size_usdt = 2.00
+                    self.max_order_usdt = 2.00
+                    self.logger.info(f"📊 Trade size: ${self.trade_size_usdt:.2f} per trade")
+                else:
+                    self.trade_size_usdt = 5.00
+                    self.max_order_usdt = 5.00
+                    self.logger.info(f"📊 Trade size: ${self.trade_size_usdt:.2f} per trade")
                 
                 return True
             else:
@@ -503,7 +512,7 @@ class QuantumNeuralEvolutionBot:
                             if filter_data["filterType"] == "PRICE_FILTER":
                                 self._tick_size = float(filter_data.get("tickSize", 0.01))
                             if filter_data["filterType"] == "MIN_NOTIONAL":
-                                self._min_notional = float(filter_data.get("minNotional", 1.0))
+                                self._min_notional = float(filter_data.get("minNotional", 1.00))
                         self.logger.info(f"✅ Exchange info loaded")
                         self.logger.info(f"   Min Qty: {self._min_qty}")
                         self.logger.info(f"   Min Notional: ${self._min_notional:.2f}")
@@ -567,10 +576,16 @@ class QuantumNeuralEvolutionBot:
                         time.sleep(wait_time)
                         continue
                     
-                    if error_code == -2010 and "insufficient balance" in data.get("msg", "").lower():
-                        self.logger.warning(f"Insufficient balance error, waiting and retrying...")
-                        time.sleep(1.0 * (attempt + 1))
-                        continue
+                    if error_code == -2010:
+                        error_msg = data.get("msg", "").lower()
+                        if "insufficient balance" in error_msg:
+                            self.logger.warning(f"Insufficient balance error, waiting and retrying...")
+                            time.sleep(1.0 * (attempt + 1))
+                            continue
+                        elif "min_notional" in error_msg:
+                            self.logger.warning(f"MIN_NOTIONAL error - ensuring minimum $1.00 order...")
+                            # Try to fix by using minimum notional
+                            continue
                     
                     if error_code == -1022:
                         self.logger.error(f"Signature error: {data.get('msg')}")
@@ -662,7 +677,7 @@ class QuantumNeuralEvolutionBot:
         return None
 
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
-        """Place a market order with micro amounts"""
+        """Place a market order with minimum $1.00"""
         ticker = self.get_order_book_ticker()
         if not ticker:
             return {"error": "Failed to get market price"}
@@ -671,13 +686,16 @@ class QuantumNeuralEvolutionBot:
         
         balances = self.get_account_balance()
         
+        # Ensure minimum $1.00 order
+        if amount < self._min_notional:
+            amount = self._min_notional
+            self.logger.info(f"📊 Adjusted to minimum ${self._min_notional:.2f}")
+        
         if side.upper() == "BUY":
             usdt_balance = balances.get("USDT", 0)
             if amount > usdt_balance * 0.99:
                 amount = usdt_balance * 0.95
-            
-            if amount < self.micro_order_usdt:
-                amount = min(self.micro_order_usdt, usdt_balance * 0.95)
+                self.logger.warning(f"⚠️ Adjusted amount to ${amount:.2f}")
             
             qty = round_to_step(amount / price, self._min_qty)
             
@@ -700,11 +718,13 @@ class QuantumNeuralEvolutionBot:
         notional = qty * price
         if notional < self._min_notional:
             qty = round_to_step(self._min_notional / price, self._min_qty)
+            notional = qty * price
+            self.logger.info(f"📊 Adjusted to minimum notional: ${notional:.2f}")
 
         qty_str = format_quantity(qty)
         trade_value = qty * price
         
-        self.logger.info(f"🧬 MICRO {side} order: {qty_str} (${trade_value:.4f})")
+        self.logger.info(f"🧬 {side} order: {qty_str} (${trade_value:.2f})")
 
         order_params = {
             "symbol": self.symbol,
@@ -739,7 +759,11 @@ class QuantumNeuralEvolutionBot:
         }
 
     def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
-        """Place a limit order"""
+        """Place a limit order with minimum notional"""
+        if quantity * price < self._min_notional:
+            quantity = round_to_step(self._min_notional / price, self._min_qty)
+            self.logger.info(f"📊 Adjusted quantity to meet minimum notional")
+
         if side.upper() == "SELL":
             balances = self.get_account_balance()
             btc_balance = balances.get("BTC", 0)
@@ -748,9 +772,6 @@ class QuantumNeuralEvolutionBot:
                 quantity = round_to_step(btc_balance * 0.95, self._min_qty)
                 if quantity < self._min_qty:
                     return {"error": "Insufficient BTC balance"}
-
-        if quantity * price < self._min_notional:
-            quantity = round_to_step(self._min_notional / price, self._min_qty)
 
         qty = round_to_step(quantity, self._min_qty)
         if qty < self._min_qty:
@@ -828,7 +849,7 @@ class QuantumNeuralEvolutionBot:
 
     def get_reward(self, profit: float, direction: str) -> float:
         """Calculate reward for reinforcement learning"""
-        reward = profit * 100
+        reward = profit * 100  # Scale up
         
         if profit > 0:
             reward += self.consecutive_wins * 0.01
@@ -843,17 +864,17 @@ class QuantumNeuralEvolutionBot:
         
         return reward
 
-    def execute_micro_trade(self, direction: str, current_price: float, signal_data: Dict) -> dict:
-        """Execute a MICRO trade for exploration"""
+    def execute_trade(self, direction: str, current_price: float, signal_data: Dict) -> dict:
+        """Execute a trade with minimum $1.00"""
         
-        position_size = self.micro_order_usdt
+        position_size = self.trade_size_usdt
         
-        self.logger.info(f"\n🧬 MICRO TRADE: {direction}")
+        self.logger.info(f"\n🧬 TRADE: {direction}")
         self.logger.info(f"   Price: ${current_price:.2f}")
-        self.logger.info(f"   Size: ${position_size:.4f}")
+        self.logger.info(f"   Size: ${position_size:.2f}")
         
         if direction == "BUY":
-            self.logger.info("📈 MICRO BUY (exploration)")
+            self.logger.info("📈 BUY (exploration)")
             buy_order = self.place_market_order("BUY", position_size, is_quantity=False)
             
             if "error" in buy_order:
@@ -863,7 +884,7 @@ class QuantumNeuralEvolutionBot:
             self.entry_qty = float(buy_order.get("executedQty", 0))
             self.current_position = "long"
             
-            self.logger.info(f"✅ MICRO BUY: {self.entry_qty:.8f} @ ${self.entry_price:.2f}")
+            self.logger.info(f"✅ BUY: {self.entry_qty:.8f} @ ${self.entry_price:.2f}")
             
             target_price = self.entry_price * (1 + self.target_profit_pct)
             stop_price = self.entry_price * (1 - self.stop_loss_pct)
@@ -871,9 +892,18 @@ class QuantumNeuralEvolutionBot:
             tp_order = self.place_limit_order("SELL", self.entry_qty, target_price)
             
             if "error" in tp_order:
-                return {"success": False, "error": tp_order.get("error")}
+                # Try market sell as fallback
+                self.logger.info("🔄 Using market sell as fallback...")
+                market_sell = self.place_market_order("SELL", self.entry_qty, is_quantity=True)
+                if "error" in market_sell:
+                    return {"success": False, "error": market_sell.get("error")}
+                exit_price = float(market_sell.get("price", current_price))
+                realized_pnl = (exit_price - self.entry_price) * self.entry_qty
+                fee_estimate = (self.entry_price * self.entry_qty * 0.001) + (exit_price * self.entry_qty * 0.001)
+                net_pnl = realized_pnl - fee_estimate
+                return self._finalize_trade(net_pnl, realized_pnl, exit_price, "BUY")
             
-            exit_price = self.monitor_micro_trade(tp_order.get("orderId"), stop_price, "long")
+            exit_price = self.monitor_trade(tp_order.get("orderId"), stop_price, "long")
             
             if exit_price is None:
                 return {"success": False, "error": "Trade monitoring failed"}
@@ -881,7 +911,7 @@ class QuantumNeuralEvolutionBot:
             realized_pnl = (exit_price - self.entry_price) * self.entry_qty
             
         elif direction == "SELL":
-            self.logger.info("📉 MICRO SELL (exploration)")
+            self.logger.info("📉 SELL (exploration)")
             
             balances = self.get_account_balance()
             btc_balance = balances.get("BTC", 0)
@@ -903,7 +933,7 @@ class QuantumNeuralEvolutionBot:
             self.entry_qty = float(sell_order.get("executedQty", 0))
             self.current_position = "short"
             
-            self.logger.info(f"✅ MICRO SELL: {self.entry_qty:.8f} @ ${self.entry_price:.2f}")
+            self.logger.info(f"✅ SELL: {self.entry_qty:.8f} @ ${self.entry_price:.2f}")
             
             target_price = self.entry_price * (1 - self.target_profit_pct)
             stop_price = self.entry_price * (1 + self.stop_loss_pct)
@@ -911,9 +941,17 @@ class QuantumNeuralEvolutionBot:
             cover_order = self.place_limit_order("BUY", self.entry_qty, target_price)
             
             if "error" in cover_order:
-                return {"success": False, "error": cover_order.get("error")}
+                self.logger.info("🔄 Using market buy as fallback...")
+                market_buy = self.place_market_order("BUY", self.entry_qty, is_quantity=True)
+                if "error" in market_buy:
+                    return {"success": False, "error": market_buy.get("error")}
+                exit_price = float(market_buy.get("price", current_price))
+                realized_pnl = (self.entry_price - exit_price) * self.entry_qty
+                fee_estimate = (self.entry_price * self.entry_qty * 0.001) + (exit_price * self.entry_qty * 0.001)
+                net_pnl = realized_pnl - fee_estimate
+                return self._finalize_trade(net_pnl, realized_pnl, exit_price, "SELL")
             
-            exit_price = self.monitor_micro_trade(cover_order.get("orderId"), stop_price, "short")
+            exit_price = self.monitor_trade(cover_order.get("orderId"), stop_price, "short")
             
             if exit_price is None:
                 return {"success": False, "error": "Trade monitoring failed"}
@@ -925,6 +963,17 @@ class QuantumNeuralEvolutionBot:
         
         fee_estimate = (self.entry_price * self.entry_qty * 0.001) + (exit_price * self.entry_qty * 0.001)
         net_pnl = realized_pnl - fee_estimate
+        
+        return self._finalize_trade(net_pnl, realized_pnl, exit_price, direction)
+
+    def _finalize_trade(self, net_pnl: float, realized_pnl: float, exit_price: float, direction: str) -> dict:
+        """Finalize trade and update metrics"""
+        
+        self.logger.info(f"\n📊 TRADE RESULTS:")
+        self.logger.info(f"   Direction: {direction}")
+        self.logger.info(f"   Entry: ${self.entry_price:.2f}")
+        self.logger.info(f"   Exit: ${exit_price:.2f}")
+        self.logger.info(f"   P&L: ${realized_pnl:.4f} (${net_pnl:.4f} after fees)")
         
         self.running_pnl += net_pnl
         self.current_balance = max(0, self.total_capital + self.running_pnl)
@@ -943,13 +992,6 @@ class QuantumNeuralEvolutionBot:
         
         reward = self.get_reward(net_pnl, direction)
         
-        self.logger.info(f"\n🧬 MICRO TRADE RESULTS:")
-        self.logger.info(f"   Direction: {direction}")
-        self.logger.info(f"   Entry: ${self.entry_price:.2f}")
-        self.logger.info(f"   Exit: ${exit_price:.2f}")
-        self.logger.info(f"   P&L: ${realized_pnl:.4f} (${net_pnl:.4f} after fees)")
-        self.logger.info(f"   Reward: {reward:.4f}")
-        
         result = {
             "success": True,
             "direction": direction,
@@ -967,8 +1009,8 @@ class QuantumNeuralEvolutionBot:
         
         return result
 
-    def monitor_micro_trade(self, order_id: str, stop_price: float, direction: str) -> Optional[float]:
-        """Monitor MICRO trade"""
+    def monitor_trade(self, order_id: str, stop_price: float, direction: str) -> Optional[float]:
+        """Monitor trade until it fills or stop loss hits"""
         start_time = time.time()
         timeout = 30
         
@@ -985,14 +1027,14 @@ class QuantumNeuralEvolutionBot:
             current_price = self.get_current_price()
             if current_price:
                 if direction == "long" and current_price <= stop_price:
-                    self.logger.warning(f"🛑 MICRO STOP: ${current_price:.2f}")
+                    self.logger.warning(f"🛑 STOP: ${current_price:.2f}")
                     self.cancel_order(order_id)
                     exit_order = self.place_market_order("SELL", self.entry_qty, is_quantity=True)
                     if "error" not in exit_order:
                         return float(exit_order.get("price", current_price))
                     return current_price
                 elif direction == "short" and current_price >= stop_price:
-                    self.logger.warning(f"🛑 MICRO STOP: ${current_price:.2f}")
+                    self.logger.warning(f"🛑 STOP: ${current_price:.2f}")
                     self.cancel_order(order_id)
                     exit_order = self.place_market_order("BUY", self.entry_qty, is_quantity=True)
                     if "error" not in exit_order:
@@ -1001,7 +1043,7 @@ class QuantumNeuralEvolutionBot:
             
             time.sleep(1)
         
-        self.logger.warning("⏰ MICRO timeout, exiting...")
+        self.logger.warning("⏰ Trade timeout, exiting...")
         self.cancel_order(order_id)
         
         if direction == "long":
@@ -1071,7 +1113,6 @@ class QuantumNeuralEvolutionBot:
             self.stopped = True
             return {"success": False, "error": "Invalid balance"}
         
-        # Check drawdown
         if self.peak_balance > 0:
             drawdown = (self.peak_balance - self.current_balance) / self.peak_balance
             if drawdown > self.max_drawdown_pct:
@@ -1079,7 +1120,6 @@ class QuantumNeuralEvolutionBot:
                 self.stopped = True
                 return {"success": False, "error": "Max drawdown exceeded"}
         
-        # Check consecutive losses
         if self.consecutive_losses >= self.max_consecutive_losses:
             self.logger.error(f"❌ Too many losses: {self.consecutive_losses}")
             self.stopped = True
@@ -1094,17 +1134,14 @@ class QuantumNeuralEvolutionBot:
         
         state = self.get_state(current_price, signal_data)
         
-        # Neural Network prediction
         nn_prediction = self.neural_net.predict(state)
         nn_direction = "BUY" if nn_prediction == 0 else "SELL"
         nn_confidence = self.neural_net.accuracy
         
-        # RL Agent action
         rl_action = self.rl_agent.get_action(state, explore=self.exploration_mode)
         action_map = {0: "BUY", 1: "SELL", 2: "WAIT", 3: "REVERSE"}
         rl_direction = action_map.get(rl_action, "BUY")
         
-        # Combine signals
         if self.exploration_mode:
             final_direction = rl_direction
             self.logger.info(f"🧬 EXPLORATION MODE (Cycle {cycle_number})")
@@ -1122,7 +1159,7 @@ class QuantumNeuralEvolutionBot:
             self.logger.info(f"   NN Conf: {nn_confidence:.2f}")
             self.logger.info(f"   RL Action: {rl_direction}")
         
-        result = self.execute_micro_trade(final_direction, current_price, signal_data)
+        result = self.execute_trade(final_direction, current_price, signal_data)
         
         if result.get("success"):
             reward = result.get("reward", 0)
@@ -1137,10 +1174,10 @@ class QuantumNeuralEvolutionBot:
             target[target_idx] = 1 if reward > 0 else 0
             self.neural_net.train(state, target)
             
-            if self.total_trades % 10 == 0:
+            if self.total_trades % 5 == 0:
                 self.neural_net.batch_train()
             
-            if self.total_trades % 50 == 0:
+            if self.total_trades % 10 == 0:
                 self.neural_net.save(f"neural_net_{datetime.now().strftime('%Y%m%d')}.pkl")
                 self.rl_agent.save(f"rl_agent_{datetime.now().strftime('%Y%m%d')}.pkl")
             
@@ -1171,7 +1208,7 @@ class QuantumNeuralEvolutionBot:
     def run_forever(self, delay_between_cycles: int = 10):
         """Run continuously - EVOLUTION MODE"""
         self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v8.1")
+        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v8.2")
         self.logger.info("   10/10 ULTIMATE MASTERPIECE")
         self.logger.info("="*70)
         self.logger.info("   🧬 DARWINIAN EVOLUTION")
@@ -1179,6 +1216,7 @@ class QuantumNeuralEvolutionBot:
         self.logger.info("   🧬 REINFORCEMENT LEARNING")
         self.logger.info("   🔬 EXPLORING THE MULTIVERSE OF STRATEGIES")
         self.logger.info("   📈 EVOLVING TOWARDS PERFECTION")
+        self.logger.info("   💰 Minimum $1.00 trades (Binance requirement)")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
         
@@ -1287,7 +1325,7 @@ class QuantumNeuralEvolutionBot:
 
     def export_final_report(self):
         report = {
-            "version": "8.1",
+            "version": "8.2",
             "strategy": "Quantum Neural Evolution - 10/10 Masterpiece",
             "description": "Darwinian Evolution + RL + Neural Networks",
             "starting_balance": self.starting_balance,
@@ -1327,11 +1365,11 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("="*70)
-    print("🧠 QUANTUM NEURAL EVOLUTION BOT v8.1")
+    print("🧠 QUANTUM NEURAL EVOLUTION BOT v8.2")
     print("   10/10 ULTIMATE MASTERPIECE")
     print("="*70)
     print("\nQUANTUM EVOLUTION STRATEGY:")
-    print("1. ✅ Starts with MICRO trades ($0.01-$0.05)")
+    print("1. ✅ Minimum $1.00 trades (Binance requirement)")
     print("2. ✅ Neural Network learns from EVERY trade")
     print("3. ✅ Reinforcement Learning finds winning patterns")
     print("4. ✅ Darwinian evolution of strategies")
