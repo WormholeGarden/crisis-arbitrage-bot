@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 """
-🚀 GOLDEN SCALPER BOT v11.2 - AGGRESSIVE CHOPPY MODE
+🚀 GOLDEN SCALPER BOT v11.3 - FINAL CONFIDENCE FIX
 ============================================================
-FIXES FOR CURRENT MARKET:
-- ADX is 2.4 (extremely low) - market is dead/flat
-- Only 2 signals active (RSI + Bollinger)
-- Need to trade range-bound movements
-
-NEW FEATURES:
-- Choppy mode reduces to 3 signals minimum
-- Range-bound strategy for flat markets
-- Smaller targets (2-3%) in choppy markets
-- Still shows full signal breakdown
+FIXES:
+- Dead market confidence threshold: 15% (was 25%)
+- Weak trend confidence: 20% (was 30%)
+- Strong trend confidence: 30% (was 35%)
+- This will trigger trades with just RSI + Bollinger
 ============================================================
 """
 
@@ -39,14 +34,17 @@ from collections import deque
 GOLDEN_CONFIG = {
     "symbol": "AVAXUSDT",
     "interval": "4h",
-    "min_signals_strong": 6,      # Trending market
-    "min_signals_weak": 3,        # Choppy market (REDUCED from 4 to 3!)
-    "min_signals_dead": 2,        # Dead/flat market (ADX < 10)
+    "min_signals_strong": 6,
+    "min_signals_weak": 3,
+    "min_signals_dead": 2,
+    "min_confidence_dead": 0.12,    # 12% confidence for dead markets (REDUCED!)
+    "min_confidence_weak": 0.20,    # 20% for weak trends
+    "min_confidence_strong": 0.30,  # 30% for strong trends
     "trailing_pct": 0.3,
-    "max_hold_hours": 48,         # Reduced for choppy markets
+    "max_hold_hours": 48,
     "trailing_stop": False,
-    "target_profit_pct": 0.025,   # 2.5% target (reduced for choppy)
-    "stop_loss_pct": 0.015,       # 1.5% stop (tighter for choppy)
+    "target_profit_pct": 0.025,
+    "stop_loss_pct": 0.015,
     "min_order_usdt": 10.0,
     "max_order_usdt": 50.0,
 }
@@ -299,10 +297,10 @@ class AdvancedIndicators:
         return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di}
 
 # ========================================================================
-# AGGRESSIVE CHOPPY STRATEGY
+# FINAL CONFIDENCE-FIXED STRATEGY
 # ========================================================================
 
-class AggressiveChoppyStrategy:
+class FinalConfidenceStrategy:
     @staticmethod
     def signal(data: Dict, params: Dict = None, verbose: bool = True) -> Dict:
         if params is None:
@@ -310,6 +308,9 @@ class AggressiveChoppyStrategy:
                 'min_signals_strong': 6,
                 'min_signals_weak': 3,
                 'min_signals_dead': 2,
+                'min_confidence_dead': 0.12,
+                'min_confidence_weak': 0.20,
+                'min_confidence_strong': 0.30,
             }
         
         closes = data['closes']
@@ -326,24 +327,28 @@ class AggressiveChoppyStrategy:
         if adx > 25 and chop < 40:
             regime = "TRENDING 📈"
             min_signals = params.get('min_signals_strong', 6)
+            min_confidence = params.get('min_confidence_strong', 0.30)
             position_multiplier = 1.0
             target_multiplier = 1.0
             regime_type = "strong"
         elif adx > 15 and chop < 50:
             regime = "WEAK TREND 📊"
             min_signals = params.get('min_signals_weak', 3)
+            min_confidence = params.get('min_confidence_weak', 0.20)
             position_multiplier = 0.85
             target_multiplier = 0.9
             regime_type = "weak"
         elif adx < 10 and chop > 45:
             regime = "DEAD/FLAT 💤 (using aggressive mode)"
             min_signals = params.get('min_signals_dead', 2)
+            min_confidence = params.get('min_confidence_dead', 0.12)  # REDUCED!
             position_multiplier = 0.6
             target_multiplier = 0.7
             regime_type = "dead"
         else:
             regime = "NEUTRAL ⚖️"
             min_signals = params.get('min_signals_weak', 3)
+            min_confidence = params.get('min_confidence_weak', 0.20)
             position_multiplier = 0.8
             target_multiplier = 0.85
             regime_type = "neutral"
@@ -399,7 +404,7 @@ class AggressiveChoppyStrategy:
         signal_names.append("Bollinger")
         signal_results["Bollinger"] = {"value": bb_val, "weight": 1.0, "status": "✅" if bb_val > 0.5 else "❌"}
         
-        # 5. ADX (Trend strength)
+        # 5. ADX
         adx_val = 1 if adx > 20 else 0
         signals.append(adx_val)
         weights.append(1.3)
@@ -443,7 +448,7 @@ class AggressiveChoppyStrategy:
         
         # 10. Z-Score
         zscore = AdvancedIndicators.zscore(closes, 20)
-        zscore_val = 1 if zscore < -0.5 else 0  # Reduced threshold for choppy
+        zscore_val = 1 if zscore < -0.5 else 0
         signals.append(zscore_val)
         weights.append(0.7)
         signal_names.append("ZScore")
@@ -475,7 +480,7 @@ class AggressiveChoppyStrategy:
         
         # 14. CCI
         cci = AdvancedIndicators.cci(closes, highs, lows)
-        cci_val = 1 if cci < -50 else 0  # Reduced threshold for choppy
+        cci_val = 1 if cci < -50 else 0
         signals.append(cci_val)
         weights.append(0.7)
         signal_names.append("CCI")
@@ -483,7 +488,7 @@ class AggressiveChoppyStrategy:
         
         # 15. DMI
         dmi = AdvancedIndicators.dmi(highs, lows, closes)
-        dmi_val = 1 if dmi['plus_di'] > dmi['minus_di'] and dmi['adx'] > 15 else 0  # Reduced threshold
+        dmi_val = 1 if dmi['plus_di'] > dmi['minus_di'] and dmi['adx'] > 15 else 0
         signals.append(dmi_val)
         weights.append(1.1)
         signal_names.append("DMI")
@@ -495,11 +500,10 @@ class AggressiveChoppyStrategy:
         confidence = weighted_sum / total_weight
         signal_count = sum(1 for s in signals if s > 0.5)
         
-        # Stop and target (adjusted for choppy markets)
+        # Stop and target
         atr = AdvancedIndicators.atr(highs, lows, closes, 14)
         recent_low = min(lows[-20:]) if len(lows) >= 20 else min(lows)
         
-        # Tighter stops and targets in dead/choppy markets
         if regime_type == "dead":
             stop_multiplier = 1.2
             target_multiplier = 2.0
@@ -517,21 +521,23 @@ class AggressiveChoppyStrategy:
         reward = target - current
         rr_ratio = reward / risk if risk > 0 else 0
         
-        # ADAPTIVE: Use different thresholds based on regime
+        # FINAL DECISION - with reduced confidence thresholds
         buy_signal = False
         signal_type = "NO SIGNAL"
         
-        # For dead/flat markets, we're aggressive with 2 signals
         if regime_type == "dead":
-            if signal_count >= min_signals and confidence > 0.25 and rr_ratio > 1.2:
+            # Dead market: 2 signals, 12% confidence
+            if signal_count >= min_signals and confidence >= min_confidence and rr_ratio > 1.2:
                 buy_signal = True
                 signal_type = "DEAD MARKET SIGNAL 💤 (aggressive)"
         elif regime_type == "weak":
-            if signal_count >= min_signals and confidence > 0.3 and rr_ratio > 1.3:
+            # Weak trend: 3 signals, 20% confidence
+            if signal_count >= min_signals and confidence >= min_confidence and rr_ratio > 1.3:
                 buy_signal = True
                 signal_type = "WEAK TREND SIGNAL 📊"
         else:
-            if signal_count >= min_signals and confidence > 0.35 and rr_ratio > 1.5:
+            # Strong/Neutral: appropriate thresholds
+            if signal_count >= min_signals and confidence >= min_confidence and rr_ratio > 1.5:
                 buy_signal = True
                 signal_type = "STRONG SIGNAL 🚀"
         
@@ -543,6 +549,7 @@ class AggressiveChoppyStrategy:
             "signal_count": signal_count,
             "total_signals": len(signals),
             "min_signals_used": min_signals,
+            "min_confidence_used": min_confidence,
             "regime": regime,
             "regime_type": regime_type,
             "adx": adx,
@@ -568,8 +575,9 @@ class AggressiveChoppyStrategy:
             print(f"Market Regime: {regime}")
             print(f"ADX: {adx:.1f} | Chop: {chop:.1f}")
             print(f"Required Signals: {min_signals}/{len(signals)} ({regime_type.upper()} mode)")
+            print(f"Required Confidence: {min_confidence*100:.0f}%")
             print(f"Current Signals: {signal_count}/{len(signals)}")
-            print(f"Confidence: {confidence:.2%}")
+            print(f"Current Confidence: {confidence:.2%}")
             print(f"R:R Ratio: {rr_ratio:.2f}")
             print(f"Position Size: {position_multiplier*100:.0f}% of normal")
             print("-"*70)
@@ -592,10 +600,10 @@ class AggressiveChoppyStrategy:
                 if signal_count < min_signals:
                     print(f"❌ NOT ENOUGH SIGNALS: {signal_count}/{min_signals} needed")
                     print(f"💡 Need {min_signals - signal_count} more signal(s)")
+                elif confidence < min_confidence:
+                    print(f"❌ LOW CONFIDENCE: {confidence:.2%} (need > {min_confidence*100:.0f}%)")
                 elif rr_ratio <= 1.2:
                     print(f"❌ POOR RISK/REWARD: {rr_ratio:.2f} (need > 1.2)")
-                elif confidence < 0.25:
-                    print(f"❌ LOW CONFIDENCE: {confidence:.2%} (need > 25%)")
                 else:
                     print("❌ OTHER CONDITIONS NOT MET")
                 
@@ -606,7 +614,7 @@ class AggressiveChoppyStrategy:
         return result
 
 # ========================================================================
-# GOLDEN SCALPER BOT - AGGRESSIVE CHOPPY MODE
+# GOLDEN SCALPER BOT - FINAL VERSION
 # ========================================================================
 
 class GoldenScalperBot:
@@ -626,6 +634,9 @@ class GoldenScalperBot:
         self.min_signals_strong = GOLDEN_CONFIG["min_signals_strong"]
         self.min_signals_weak = GOLDEN_CONFIG["min_signals_weak"]
         self.min_signals_dead = GOLDEN_CONFIG["min_signals_dead"]
+        self.min_confidence_dead = GOLDEN_CONFIG["min_confidence_dead"]
+        self.min_confidence_weak = GOLDEN_CONFIG["min_confidence_weak"]
+        self.min_confidence_strong = GOLDEN_CONFIG["min_confidence_strong"]
         self.max_hold_hours = GOLDEN_CONFIG["max_hold_hours"]
         
         self.min_order_usdt = GOLDEN_CONFIG["min_order_usdt"]
@@ -704,13 +715,13 @@ class GoldenScalperBot:
         self.logger.addHandler(console)
         
         self.logger.info("="*70)
-        self.logger.info("🚀 GOLDEN SCALPER BOT v11.2 - AGGRESSIVE CHOPPY MODE")
+        self.logger.info("🚀 GOLDEN SCALPER BOT v11.3 - FINAL CONFIDENCE FIX")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Interval: {interval}")
-        self.logger.info(f"   Strong Signals: {self.min_signals_strong}/15 (trending)")
-        self.logger.info(f"   Weak Signals: {self.min_signals_weak}/15 (weak trend)")
-        self.logger.info(f"   Dead Signals: {self.min_signals_dead}/15 (flat/dead market)")
+        self.logger.info(f"   Dead Market: {self.min_signals_dead} signals, {self.min_confidence_dead*100:.0f}% confidence")
+        self.logger.info(f"   Weak Trend: {self.min_signals_weak} signals, {self.min_confidence_weak*100:.0f}% confidence")
+        self.logger.info(f"   Strong Trend: {self.min_signals_strong} signals, {self.min_confidence_strong*100:.0f}% confidence")
         self.logger.info(f"   Target: {self.target_profit_pct*100:.1f}%")
         self.logger.info(f"   Stop: {self.stop_loss_pct*100:.1f}%")
         self.logger.info("="*70)
@@ -1058,8 +1069,11 @@ class GoldenScalperBot:
             'min_signals_strong': self.min_signals_strong,
             'min_signals_weak': self.min_signals_weak,
             'min_signals_dead': self.min_signals_dead,
+            'min_confidence_dead': self.min_confidence_dead,
+            'min_confidence_weak': self.min_confidence_weak,
+            'min_confidence_strong': self.min_confidence_strong,
         }
-        signal = AggressiveChoppyStrategy.signal(klines, params, verbose=verbose)
+        signal = FinalConfidenceStrategy.signal(klines, params, verbose=verbose)
         return signal
 
     def run_cycle(self, cycle_number: int = 0) -> dict:
@@ -1194,7 +1208,7 @@ class GoldenScalperBot:
             self.logger.info("⏳ Position still open - monitoring...")
             return {"success": False, "error": "Position open", "skipped": True}
 
-        # No position - check for new signal with detailed breakdown
+        # No position - check for new signal
         self._update_balances()
         self.logger.info(f"💰 USDT: ${self.current_balance_usdt:.2f} | {self.base_asset}: {self.current_balance_asset:.8f}")
         
@@ -1225,20 +1239,20 @@ class GoldenScalperBot:
         if signal['signal'] != "BUY":
             # Log why no signal (with details from breakdown)
             signal_count = signal.get('signal_count', 0)
-            min_signals = signal.get('min_signals_used', 3)
+            min_signals = signal.get('min_signals_used', 2)
+            min_confidence = signal.get('min_confidence_used', 0.12)
             confidence = signal.get('confidence', 0)
             rr_ratio = signal.get('rr_ratio', 0)
             regime = signal.get('regime', 'Unknown')
-            regime_type = signal.get('regime_type', 'neutral')
             
             self.logger.info(f"⏭️ No BUY signal - Market: {regime}")
             
             if signal_count < min_signals:
                 self.logger.info(f"   ❌ Only {signal_count}/{min_signals} signals active (need {min_signals})")
+            elif confidence < min_confidence:
+                self.logger.info(f"   ❌ Confidence {confidence:.2%} (need > {min_confidence*100:.0f}%)")
             elif rr_ratio <= 1.2:
                 self.logger.info(f"   ❌ Risk/Reward {rr_ratio:.2f} (need > 1.2)")
-            elif confidence < 0.25:
-                self.logger.info(f"   ❌ Confidence {confidence:.2%} (need > 25%)")
             else:
                 self.logger.info(f"   ❌ Other conditions not met")
             
@@ -1247,23 +1261,11 @@ class GoldenScalperBot:
             if active_signals:
                 self.logger.info(f"   ✅ Active signals: {', '.join(active_signals)}")
             
-            # Show what's missing
-            missing_count = min_signals - signal_count
-            if missing_count > 0 and active_signals:
-                self.logger.info(f"   💡 Need {missing_count} more signal(s) to trigger")
-                # Suggest which signals to watch for
-                if "EMA_Trend" not in active_signals and missing_count > 0:
-                    self.logger.info(f"   💡 Watch for: EMA_Trend (price above EMAs)")
-                if "MACD" not in active_signals and missing_count > 1:
-                    self.logger.info(f"   💡 Watch for: MACD (bullish crossover)")
-                if "ADX" not in active_signals and missing_count > 2:
-                    self.logger.info(f"   💡 Watch for: ADX (trend strength increasing)")
-            
             return {"success": False, "error": "No signal", "skipped": True}
         
         # BUY SIGNAL! Execute trade
         signal_type = signal.get('signal_type', 'BUY SIGNAL')
-        position_multiplier = signal.get('position_multiplier', 0.8)
+        position_multiplier = signal.get('position_multiplier', 0.6)
         
         self.logger.info(f"🚀 {signal_type} CONFIRMED! Executing trade...")
         self.logger.info(f"   Position size: {position_multiplier*100:.0f}% of normal")
@@ -1272,7 +1274,7 @@ class GoldenScalperBot:
         if not current_price:
             return {"success": False, "error": "No price"}
 
-        # Adaptive position sizing based on signal strength
+        # Adaptive position sizing
         position_usdt = min(self.max_order_usdt, self.current_balance_usdt * 0.15 * position_multiplier)
         position_usdt = max(self.min_order_usdt, position_usdt)
         
@@ -1293,8 +1295,8 @@ class GoldenScalperBot:
         self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} {self.base_asset} @ ${self.buy_price:.2f}")
         self._update_balances()
 
-        # Use adaptive target/stop based on market regime
-        regime_type = signal.get('regime_type', 'neutral')
+        # Use adaptive target/stop
+        regime_type = signal.get('regime_type', 'dead')
         if regime_type == "dead":
             target_multiplier = 0.7
             stop_multiplier = 1.2
@@ -1305,7 +1307,6 @@ class GoldenScalperBot:
             target_multiplier = 1.0
             stop_multiplier = 1.0
         
-        # Use signal's stop/target if available, otherwise calculate
         if signal.get('stop') and signal.get('target'):
             stop_price = max(self.buy_price * (1 - self.stop_loss_pct * stop_multiplier), signal['stop'])
             target_price = min(self.buy_price * (1 + self.target_profit_pct * target_multiplier), signal['target'])
@@ -1402,8 +1403,8 @@ class GoldenScalperBot:
 
     def run_forever(self):
         self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 GOLDEN SCALPER BOT v11.2 - AGGRESSIVE CHOPPY MODE")
-        self.logger.info(f"   {self.symbol} {self.interval} - Aggressive Choppy Strategy")
+        self.logger.info("🚀 GOLDEN SCALPER BOT v11.3 - FINAL CONFIDENCE FIX")
+        self.logger.info(f"   {self.symbol} {self.interval}")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
 
@@ -1436,7 +1437,6 @@ class GoldenScalperBot:
                     self.stopped = True
                     break
                 
-                # Different wait times based on state
                 if self.has_open_position:
                     wait_time = 60
                     self.logger.info(f"⏳ Monitoring position - next check in {wait_time}s")
@@ -1487,14 +1487,13 @@ if __name__ == "__main__":
         exit(1)
     
     print("="*70)
-    print("🚀 GOLDEN SCALPER BOT v11.2 - AGGRESSIVE CHOPPY MODE")
+    print("🚀 GOLDEN SCALPER BOT v11.3 - FINAL CONFIDENCE FIX")
     print("="*70)
     print(f"\n🎯 {GOLDEN_CONFIG['symbol']} {GOLDEN_CONFIG['interval']}")
-    print(f"   ✅ DEAD MARKET MODE: Only need 2 signals when ADX < 10")
-    print(f"   ✅ WEAK TREND MODE: Need 3 signals when ADX 10-20")
-    print(f"   ✅ STRONG TREND MODE: Need 6 signals when ADX > 25")
-    print(f"   ✅ Tighter targets in choppy markets (2-2.5%)")
-    print(f"   ✅ Full 15-signal breakdown each cycle")
+    print(f"   ✅ DEAD MARKET: 2 signals, 12% confidence (was 25%)")
+    print(f"   ✅ WEAK TREND: 3 signals, 20% confidence (was 30%)")
+    print(f"   ✅ STRONG TREND: 6 signals, 30% confidence (was 35%)")
+    print(f"   ✅ This will trigger with just RSI + Bollinger!")
     print(f"\n🚀 Starting in 3 seconds...")
     time.sleep(3)
     
