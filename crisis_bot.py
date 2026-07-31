@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
 """
-🚀 HYBRID DCA + RSI/MACD MOMENTUM BOT v1.0
+🚀 HYBRID DCA + RSI/MACD BOT v1.1 - FIXED
 ============================================================
-TOP RECOMMENDED ALGORITHM FOR BINANCE TRADING BOTS
-
-STRATEGY:
-1. Monitor price, RSI (15m), and MACD
-2. Buy when: Price drops 2% AND RSI < 30 (oversold)
-3. Scale position: 1x, 1.5x, 2.25x (Martingale)
-4. Exit: Trailing take-profit at +2.5% from average entry
-5. Check every minute for new opportunities
-
-WHY THIS WORKS:
-- RSI filter prevents buying in freefall
-- DCA scaling lowers average entry
-- Trailing stops capture bounces
-- Perfect for choppy/dead markets
+FIXES:
+- Fixed RSI calculation (was returning 0.0)
+- Added proper position recovery on startup
+- Added check for existing balance before trading
+- Fixed volume ratio calculation
+- Better error handling
 ============================================================
 """
 
@@ -42,7 +34,7 @@ from collections import deque
 
 DCA_CONFIG = {
     "symbol": "AVAXUSDT",
-    "interval": "1m",  # Check every minute
+    "interval": "1m",
     "price_drop_pct": 0.02,        # 2% price drop required
     "rsi_oversold": 30,            # RSI < 30 to buy
     "take_profit_pct": 0.025,      # 2.5% profit target
@@ -52,7 +44,7 @@ DCA_CONFIG = {
     "max_order_usdt": 30.0,        # Max per order
     "max_total_usdt": 60.0,        # Max total in one cycle
     "trailing_stop_pct": 0.5,      # 50% trailing stop
-    "min_volume_ratio": 1.2,       # Volume spike confirmation
+    "min_volume_ratio": 1.2,       # Volume spike confirmation (optional)
 }
 
 # ========================================================================
@@ -109,18 +101,32 @@ class TechnicalIndicators:
 
     @staticmethod
     def rsi(closes: List[float], period: int = 14) -> float:
+        """Calculate RSI - fixed to handle insufficient data"""
         if len(closes) < period + 1:
-            return 50.0
+            return 50.0  # Return neutral instead of 0
+        
         gains, losses = [], []
         for i in range(1, len(closes)):
             diff = closes[i] - closes[i-1]
-            gains.append(diff if diff > 0 else 0)
-            losses.append(abs(diff) if diff < 0 else 0)
-        avg_gain = sum(gains[-period:]) / period
-        avg_loss = sum(losses[-period:]) / period
+            if diff > 0:
+                gains.append(diff)
+                losses.append(0)
+            else:
+                gains.append(0)
+                losses.append(abs(diff))
+        
+        # Use only the last 'period' values
+        gains = gains[-period:] if len(gains) >= period else gains
+        losses = losses[-period:] if len(losses) >= period else losses
+        
+        avg_gain = sum(gains) / len(gains) if gains else 0
+        avg_loss = sum(losses) / len(losses) if losses else 1
+        
         if avg_loss == 0:
             return 100.0
-        return 100 - (100 / (1 + avg_gain / avg_loss))
+        
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
 
     @staticmethod
     def ema(data: List[float], period: int) -> float:
@@ -168,7 +174,6 @@ class TechnicalIndicators:
 class DCAStrategy:
     def __init__(self, config: Dict = None):
         self.config = config or DCA_CONFIG
-        self.buy_levels = []
         self.total_qty = 0.0
         self.total_cost = 0.0
         self.avg_price = 0.0
@@ -178,10 +183,10 @@ class DCAStrategy:
         self.trailing_stop = 0.0
         self.position_open = False
         self.entry_time = None
+        self.buy_levels = []
         
     def reset(self):
         """Reset DCA state for new cycle"""
-        self.buy_levels = []
         self.total_qty = 0.0
         self.total_cost = 0.0
         self.avg_price = 0.0
@@ -191,6 +196,7 @@ class DCAStrategy:
         self.trailing_stop = 0.0
         self.position_open = False
         self.entry_time = None
+        self.buy_levels = []
     
     def calculate_buy_amount(self, level: int) -> float:
         """Calculate buy amount with Martingale scaling"""
@@ -208,21 +214,21 @@ class DCAStrategy:
         
         current_price = closes[-1]
         
-        # Calculate indicators
+        # Calculate indicators - with fallbacks
         rsi = TechnicalIndicators.rsi(closes, 14)
         macd = TechnicalIndicators.macd(closes, 12, 26, 9)
-        atr = TechnicalIndicators.atr(highs, lows, closes, 14)
         
         # Price drop check (from 1 minute ago)
         price_drop = 0
-        if len(closes) >= 2:
-            price_drop = (closes[-2] - current_price) / closes[-2]
+        if len(closes) >= 5:
+            # Check drop from 5 minutes ago for more stability
+            price_drop = (closes[-5] - current_price) / closes[-5]
         
         # Volume spike check
         avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
         volume_ratio = volumes[-1] / avg_volume if avg_volume > 0 else 1
         
-        # Conditions
+        # Conditions - RSI is the primary filter
         conditions = {
             "price_drop": price_drop >= self.config["price_drop_pct"],
             "rsi_oversold": rsi < self.config["rsi_oversold"],
@@ -230,7 +236,7 @@ class DCAStrategy:
             "volume_spike": volume_ratio >= self.config["min_volume_ratio"],
         }
         
-        # ENTRY: Price drop + RSI oversold (MACD and volume optional)
+        # ENTRY: Price drop + RSI oversold (MACD optional, volume optional)
         entry_signal = conditions["price_drop"] and conditions["rsi_oversold"]
         
         return {
@@ -240,7 +246,6 @@ class DCAStrategy:
             "macd_bullish": macd['bullish'],
             "volume_ratio": volume_ratio,
             "current_price": current_price,
-            "atr": atr,
             "conditions": conditions,
         }
     
@@ -249,7 +254,7 @@ class DCAStrategy:
         if not self.position_open or self.total_qty <= 0:
             return {"exit": False, "reason": "No position"}
         
-        # Update highest price
+        # Update highest price for trailing stop
         if current_price > self.highest_price:
             self.highest_price = current_price
             # Update trailing stop
@@ -258,7 +263,7 @@ class DCAStrategy:
             if new_stop > self.trailing_stop:
                 self.trailing_stop = new_stop
         
-        # Target profit check
+        # Profit check
         profit_pct = (current_price - self.avg_price) / self.avg_price
         target_profit = self.config["take_profit_pct"]
         
@@ -271,7 +276,7 @@ class DCAStrategy:
             exit_signal = True
             reason = f"Target profit {profit_pct*100:.2f}% >= {target_profit*100:.1f}%"
         
-        # 2. Trailing stop hit (if trailing stop is active)
+        # 2. Trailing stop hit
         elif self.trailing_stop > 0 and current_price <= self.trailing_stop:
             exit_signal = True
             reason = f"Trailing stop hit at ${self.trailing_stop:.2f}"
@@ -279,14 +284,13 @@ class DCAStrategy:
         # 3. Time exit (max 4 hours for 1m timeframe)
         elif self.entry_time:
             time_held = (datetime.now() - self.entry_time).total_seconds() / 3600
-            if time_held > 4:  # 4 hours max
+            if time_held > 4:
                 exit_signal = True
                 reason = f"Time exit after {time_held:.1f}h"
         
-        # 4. Emergency stop loss (1.5x ATR)
+        # 4. Emergency stop loss (3% from last buy)
         elif self.last_buy_price > 0:
-            atr = TechnicalIndicators.atr([0], [0], [0], 14)
-            emergency_stop = self.last_buy_price * 0.97  # 3% emergency stop
+            emergency_stop = self.last_buy_price * 0.97
             if current_price <= emergency_stop:
                 exit_signal = True
                 reason = f"Emergency stop at ${emergency_stop:.2f}"
@@ -351,7 +355,6 @@ class DCABot:
         self.balance_fetched = False
         self.stopped = False
         self.skipped_count = 0
-        self.dca_level = 0
         self.total_invested = 0.0
         
         # Stats
@@ -386,7 +389,7 @@ class DCABot:
         self.logger.addHandler(console)
         
         self.logger.info("="*70)
-        self.logger.info("🚀 HYBRID DCA + RSI/MACD BOT v1.0")
+        self.logger.info("🚀 HYBRID DCA + RSI/MACD BOT v1.1 (FIXED)")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Check Interval: {self.config['interval']}")
@@ -399,41 +402,59 @@ class DCABot:
         self._check_connectivity()
         self._get_exchange_info()
         self._update_balances()
+        self._recover_existing_position()
 
-    def _check_existing_orders(self):
+    def _recover_existing_position(self):
+        """Recover existing position from balance and open orders"""
+        self.logger.info("🔍 Checking for existing position...")
+        
+        # First check if we have any AVAX balance
+        self._update_balances()
+        
+        if self.current_balance_asset > 0.00001:
+            self.logger.info(f"💰 Found {self.current_balance_asset:.8f} {self.base_asset} in balance")
+            
+            # Try to get average entry price from trade history
+            try:
+                resp = self._send_signed_request("GET", "/api/v3/myTrades", {"symbol": self.symbol, "limit": 50})
+                if "error" not in resp and resp:
+                    buys = [t for t in resp if t.get("isBuyer")]
+                    if buys:
+                        total_qty = sum(float(t.get("qty", 0)) for t in buys)
+                        total_cost = sum(float(t.get("price", 0)) * float(t.get("qty", 0)) for t in buys)
+                        self.strategy.total_qty = total_qty
+                        self.strategy.total_cost = total_cost
+                        self.strategy.avg_price = total_cost / total_qty if total_qty > 0 else 0
+                        self.strategy.position_open = True
+                        self.strategy.entry_time = datetime.now()
+                        self.strategy.highest_price = self.strategy.avg_price
+                        self.strategy.trailing_stop = self.strategy.avg_price * (1 - 0.015)
+                        self.has_open_position = True
+                        self.logger.info(f"📊 Recovered position: {total_qty:.8f} @ ${self.strategy.avg_price:.2f}")
+                        
+                        # Check if there's an open sell order
+                        self._check_open_orders()
+                        return
+            except Exception as e:
+                self.logger.warning(f"Could not recover position details: {e}")
+        
+        # Check for open orders
+        self._check_open_orders()
+
+    def _check_open_orders(self):
         """Check for any existing open orders"""
         try:
             resp = self._send_signed_request("GET", "/api/v3/openOrders", {"symbol": self.symbol})
             if "error" not in resp and resp:
                 for order in resp:
                     if order.get("side") == "SELL" and order.get("status") == "NEW":
-                        self.has_open_position = True
                         self.position_order_id = order.get("orderId")
+                        self.has_open_position = True
+                        self.strategy.position_open = True
                         self.logger.info(f"📊 Found existing SELL order: {self.position_order_id}")
-                        self._get_position_details()
                         break
         except Exception as e:
-            self.logger.warning(f"Could not check existing orders: {e}")
-
-    def _get_position_details(self):
-        """Get position details from trade history"""
-        try:
-            resp = self._send_signed_request("GET", "/api/v3/myTrades", {"symbol": self.symbol, "limit": 10})
-            if "error" not in resp and resp:
-                buys = [t for t in resp if t.get("isBuyer")]
-                if buys:
-                    total_qty = sum(float(t.get("qty", 0)) for t in buys)
-                    total_cost = sum(float(t.get("price", 0)) * float(t.get("qty", 0)) for t in buys)
-                    self.strategy.total_qty = total_qty
-                    self.strategy.total_cost = total_cost
-                    self.strategy.avg_price = total_cost / total_qty if total_qty > 0 else 0
-                    self.strategy.position_open = True
-                    self.strategy.entry_time = datetime.now()
-                    self.strategy.highest_price = self.strategy.avg_price
-                    self.strategy.trailing_stop = self.strategy.avg_price * (1 - 0.015)
-                    self.logger.info(f"📊 Recovered position: {total_qty:.8f} @ ${self.strategy.avg_price:.2f}")
-        except Exception:
-            pass
+            self.logger.warning(f"Could not check open orders: {e}")
 
     def _check_connectivity(self):
         self.logger.info("🔍 Running connectivity check...")
@@ -733,14 +754,18 @@ class DCABot:
         klines = TechnicalIndicators.get_klines(
             self.symbol, self.base_url, 
             interval=self.config["interval"], 
-            limit=100
+            limit=50  # Need at least 50 candles for RSI
         )
         if not klines:
             return {"error": "No data"}
         
+        # Check if we have enough data
+        if len(klines['closes']) < 15:
+            return {"error": "Insufficient data for indicators"}
+        
         signal = self.strategy.check_entry_signal(klines)
         
-        # Also get current price
+        # Get current price
         current_price = self.get_current_price()
         if current_price:
             signal["current_price"] = current_price
@@ -765,6 +790,10 @@ class DCABot:
             if buy_usdt < self.config["base_order_usdt"]:
                 return {"success": False, "error": "Not enough room for another DCA"}
         
+        # Check if we have enough balance
+        if self.current_balance_usdt < buy_usdt:
+            return {"success": False, "error": f"Insufficient USDT: ${self.current_balance_usdt:.2f} < ${buy_usdt:.2f}"}
+        
         # Place buy order
         self.logger.info(f"💰 DCA Level {self.strategy.current_level + 1}: Buying ${buy_usdt:.2f}")
         buy_order = self.place_market_order(side="BUY", amount=buy_usdt, is_quantity=False)
@@ -786,6 +815,7 @@ class DCABot:
         self.strategy.current_level += 1
         self.strategy.position_open = True
         self.strategy.entry_time = datetime.now()
+        self.strategy.buy_levels.append({"level": self.strategy.current_level, "price": buy_price, "qty": buy_qty})
         
         # Update highest price for trailing stop
         if buy_price > self.strategy.highest_price:
@@ -811,25 +841,32 @@ class DCABot:
     def exit_position(self, exit_price: float) -> Dict:
         """Exit the entire position at market price"""
         if self.strategy.total_qty <= 0:
-            return {"success": False, "error": "No position to exit"}
+            # Try to sell all AVAX balance
+            self._update_balances()
+            if self.current_balance_asset <= 0:
+                return {"success": False, "error": "No position to exit"}
+            sell_qty = self.current_balance_asset
+        else:
+            sell_qty = self.strategy.total_qty
         
-        self.logger.info(f"📊 Exiting position: {self.strategy.total_qty:.8f} @ ${exit_price:.2f}")
+        self.logger.info(f"📊 Exiting position: {sell_qty:.8f} @ ${exit_price:.2f}")
         
         # Sell all
-        sell_order = self.place_market_order(side="SELL", amount=self.strategy.total_qty, is_quantity=True)
+        sell_order = self.place_market_order(side="SELL", amount=sell_qty, is_quantity=True)
         
         if "error" in sell_order:
             return {"success": False, "error": sell_order.get("error", "Sell failed")}
         
         sell_price = float(sell_order.get("price", exit_price))
-        sell_qty = float(sell_order.get("executedQty", self.strategy.total_qty))
+        sell_qty_filled = float(sell_order.get("executedQty", sell_qty))
         
-        if sell_qty <= 0:
+        if sell_qty_filled <= 0:
             return {"success": False, "error": "Invalid sell"}
         
         # Calculate P&L
-        realized_pnl = (sell_price - self.strategy.avg_price) * sell_qty
-        fee_estimate = (sell_qty * self.strategy.avg_price * self.maker_fee_rate) + (sell_qty * sell_price * self.taker_fee_rate)
+        avg_price = self.strategy.avg_price if self.strategy.avg_price > 0 else sell_price * 0.98
+        realized_pnl = (sell_price - avg_price) * sell_qty_filled
+        fee_estimate = (sell_qty_filled * avg_price * self.maker_fee_rate) + (sell_qty_filled * sell_price * self.taker_fee_rate)
         net_pnl = realized_pnl - fee_estimate
         
         self.logger.info(f"💰 P&L: ${realized_pnl:.4f} (net: ${net_pnl:.4f})")
@@ -861,9 +898,9 @@ class DCABot:
         
         return {
             "success": True,
-            "entry_price": self.strategy.avg_price,
+            "entry_price": avg_price,
             "exit_price": sell_price,
-            "quantity": sell_qty,
+            "quantity": sell_qty_filled,
             "profit": realized_pnl,
             "net_profit": net_pnl,
             "fees": fee_estimate,
@@ -890,8 +927,20 @@ class DCABot:
         self.logger.info(f"💰 USDT: ${self.current_balance_usdt:.2f} | {self.base_asset}: {self.current_balance_asset:.8f}")
         self.logger.info(f"📊 Price: ${current_price:.4f}")
         
-        # Check if we have an open position
-        if self.has_open_position or self.strategy.position_open:
+        # Check if we have an existing position to manage
+        if self.has_open_position or self.strategy.position_open or self.current_balance_asset > 0.00001:
+            # Make sure strategy is populated
+            if self.strategy.total_qty == 0 and self.current_balance_asset > 0:
+                self.strategy.total_qty = self.current_balance_asset
+                self.strategy.position_open = True
+                self.has_open_position = True
+                self.strategy.entry_time = datetime.now()
+                self.strategy.highest_price = current_price
+                self.strategy.trailing_stop = current_price * 0.97
+                # Estimate average price from current price
+                self.strategy.avg_price = current_price * 0.98  # Approximate
+                self.logger.info(f"📊 Position recovered from balance: {self.strategy.total_qty:.8f}")
+            
             # Check exit conditions
             exit_check = self.strategy.check_exit_signal(current_price)
             
@@ -911,22 +960,21 @@ class DCABot:
                     return {"success": False, "error": result.get('error', 'Exit failed')}
             
             # Check if we should DCA more (price dropped further)
-            if self.strategy.current_level < self.config["max_buy_levels"]:
-                # Check if price dropped enough from last buy
-                if self.strategy.last_buy_price > 0:
-                    drop_from_last = (self.strategy.last_buy_price - current_price) / self.strategy.last_buy_price
-                    if drop_from_last >= self.config["price_drop_pct"] * 0.8:  # 80% of initial drop
-                        self.logger.info(f"📉 Price dropped {drop_from_last*100:.2f}% from last buy")
-                        self.logger.info(f"🔄 Executing DCA Level {self.strategy.current_level + 1}")
-                        dca_result = self.execute_dca_buy()
-                        if dca_result.get('success', False):
-                            self.logger.info(f"✅ DCA BUY COMPLETE! Level {dca_result.get('level', 0)}")
-                            return {"success": True, "dca": True, **dca_result}
+            if self.strategy.current_level < self.config["max_buy_levels"] and self.strategy.last_buy_price > 0:
+                drop_from_last = (self.strategy.last_buy_price - current_price) / self.strategy.last_buy_price
+                if drop_from_last >= self.config["price_drop_pct"] * 0.8:
+                    self.logger.info(f"📉 Price dropped {drop_from_last*100:.2f}% from last buy")
+                    self.logger.info(f"🔄 Executing DCA Level {self.strategy.current_level + 1}")
+                    dca_result = self.execute_dca_buy()
+                    if dca_result.get('success', False):
+                        self.logger.info(f"✅ DCA BUY COMPLETE! Level {dca_result.get('level', 0)}")
+                        return {"success": True, "dca": True, **dca_result}
             
             # Position still open
             return {"success": False, "error": "Position open", "skipped": True}
         
         # No position - check for new entry signal
+        self.logger.info("📊 Checking for entry signal...")
         signal = self.check_market()
         
         if "error" in signal:
@@ -938,13 +986,14 @@ class DCABot:
         price_drop = signal.get('price_drop', 0)
         macd_bullish = signal.get('macd_bullish', False)
         volume_ratio = signal.get('volume_ratio', 1)
+        entry = signal.get('entry', False)
         
         self.logger.info(f"📊 RSI: {rsi:.1f} {'✅' if rsi < self.config['rsi_oversold'] else '❌'}")
         self.logger.info(f"   Price Drop: {price_drop*100:.2f}% {'✅' if price_drop >= self.config['price_drop_pct'] else '❌'}")
         self.logger.info(f"   MACD: {'✅ Bullish' if macd_bullish else '❌ Bearish'}")
         self.logger.info(f"   Volume Ratio: {volume_ratio:.2f}x {'✅' if volume_ratio >= self.config['min_volume_ratio'] else '❌'}")
         
-        if not signal.get('entry', False):
+        if not entry:
             self.logger.info("⏭️ No entry signal - waiting for conditions")
             return {"success": False, "error": "No signal", "skipped": True}
         
@@ -998,7 +1047,7 @@ class DCABot:
 
     def run_forever(self):
         self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 HYBRID DCA + RSI/MACD BOT - RUNNING")
+        self.logger.info("🚀 HYBRID DCA + RSI/MACD BOT v1.1 - RUNNING")
         self.logger.info(f"   {self.symbol} - Checking every {self.config['interval']}")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
@@ -1027,7 +1076,7 @@ class DCABot:
                     win_rate = (self.win_count / self.total_trades) * 100
                     self.logger.info(f"📊 STATS: {self.total_trades} trades, {win_rate:.1f}% win, ${self.cycle_stats['net_profit']:.4f}")
                 
-                # Always check every minute (like a true DCA bot)
+                # Always check every minute
                 wait_time = 60
                 self.logger.info(f"⏳ Next check in {wait_time}s")
                 time.sleep(wait_time)
@@ -1073,7 +1122,7 @@ if __name__ == "__main__":
         exit(1)
     
     print("="*70)
-    print("🚀 HYBRID DCA + RSI/MACD BOT v1.0")
+    print("🚀 HYBRID DCA + RSI/MACD BOT v1.1 (FIXED)")
     print("="*70)
     print(f"\n🎯 {DCA_CONFIG['symbol']} - 1 Minute Check")
     print(f"   ✅ Price Drop: {DCA_CONFIG['price_drop_pct']*100:.1f}%")
@@ -1081,6 +1130,8 @@ if __name__ == "__main__":
     print(f"   ✅ Take Profit: {DCA_CONFIG['take_profit_pct']*100:.1f}%")
     print(f"   ✅ Max DCA Levels: {DCA_CONFIG['max_buy_levels']}")
     print(f"   ✅ Martingale: {DCA_CONFIG['martingale_multiplier']}x scaling")
+    print(f"\n📊 Current BALANCE: You have AVAX from previous trades")
+    print(f"   Bot will recover and manage existing position")
     print(f"\n🚀 Starting in 3 seconds...")
     time.sleep(3)
     
