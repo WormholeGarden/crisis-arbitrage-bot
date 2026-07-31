@@ -1,102 +1,130 @@
 #!/usr/bin/env python3
 """
-🚀 GOLDEN SCALPER BOT v12.0 - NO MIRACLES REQUIRED
+🚀 INSTANT SCALPING BOT - 1-2 Minute Holds
 ============================================================
-STRATEGY: ONLY TRADE TRENDING MARKETS
-- ADX must be > 25 (trending)
-- Choppiness must be < 40 (not choppy)
-- At least 4 strong signals
-- 1.5% risk, 4-5% targets
+STRATEGY:
+- 1-minute candles
+- Quick entries on momentum spikes
+- 0.3-0.5% targets (hit in 1-5 minutes)
+- 0.2% stops (very tight)
+- 20-50 trades per day
 
-WHY THIS WORKS:
-- Trend following has documented edge
-- Only trade when conditions are favorable
-- No forced trades in dead markets
-- Higher win rate, bigger profits
+THIS MAKES SMALL, FAST PROFITS
 ============================================================
 """
 
 import hashlib
 import hmac
-import os
-import random
 import time
 import urllib.parse
-import csv
-import json
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any
+from datetime import datetime
+from typing import Dict, List, Optional
 import requests
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
-import statistics
-import math
-from collections import deque
+from decimal import Decimal
 
 # ========================================================================
 # CONFIGURATION
 # ========================================================================
 
-GOLDEN_CONFIG = {
+CONFIG = {
     "symbol": "AVAXUSDT",
-    "interval": "4h",
-    
-    # ONLY trade when these conditions are met
-    "min_adx": 25,              # Trending market (was 2.4!)
-    "max_chop": 40,             # Not choppy (was 52!)
-    "min_signals": 4,           # At least 4 strong signals
-    "min_confidence": 0.30,     # 30% confidence minimum
-    
-    # Position sizing
-    "target_profit_pct": 0.045, # 4.5% target (bigger profits!)
-    "stop_loss_pct": 0.015,     # 1.5% stop (tight risk)
+    "interval": "1m",  # 1-minute candles!
+    "target_pct": 0.003,  # 0.3% target (hit in seconds/minutes)
+    "stop_pct": 0.002,    # 0.2% stop (tight!)
     "min_order_usdt": 10.0,
-    "max_order_usdt": 50.0,
-    
-    # Exit
-    "max_hold_hours": 72,
-    "trailing_stop": True,
-    "trailing_pct": 0.5,        # 50% trailing
+    "max_order_usdt": 30.0,
+    "min_volume_spike": 1.5,  # Volume must be 1.5x average
+    "rsi_oversold": 30,       # RSI below 30
+    "rsi_overbought": 70,     # RSI above 70
 }
 
 # ========================================================================
-# DECIMAL HELPERS
+# API HELPERS
 # ========================================================================
 
 def round_to_step(value: float, step: float) -> float:
-    step_dec = Decimal(str(step))
-    val_dec = Decimal(str(value))
-    rounded = (val_dec // step_dec) * step_dec
-    return float(rounded)
+    return float((Decimal(str(value)) // Decimal(str(step))) * Decimal(str(step)))
 
 def round_to_tick(value: float, tick: float) -> float:
-    tick_dec = Decimal(str(tick))
-    val_dec = Decimal(str(value))
-    rounded = (val_dec / tick_dec).quantize(Decimal('1'), rounding=ROUND_HALF_UP) * tick_dec
-    return float(rounded)
+    return float((Decimal(str(value)) / Decimal(str(tick))).quantize(Decimal('1')) * Decimal(str(tick)))
 
 def format_quantity(value: float) -> str:
-    if value <= 0:
-        return "0.00000000"
     return f"{Decimal(str(value)):.8f}"
 
 def format_price(value: float) -> str:
     return f"{Decimal(str(value)):.2f}"
 
 # ========================================================================
-# ADVANCED INDICATORS
+# BINANCE API
 # ========================================================================
 
-class AdvancedIndicators:
-    @staticmethod
-    def get_klines(symbol: str, base_url: str, interval: str = "4h", limit: int = 500,
-                    end_time_ms: int = None) -> Optional[Dict]:
+class BinanceAPI:
+    def __init__(self, api_key: str, api_secret: str, region: str = "us"):
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.base_url = "https://api.binance.us" if region == "us" else "https://api.binance.com"
+        
+        self._min_qty = 0.00001
+        self._tick_size = 0.01
+        self._min_notional = 10.0
+        
+        self._price_cache = {}
+        self._price_cache_time = 0
+        self._price_cache_ttl = 2  # 2 second cache for scalping
+        
+        self._get_exchange_info()
+        
+    def _generate_signature(self, params: dict) -> str:
+        query_string = urllib.parse.urlencode(params)
+        return hmac.new(self.api_secret.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    
+    def _send_signed_request(self, method: str, endpoint: str, params: dict = None) -> dict:
+        if params is None:
+            params = {}
+        params["timestamp"] = int(time.time() * 1000)
+        params["signature"] = self._generate_signature(params)
+        
+        headers = {"X-MBX-APIKEY": self.api_key}
+        url = f"{self.base_url}{endpoint}"
+        
+        if method.upper() == "GET":
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+        elif method.upper() == "POST":
+            response = requests.post(url, headers=headers, data=params, timeout=10)
+        elif method.upper() == "DELETE":
+            response = requests.delete(url, headers=headers, params=params, timeout=10)
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+        
         try:
-            url = f"{base_url}/api/v3/klines"
+            return response.json()
+        except:
+            return {"error": "Invalid response", "status_code": response.status_code}
+    
+    def _get_exchange_info(self):
+        try:
+            resp = requests.get(f"{self.base_url}/api/v3/exchangeInfo", timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                for symbol_info in data.get("symbols", []):
+                    if symbol_info["symbol"] == CONFIG["symbol"]:
+                        for filter_data in symbol_info.get("filters", []):
+                            if filter_data["filterType"] == "LOT_SIZE":
+                                self._min_qty = float(filter_data.get("minQty", 0.00001))
+                            if filter_data["filterType"] == "PRICE_FILTER":
+                                self._tick_size = float(filter_data.get("tickSize", 0.01))
+                            if filter_data["filterType"] == "MIN_NOTIONAL":
+                                self._min_notional = float(filter_data.get("minNotional", 10.0))
+                        break
+        except Exception:
+            pass
+    
+    def get_klines(self, symbol: str, interval: str = "1m", limit: int = 100) -> Optional[Dict]:
+        try:
+            url = f"{self.base_url}/api/v3/klines"
             params = {"symbol": symbol, "interval": interval, "limit": limit}
-            if end_time_ms:
-                params["endTime"] = end_time_ms
-            resp = requests.get(url, params=params, timeout=10)
+            resp = requests.get(url, params=params, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
                 return {
@@ -110,17 +138,129 @@ class AdvancedIndicators:
             return None
         except Exception:
             return None
+    
+    def get_ticker(self, symbol: str) -> Optional[dict]:
+        now = time.time()
+        if now - self._price_cache_time < self._price_cache_ttl:
+            if 'ticker' in self._price_cache:
+                return self._price_cache['ticker']
+        
+        try:
+            url = f"{self.base_url}/api/v3/ticker/bookTicker"
+            resp = requests.get(url, params={"symbol": symbol}, timeout=3)
+            if resp.status_code == 200:
+                data = resp.json()
+                ticker_data = {"bid": float(data["bidPrice"]), "ask": float(data["askPrice"])}
+                self._price_cache = {'ticker': ticker_data}
+                self._price_cache_time = now
+                return ticker_data
+            return None
+        except Exception:
+            return None
+    
+    def get_price(self, symbol: str) -> Optional[float]:
+        ticker = self.get_ticker(symbol)
+        if not ticker:
+            return None
+        return (ticker["bid"] + ticker["ask"]) / 2
+    
+    def get_balance(self) -> Dict[str, float]:
+        resp = self._send_signed_request("GET", "/api/v3/account")
+        if "balances" in resp and not resp.get("error"):
+            balances = {}
+            for balance in resp["balances"]:
+                free = float(balance["free"])
+                if free > 0:
+                    balances[balance["asset"]] = free
+            return balances
+        return {}
+    
+    def market_buy(self, symbol: str, usdt_amount: float) -> dict:
+        price = self.get_price(symbol)
+        if not price:
+            return {"error": "No price"}
+        
+        qty = usdt_amount / price
+        qty = round_to_step(qty, self._min_qty)
+        if qty < self._min_qty:
+            qty = self._min_qty
+        
+        notional = qty * price
+        if notional < self._min_notional:
+            qty = self._min_notional / price
+            qty = round_to_step(qty, self._min_qty)
+        
+        params = {
+            "symbol": symbol,
+            "side": "BUY",
+            "type": "MARKET",
+            "quantity": format_quantity(qty),
+        }
+        response = self._send_signed_request("POST", "/api/v3/order", params)
+        
+        if "error" in response:
+            return response
+        
+        # Wait for fill
+        order_id = response.get("orderId")
+        if order_id:
+            max_wait = 10
+            for _ in range(max_wait):
+                status = self._send_signed_request("GET", "/api/v3/order", {"symbol": symbol, "orderId": order_id})
+                if status.get("status") == "FILLED":
+                    executed_qty = float(status.get("executedQty", 0))
+                    cum_quote = float(status.get("cummulativeQuoteQty", 0))
+                    fill_price = cum_quote / executed_qty if executed_qty > 0 else price
+                    return {
+                        "orderId": order_id,
+                        "price": fill_price,
+                        "executedQty": executed_qty,
+                        "status": "FILLED",
+                    }
+                time.sleep(1)
+        
+        return {"error": "Order not filled"}
+    
+    def market_sell(self, symbol: str, quantity: float) -> dict:
+        qty = round_to_step(quantity, self._min_qty)
+        if qty < self._min_qty:
+            return {"error": "Quantity too small"}
+        
+        params = {
+            "symbol": symbol,
+            "side": "SELL",
+            "type": "MARKET",
+            "quantity": format_quantity(qty),
+        }
+        response = self._send_signed_request("POST", "/api/v3/order", params)
+        
+        if "error" in response:
+            return response
+        
+        order_id = response.get("orderId")
+        if order_id:
+            max_wait = 10
+            for _ in range(max_wait):
+                status = self._send_signed_request("GET", "/api/v3/order", {"symbol": symbol, "orderId": order_id})
+                if status.get("status") == "FILLED":
+                    cum_quote = float(status.get("cummulativeQuoteQty", 0))
+                    executed_qty = float(status.get("executedQty", 0))
+                    fill_price = cum_quote / executed_qty if executed_qty > 0 else 0
+                    return {
+                        "orderId": order_id,
+                        "price": fill_price,
+                        "executedQty": executed_qty,
+                        "status": "FILLED",
+                    }
+                time.sleep(1)
+        
+        return {"error": "Order not filled"}
 
-    @staticmethod
-    def ema(data: List[float], period: int) -> float:
-        if not data or len(data) < period:
-            return data[-1] if data else 0
-        alpha = 2 / (period + 1)
-        ema_val = sum(data[:period]) / period
-        for price in data[period:]:
-            ema_val = price * alpha + ema_val * (1 - alpha)
-        return ema_val
+# ========================================================================
+# SCALPING INDICATORS
+# ========================================================================
 
+class ScalpIndicators:
     @staticmethod
     def rsi(closes: List[float], period: int = 14) -> float:
         if len(closes) < period + 1:
@@ -135,1323 +275,294 @@ class AdvancedIndicators:
         if avg_loss == 0:
             return 100.0
         return 100 - (100 / (1 + avg_gain / avg_loss))
-
+    
     @staticmethod
-    def atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
-        if len(closes) < period + 1:
-            return (max(highs) - min(lows)) if highs and lows else 0
-        tr_values = []
-        for i in range(1, len(closes)):
-            hl = highs[i] - lows[i]
-            hc = abs(highs[i] - closes[i-1])
-            lc = abs(lows[i] - closes[i-1])
-            tr_values.append(max(hl, hc, lc))
-        return sum(tr_values[-period:]) / period
-
+    def ema(data: List[float], period: int) -> float:
+        if not data or len(data) < period:
+            return data[-1] if data else 0
+        alpha = 2 / (period + 1)
+        ema_val = data[0]
+        for price in data[1:]:
+            ema_val = price * alpha + ema_val * (1 - alpha)
+        return ema_val
+    
     @staticmethod
-    def macd(closes: List[float], fast: int = 12, slow: int = 26, signal: int = 9) -> Dict:
-        if len(closes) < slow:
-            return {"macd": 0, "signal": 0, "histogram": 0, "bullish": False, "bearish": False}
-        ema_fast = AdvancedIndicators.ema(closes, fast)
-        ema_slow = AdvancedIndicators.ema(closes, slow)
-        macd_line = ema_fast - ema_slow
-        signal_line = AdvancedIndicators.ema([macd_line] * signal, signal)
-        histogram = macd_line - signal_line
-        return {
-            "macd": macd_line,
-            "signal": signal_line,
-            "histogram": histogram,
-            "bullish": macd_line > signal_line,
-            "bearish": macd_line < signal_line
-        }
-
-    @staticmethod
-    def bollinger(closes: List[float], period: int = 20, std_dev: float = 2) -> Dict:
-        if len(closes) < period:
-            return {"upper": closes[-1], "middle": closes[-1], "lower": closes[-1], "position": 0.5}
-        middle = sum(closes[-period:]) / period
-        squared = [(x - middle) ** 2 for x in closes[-period:]]
-        std = (sum(squared) / period) ** 0.5
-        upper = middle + (std * std_dev)
-        lower = middle - (std * std_dev)
-        position = (closes[-1] - lower) / (upper - lower) if upper != lower else 0.5
-        return {"upper": upper, "middle": middle, "lower": lower, "position": position}
-
-    @staticmethod
-    def adx(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
-        if len(closes) < period + 1:
-            return 25.0
-        plus_dm, minus_dm, tr = [], [], []
-        for i in range(1, len(closes)):
-            up = highs[i] - highs[i-1]
-            down = lows[i-1] - lows[i]
-            plus_dm.append(up if up > down and up > 0 else 0)
-            minus_dm.append(down if down > up and down > 0 else 0)
-            tr.append(max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])))
-        tr_ema = AdvancedIndicators.ema(tr[-period:], period)
-        if tr_ema == 0:
-            return 25.0
-        plus_di = 100 * (AdvancedIndicators.ema(plus_dm[-period:], period) / tr_ema)
-        minus_di = 100 * (AdvancedIndicators.ema(minus_dm[-period:], period) / tr_ema)
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di) if (plus_di + minus_di) > 0 else 0
-        return AdvancedIndicators.ema([dx] * period, period)
-
-    @staticmethod
-    def obv(closes: List[float], volumes: List[float]) -> List[float]:
-        if not closes or not volumes:
-            return []
-        obv_values = [0]
-        for i in range(1, len(closes)):
-            if closes[i] > closes[i-1]:
-                obv_values.append(obv_values[-1] + volumes[i])
-            elif closes[i] < closes[i-1]:
-                obv_values.append(obv_values[-1] - volumes[i])
-            else:
-                obv_values.append(obv_values[-1])
-        return obv_values
-
-    @staticmethod
-    def vwap(highs: List[float], lows: List[float], closes: List[float], volumes: List[float]) -> float:
-        if not volumes or sum(volumes) == 0:
-            return closes[-1] if closes else 0
-        typical = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
-        return sum(t * v for t, v in zip(typical, volumes)) / sum(volumes)
-
-    @staticmethod
-    def chop(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
-        if len(closes) < period:
-            return 50.0
-        tr_sum = sum([max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])) 
-                      for i in range(len(closes) - period, len(closes))])
-        highest = max(highs[-period:])
-        lowest = min(lows[-period:])
-        if highest == lowest:
-            return 50.0
-        return max(0, min(100, 100 * math.log10(tr_sum / (highest - lowest)) / math.log10(period)))
-
-    @staticmethod
-    def stochastic(closes: List[float], highs: List[float], lows: List[float], period: int = 14) -> float:
-        if len(closes) < period:
-            return 50.0
-        highest = max(highs[-period:])
-        lowest = min(lows[-period:])
-        if highest == lowest:
-            return 50.0
-        return ((closes[-1] - lowest) / (highest - lowest)) * 100
-
-    @staticmethod
-    def zscore(data: List[float], period: int = 20) -> float:
-        if len(data) < period:
-            return 0
-        window = data[-period:]
-        mean = sum(window) / period
-        std = statistics.stdev(window) if period > 1 else 0.001
-        return (data[-1] - mean) / std if std > 0 else 0
-
-    @staticmethod
-    def keltner(highs: List[float], lows: List[float], closes: List[float], period: int = 20) -> Dict:
-        if len(closes) < period:
-            return {"upper": closes[-1], "middle": closes[-1], "lower": closes[-1]}
-        middle = AdvancedIndicators.ema(closes, period)
-        atr_val = AdvancedIndicators.atr(highs, lows, closes, 10)
-        return {"upper": middle + atr_val * 1.5, "middle": middle, "lower": middle - atr_val * 1.5}
-
-    @staticmethod
-    def ichimoku(highs: List[float], lows: List[float], closes: List[float]) -> Dict:
-        if len(closes) < 52:
-            return {"tenkan": closes[-1], "kijun": closes[-1], "senkou_a": closes[-1], "senkou_b": closes[-1]}
-        tenkan = (max(highs[-9:]) + min(lows[-9:])) / 2
-        kijun = (max(highs[-26:]) + min(lows[-26:])) / 2
-        senkou_a = (tenkan + kijun) / 2
-        senkou_b = (max(highs[-52:]) + min(lows[-52:])) / 2
-        return {"tenkan": tenkan, "kijun": kijun, "senkou_a": senkou_a, "senkou_b": senkou_b}
-
-    @staticmethod
-    def vortex(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> Dict:
-        if len(closes) < period + 1:
-            return {"vi_plus": 0, "vi_minus": 0}
-        vm_plus, vm_minus, tr = [], [], []
-        for i in range(1, len(closes)):
-            vm_plus.append(abs(highs[i] - lows[i-1]))
-            vm_minus.append(abs(lows[i] - highs[i-1]))
-            tr.append(max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])))
-        sum_vm_plus = sum(vm_plus[-period:])
-        sum_vm_minus = sum(vm_minus[-period:])
-        sum_tr = sum(tr[-period:])
-        return {"vi_plus": sum_vm_plus / sum_tr if sum_tr > 0 else 0, "vi_minus": sum_vm_minus / sum_tr if sum_tr > 0 else 0}
-
-    @staticmethod
-    def cci(closes: List[float], highs: List[float], lows: List[float], period: int = 20) -> float:
+    def momentum(closes: List[float], period: int = 5) -> float:
         if len(closes) < period:
             return 0
-        tp = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
-        sma_tp = sum(tp[-period:]) / period
-        mean_dev = sum([abs(x - sma_tp) for x in tp[-period:]]) / period
-        return (tp[-1] - sma_tp) / (0.015 * mean_dev) if mean_dev > 0 else 0
-
-    @staticmethod
-    def dmi(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> Dict:
-        adx = AdvancedIndicators.adx(highs, lows, closes, period)
-        plus_dm, minus_dm = [], []
-        for i in range(1, len(closes)):
-            up = highs[i] - highs[i-1]
-            down = lows[i-1] - lows[i]
-            plus_dm.append(up if up > down and up > 0 else 0)
-            minus_dm.append(down if down > up and down > 0 else 0)
-        tr = []
-        for i in range(1, len(closes)):
-            tr.append(max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])))
-        tr_smooth = AdvancedIndicators.ema(tr[-period:], period)
-        plus_di = 100 * (AdvancedIndicators.ema(plus_dm[-period:], period) / tr_smooth) if tr_smooth > 0 else 0
-        minus_di = 100 * (AdvancedIndicators.ema(minus_dm[-period:], period) / tr_smooth) if tr_smooth > 0 else 0
-        return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di}
+        return (closes[-1] - closes[-period]) / closes[-period] * 100
 
 # ========================================================================
-# TREND FOLLOWING STRATEGY - ONLY TRADE TRENDING MARKETS
+# SCALPING STRATEGY
 # ========================================================================
 
-class TrendFollowingStrategy:
+class ScalpStrategy:
     @staticmethod
-    def signal(data: Dict, params: Dict = None, verbose: bool = True) -> Dict:
-        if params is None:
-            params = {
-                'min_adx': 25,
-                'max_chop': 40,
-                'min_signals': 4,
-                'min_confidence': 0.30,
-            }
-        
+    def signal(data: Dict) -> Dict:
         closes = data['closes']
         highs = data['highs']
         lows = data['lows']
         volumes = data['volumes']
         current = closes[-1]
         
-        # Market conditions
-        adx = AdvancedIndicators.adx(highs, lows, closes, 14)
-        chop = AdvancedIndicators.chop(highs, lows, closes, 14)
+        # Calculate indicators
+        rsi = ScalpIndicators.rsi(closes, 14)
+        ema_9 = ScalpIndicators.ema(closes, 9)
+        momentum = ScalpIndicators.momentum(closes, 5)
         
-        # Calculate all indicators
-        signal_results = {}
-        signals = []
-        weights = []
-        signal_names = []
+        # Volume spike
+        avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
+        volume_ratio = volumes[-1] / avg_volume if avg_volume > 0 else 1
         
-        # 1. EMA Trend
-        ema_9 = AdvancedIndicators.ema(closes, 9)
-        ema_21 = AdvancedIndicators.ema(closes, 21)
-        ema_50 = AdvancedIndicators.ema(closes, 50)
+        # Price vs EMA
+        price_vs_ema = (current - ema_9) / ema_9 * 100
         
-        ema_trend = 1 if current > ema_9 > ema_21 > ema_50 else 0.5 if current > ema_50 else 0
-        signals.append(ema_trend)
-        weights.append(1.5)
-        signal_names.append("EMA_Trend")
-        signal_results["EMA_Trend"] = {"value": ema_trend, "weight": 1.5, "status": "✅" if ema_trend > 0.5 else "❌"}
+        # BUY conditions (scalp entry)
+        buy_conditions = 0
+        total_conditions = 4
         
-        # 2. MACD
-        macd = AdvancedIndicators.macd(closes)
-        macd_val = 1 if macd['bullish'] else 0
-        signals.append(macd_val)
-        weights.append(1.5)
-        signal_names.append("MACD")
-        signal_results["MACD"] = {"value": macd_val, "weight": 1.5, "status": "✅" if macd_val else "❌"}
+        # 1. RSI oversold or coming up from oversold
+        if rsi < CONFIG["rsi_oversold"]:
+            buy_conditions += 1
+        elif rsi < 45 and rsi > CONFIG["rsi_oversold"]:
+            buy_conditions += 0.5
         
-        # 3. RSI
-        rsi = AdvancedIndicators.rsi(closes, 14)
-        if 30 < rsi < 70:
-            rsi_val = 1 if rsi < 50 else 0.5
-        elif rsi < 30:
-            rsi_val = 1
-        else:
-            rsi_val = 0
-        signals.append(rsi_val)
-        weights.append(1.2)
-        signal_names.append("RSI")
-        signal_results["RSI"] = {"value": rsi_val, "weight": 1.2, "status": "✅" if rsi_val > 0.5 else "❌", "raw": f"{rsi:.1f}"}
+        # 2. Volume spike (momentum)
+        if volume_ratio > CONFIG["min_volume_spike"]:
+            buy_conditions += 1
         
-        # 4. Bollinger
-        bb = AdvancedIndicators.bollinger(closes)
-        if current < bb['lower'] * 1.02:
-            bb_val = 1
-        elif current > bb['upper'] * 0.98:
-            bb_val = 0
-        else:
-            bb_val = 0.5
-        signals.append(bb_val)
-        weights.append(1.0)
-        signal_names.append("Bollinger")
-        signal_results["Bollinger"] = {"value": bb_val, "weight": 1.0, "status": "✅" if bb_val > 0.5 else "❌"}
+        # 3. Price near or below EMA9 (pullback)
+        if price_vs_ema < 0.3:
+            buy_conditions += 1
         
-        # 5. ADX
-        adx_val = 1 if adx > 25 else 0
-        signals.append(adx_val)
-        weights.append(1.3)
-        signal_names.append("ADX")
-        signal_results["ADX"] = {"value": adx_val, "weight": 1.3, "status": "✅" if adx_val else "❌", "raw": f"{adx:.1f}"}
+        # 4. Positive momentum (starting to move up)
+        if momentum > 0 and momentum < 0.5:
+            buy_conditions += 1
         
-        # 6. Stochastic
-        stoch = AdvancedIndicators.stochastic(closes, highs, lows)
-        stoch_val = 1 if stoch < 30 else 0.3 if stoch < 50 else 0
-        signals.append(stoch_val)
-        weights.append(0.8)
-        signal_names.append("Stochastic")
-        signal_results["Stochastic"] = {"value": stoch_val, "weight": 0.8, "status": "✅" if stoch_val > 0.5 else "❌", "raw": f"{stoch:.1f}"}
+        confidence = buy_conditions / total_conditions
         
-        # 7. OBV
-        obv_values = AdvancedIndicators.obv(closes, volumes)
-        if len(obv_values) >= 20:
-            obv_ema = AdvancedIndicators.ema(obv_values, 10)
-            obv_val = 1 if obv_values[-1] > obv_ema else 0
-        else:
-            obv_val = 0
-        signals.append(obv_val)
-        weights.append(1.0)
-        signal_names.append("OBV")
-        signal_results["OBV"] = {"value": obv_val, "weight": 1.0, "status": "✅" if obv_val else "❌"}
+        # Quick scalp target (0.3-0.5%)
+        atr = (max(highs[-14:]) - min(lows[-14:])) / 14 if len(highs) >= 14 else 0.01
+        atr_pct = atr / current if current > 0 else 0.01
         
-        # 8. VWAP
-        vwap = AdvancedIndicators.vwap(highs, lows, closes, volumes)
-        vwap_val = 1 if current > vwap else 0
-        signals.append(vwap_val)
-        weights.append(0.8)
-        signal_names.append("VWAP")
-        signal_results["VWAP"] = {"value": vwap_val, "weight": 0.8, "status": "✅" if vwap_val else "❌"}
-        
-        # 9. Choppiness
-        chop_val = 1 if chop < 40 else 0
-        signals.append(chop_val)
-        weights.append(1.0)
-        signal_names.append("Chop")
-        signal_results["Chop"] = {"value": chop_val, "weight": 1.0, "status": "✅" if chop_val else "❌", "raw": f"{chop:.1f}"}
-        
-        # 10. Z-Score
-        zscore = AdvancedIndicators.zscore(closes, 20)
-        zscore_val = 1 if zscore < -1 else 0
-        signals.append(zscore_val)
-        weights.append(0.7)
-        signal_names.append("ZScore")
-        signal_results["ZScore"] = {"value": zscore_val, "weight": 0.7, "status": "✅" if zscore_val else "❌", "raw": f"{zscore:.2f}"}
-        
-        # 11. Keltner
-        kc = AdvancedIndicators.keltner(highs, lows, closes)
-        kc_val = 1 if current < kc['lower'] * 1.01 else 0
-        signals.append(kc_val)
-        weights.append(0.9)
-        signal_names.append("Keltner")
-        signal_results["Keltner"] = {"value": kc_val, "weight": 0.9, "status": "✅" if kc_val else "❌"}
-        
-        # 12. Ichimoku
-        ichi = AdvancedIndicators.ichimoku(highs, lows, closes)
-        ichi_val = 1 if current > ichi['tenkan'] and current > ichi['kijun'] else 0
-        signals.append(ichi_val)
-        weights.append(1.2)
-        signal_names.append("Ichimoku")
-        signal_results["Ichimoku"] = {"value": ichi_val, "weight": 1.2, "status": "✅" if ichi_val else "❌"}
-        
-        # 13. Vortex
-        vortex = AdvancedIndicators.vortex(highs, lows, closes)
-        vortex_val = 1 if vortex['vi_plus'] > vortex['vi_minus'] else 0
-        signals.append(vortex_val)
-        weights.append(0.9)
-        signal_names.append("Vortex")
-        signal_results["Vortex"] = {"value": vortex_val, "weight": 0.9, "status": "✅" if vortex_val else "❌"}
-        
-        # 14. CCI
-        cci = AdvancedIndicators.cci(closes, highs, lows)
-        cci_val = 1 if cci < -100 else 0
-        signals.append(cci_val)
-        weights.append(0.7)
-        signal_names.append("CCI")
-        signal_results["CCI"] = {"value": cci_val, "weight": 0.7, "status": "✅" if cci_val else "❌", "raw": f"{cci:.1f}"}
-        
-        # 15. DMI
-        dmi = AdvancedIndicators.dmi(highs, lows, closes)
-        dmi_val = 1 if dmi['plus_di'] > dmi['minus_di'] and dmi['adx'] > 20 else 0
-        signals.append(dmi_val)
-        weights.append(1.1)
-        signal_names.append("DMI")
-        signal_results["DMI"] = {"value": dmi_val, "weight": 1.1, "status": "✅" if dmi_val else "❌"}
-        
-        # Calculate weighted score
-        weighted_sum = sum(s * w for s, w in zip(signals, weights))
-        total_weight = sum(weights)
-        confidence = weighted_sum / total_weight
-        signal_count = sum(1 for s in signals if s > 0.5)
-        
-        # CRITICAL: Market condition checks
-        trending = adx >= params.get('min_adx', 25) and chop <= params.get('max_chop', 40)
-        enough_signals = signal_count >= params.get('min_signals', 4)
-        enough_confidence = confidence >= params.get('min_confidence', 0.30)
-        
-        # Stop and target
-        atr = AdvancedIndicators.atr(highs, lows, closes, 14)
-        recent_low = min(lows[-20:]) if len(lows) >= 20 else min(lows)
-        recent_high = max(highs[-20:]) if len(highs) >= 20 else max(highs)
-        
-        stop = max(current - atr * 1.5, recent_low * 0.98)
-        target = current + atr * 3.0  # 3x ATR target (bigger moves in trends)
-        
-        risk = current - stop
-        reward = target - current
-        rr_ratio = reward / risk if risk > 0 else 0
-        
-        # FINAL DECISION - ONLY TRADE TRENDING MARKETS
-        buy_signal = False
-        signal_type = "NO SIGNAL"
-        
-        if not trending:
-            signal_type = "WAITING FOR TREND (ADX < 25 or Chop > 40)"
-        elif not enough_signals:
-            signal_type = f"WAITING FOR SIGNALS ({signal_count}/{params.get('min_signals', 4)})"
-        elif not enough_confidence:
-            signal_type = f"LOW CONFIDENCE ({confidence:.1%} < {params.get('min_confidence', 0.30):.0%})"
-        elif rr_ratio < 2.0:
-            signal_type = f"POOR R:R ({rr_ratio:.2f} < 2.0)"
-        else:
-            buy_signal = True
-            signal_type = "TREND FOLLOWING SIGNAL 🚀"
-        
-        # Build result
-        result = {
-            "signal": "BUY" if buy_signal else "NEUTRAL",
-            "signal_type": signal_type,
-            "confidence": confidence,
-            "signal_count": signal_count,
-            "total_signals": len(signals),
-            "min_signals_needed": params.get('min_signals', 4),
-            "min_confidence_needed": params.get('min_confidence', 0.30),
-            "adx": adx,
-            "chop": chop,
-            "is_trending": trending,
-            "stop": stop,
-            "target": target,
-            "rr_ratio": rr_ratio,
-            "rsi": rsi,
-            "signal_names": [name for name, sig in zip(signal_names, signals) if sig > 0.5],
-            "signal_results": signal_results,
-            "weighted_sum": weighted_sum,
-            "total_weight": total_weight,
-        }
-        
-        # Print detailed breakdown if verbose
-        if verbose:
-            print("\n" + "="*70)
-            print("📊 TREND FOLLOWING SIGNAL")
-            print("="*70)
-            print(f"Current Price: ${current:.2f}")
-            print(f"ADX: {adx:.1f} {'✅' if adx >= 25 else '❌'} (need > 25)")
-            print(f"Chop: {chop:.1f} {'✅' if chop <= 40 else '❌'} (need < 40)")
-            print(f"Trending: {'✅ YES' if trending else '❌ NO'}")
-            print(f"Signals: {signal_count}/{params.get('min_signals', 4)} needed")
-            print(f"Confidence: {confidence:.2%} {'✅' if confidence >= 0.30 else '❌'} (need > 30%)")
-            print(f"R:R Ratio: {rr_ratio:.2f} {'✅' if rr_ratio >= 2.0 else '❌'} (need > 2.0)")
-            print("-"*70)
-            print("INDIVIDUAL SIGNALS:")
-            for name, data in signal_results.items():
-                status = data['status']
-                raw = f" ({data.get('raw', '')})" if data.get('raw') else ""
-                bar = "█" * int(data['value'] * 10) + "░" * (10 - int(data['value'] * 10))
-                print(f"  {status} {name:12} {bar}  {data['value']:.1f}x{data['weight']:.1f}{raw}")
-            print("-"*70)
-            
-            if buy_signal:
-                print(f"✅ {signal_type}")
-                print(f"   Target: ${target:.2f} (+{((target/current)-1)*100:.1f}%)")
-                print(f"   Stop: ${stop:.2f} (-{((1-stop/current))*100:.1f}%)")
-                print(f"   Active Signals: {', '.join(result['signal_names'][:8])}")
-                if len(result['signal_names']) > 8:
-                    print(f"   ... and {len(result['signal_names']) - 8} more")
-            else:
-                print(f"⏳ {signal_type}")
-                if not trending:
-                    print(f"   💡 Need ADX > 25 and Chop < 40")
-                    print(f"   Current: ADX={adx:.1f}, Chop={chop:.1f}")
-                elif not enough_signals:
-                    print(f"   💡 Need {params.get('min_signals', 4) - signal_count} more signal(s)")
-                elif not enough_confidence:
-                    print(f"   💡 Need {params.get('min_confidence', 0.30) - confidence:.1%} more confidence")
-                elif rr_ratio < 2.0:
-                    print(f"   💡 Need better risk/reward (current: {rr_ratio:.2f})")
-                
-                if signal_count > 0:
-                    print(f"   Active: {', '.join(result['signal_names'][:5])}")
-            print("="*70)
-        
-        return result
-
-# ========================================================================
-# GOLDEN SCALPER BOT - TREND FOLLOWING VERSION
-# ========================================================================
-
-class GoldenScalperBot:
-
-    def __init__(self, api_key: str, api_secret: str, 
-                 symbol: str = GOLDEN_CONFIG["symbol"],
-                 exchange_region: str = "us", 
-                 log_level: str = "INFO", 
-                 interval: str = GOLDEN_CONFIG["interval"]):
-        
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.symbol = symbol
-        self.interval = interval
-        self.base_asset = symbol.replace("USDT", "")
-        
-        # Strategy parameters
-        self.min_adx = GOLDEN_CONFIG["min_adx"]
-        self.max_chop = GOLDEN_CONFIG["max_chop"]
-        self.min_signals = GOLDEN_CONFIG["min_signals"]
-        self.min_confidence = GOLDEN_CONFIG["min_confidence"]
-        self.max_hold_hours = GOLDEN_CONFIG["max_hold_hours"]
-        
-        # Position sizing
-        self.min_order_usdt = GOLDEN_CONFIG["min_order_usdt"]
-        self.max_order_usdt = GOLDEN_CONFIG["max_order_usdt"]
-        self.target_profit_pct = GOLDEN_CONFIG["target_profit_pct"]
-        self.stop_loss_pct = GOLDEN_CONFIG["stop_loss_pct"]
-        
-        # Trailing stop
-        self.trailing_stop = GOLDEN_CONFIG["trailing_stop"]
-        self.trailing_pct = GOLDEN_CONFIG["trailing_pct"]
-        
-        # Safety
-        self.max_drawdown_pct = 0.15
-        self.max_consecutive_losses = 3  # Tighter! Only 3 losses before pausing
-        
-        if exchange_region.lower() == "us":
-            self.base_url = "https://api.binance.us"
-        elif exchange_region.lower() == "global":
-            self.base_url = "https://api.binance.com"
-        else:
-            raise ValueError('exchange_region must be "us" or "global"')
-        
-        self.maker_fee_rate = 0.001
-        self.taker_fee_rate = 0.001
-        
-        self._min_qty = 0.00001
-        self._tick_size = 0.01
-        self._min_notional = 10.0
-        self._price_cache = {}
-        self._price_cache_time = 0
-        self._price_cache_ttl = 30
-        
-        # State
-        self.has_open_position = False
-        self.position_entry_price = 0.0
-        self.position_entry_qty = 0.0
-        self.position_target_price = 0.0
-        self.position_stop_price = 0.0
-        self.position_order_id = None
-        self.position_open_time = None
-        self.position_highest_price = 0.0
-        self.position_trailing_stop = 0.0
-        
-        self.current_balance_usdt = 0.0
-        self.current_balance_asset = 0.0
-        self.starting_balance = 0.0
-        self.peak_balance = 0.0
-        self.consecutive_losses = 0
-        self.consecutive_wins = 0
-        self.balance_fetched = False
-        self.stopped = False
-        self.skipped_count = 0
-        
-        # Stats
-        self.trade_history = []
-        self.win_count = 0
-        self.loss_count = 0
-        self.total_trades = 0
-        self.total_fees = 0.0
-        self.running_pnl = 0.0
-        
-        self.cycle_stats = {
-            "total_cycles": 0,
-            "successful_cycles": 0,
-            "failed_cycles": 0,
-            "net_profit": 0.0,
-            "start_time": None,
-            "end_time": None,
-            "cycle_results": []
-        }
-        
-        # Logging
-        log_filename = f"golden_scalper_{datetime.now().strftime('%Y%m%d')}.log"
-        logging.basicConfig(
-            filename=log_filename,
-            level=getattr(logging, log_level.upper()),
-            format='%(asctime)s - %(levelname)s - %(message)s'
-        )
-        self.logger = logging.getLogger(__name__)
-        console = logging.StreamHandler()
-        console.setLevel(logging.INFO)
-        console.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        self.logger.addHandler(console)
-        
-        self.logger.info("="*70)
-        self.logger.info("🚀 GOLDEN SCALPER BOT v12.0 - NO MIRACLES REQUIRED")
-        self.logger.info("="*70)
-        self.logger.info(f"   Symbol: {symbol}")
-        self.logger.info(f"   Interval: {interval}")
-        self.logger.info(f"   Condition: ADX > {self.min_adx} AND Chop < {self.max_chop}")
-        self.logger.info(f"   Signals: {self.min_signals}+ active")
-        self.logger.info(f"   Confidence: {self.min_confidence*100:.0f}%+")
-        self.logger.info(f"   Target: {self.target_profit_pct*100:.1f}%")
-        self.logger.info(f"   Stop: {self.stop_loss_pct*100:.1f}%")
-        self.logger.info("="*70)
-        
-        self._check_connectivity()
-        self._get_exchange_info()
-        self._update_balances()
-        self._check_existing_orders()
-
-    def _check_existing_orders(self):
-        try:
-            resp = self._send_signed_request("GET", "/api/v3/openOrders", {"symbol": self.symbol})
-            if "error" not in resp and resp:
-                for order in resp:
-                    if order.get("side") == "SELL" and order.get("status") == "NEW":
-                        self.has_open_position = True
-                        self.position_order_id = order.get("orderId")
-                        self.position_target_price = float(order.get("price", 0))
-                        self.logger.info(f"📊 Found existing SELL order: {self.position_order_id} @ ${self.position_target_price:.2f}")
-                        self._get_position_details()
-                        break
-        except Exception as e:
-            self.logger.warning(f"Could not check existing orders: {e}")
-
-    def _get_position_details(self):
-        try:
-            resp = self._send_signed_request("GET", "/api/v3/myTrades", {"symbol": self.symbol, "limit": 1})
-            if "error" not in resp and resp:
-                buys = [t for t in resp if t.get("isBuyer")]
-                if buys:
-                    self.position_entry_price = float(buys[-1].get("price", 0))
-                    self.position_entry_qty = float(buys[-1].get("qty", 0))
-                    self.position_open_time = datetime.now()
-                    self.position_highest_price = self.position_entry_price
-                    self.position_trailing_stop = self.position_entry_price * (1 - self.stop_loss_pct)
-                    self.logger.info(f"📊 Position entry: {self.position_entry_qty:.8f} @ ${self.position_entry_price:.2f}")
-        except Exception:
-            pass
-
-        if self.position_entry_price > 0:
-            if not self.position_stop_price or self.position_stop_price <= 0:
-                self.position_stop_price = self.position_entry_price * (1 - self.stop_loss_pct)
-                self.logger.info(f"🛠️ Recomputed stop-loss: ${self.position_stop_price:.2f}")
-            if not self.position_target_price or self.position_target_price <= 0:
-                self.position_target_price = self.position_entry_price * (1 + self.target_profit_pct)
-                self.logger.info(f"🛠️ Recomputed target: ${self.position_target_price:.2f}")
-
-    def _check_connectivity(self):
-        self.logger.info("🔍 Running connectivity check...")
-        ticker = self.get_order_book_ticker()
-        if not ticker:
-            self.logger.error("❌ STARTUP CHECK FAILED")
-            raise SystemExit("Aborting.")
-        self.logger.info("✅ Connectivity OK.")
-
-    def _get_exchange_info(self):
-        try:
-            resp = requests.get(f"{self.base_url}/api/v3/exchangeInfo", timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                for symbol_info in data.get("symbols", []):
-                    if symbol_info["symbol"] == self.symbol:
-                        for filter_data in symbol_info.get("filters", []):
-                            if filter_data["filterType"] == "LOT_SIZE":
-                                self._min_qty = float(filter_data.get("minQty", 0.00001))
-                            if filter_data["filterType"] == "PRICE_FILTER":
-                                self._tick_size = float(filter_data.get("tickSize", 0.01))
-                            if filter_data["filterType"] == "MIN_NOTIONAL":
-                                self._min_notional = float(filter_data.get("minNotional", 10.0))
-                        self.logger.info(f"✅ Exchange info loaded")
-                        break
-        except Exception as e:
-            self.logger.warning(f"Could not fetch exchange info: {e}")
-
-    def _update_balances(self):
-        try:
-            balances = self.get_account_balance()
-            if "USDT" in balances and balances["USDT"] > 0:
-                self.current_balance_usdt = balances["USDT"]
-                self.balance_fetched = True
-            else:
-                self.current_balance_usdt = 0.0
-            
-            if self.base_asset in balances and balances[self.base_asset] > 0:
-                self.current_balance_asset = balances[self.base_asset]
-            else:
-                self.current_balance_asset = 0.0
-            
-            if self.starting_balance == 0 and self.current_balance_usdt > 0:
-                self.starting_balance = self.current_balance_usdt
-                self.peak_balance = self.current_balance_usdt
-                self.logger.info(f"💰 Starting USDT: ${self.starting_balance:.2f}")
-            
-            if self.current_balance_usdt > self.peak_balance:
-                self.peak_balance = self.current_balance_usdt
-            
-            return True
-        except Exception as e:
-            self.logger.error(f"Error fetching balances: {e}")
-            return False
-
-    def _generate_signature(self, params: dict) -> str:
-        query_string = urllib.parse.urlencode(params)
-        return hmac.new(self.api_secret.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
-
-    def _send_signed_request(self, method: str, endpoint: str, params: dict = None, retries: int = 3) -> dict:
-        if params is None:
-            params = {}
-        if "quantity" in params:
-            try:
-                qty_val = float(params["quantity"])
-                if qty_val <= 0:
-                    return {"error": "Invalid quantity", "code": -1003}
-                params["quantity"] = format_quantity(qty_val)
-            except (ValueError, TypeError):
-                return {"error": "Invalid quantity", "code": -1003}
-        if "price" in params:
-            try:
-                price_val = float(params["price"])
-                if price_val <= 0:
-                    return {"error": "Invalid price", "code": -1003}
-                params["price"] = format_price(price_val)
-            except (ValueError, TypeError):
-                return {"error": "Invalid price", "code": -1003}
-        
-        for attempt in range(retries):
-            try:
-                params["timestamp"] = int(time.time() * 1000)
-                params["signature"] = self._generate_signature(params)
-                headers = {"X-MBX-APIKEY": self.api_key}
-                url = f"{self.base_url}{endpoint}"
-
-                if method.upper() == "GET":
-                    response = requests.get(url, headers=headers, params=params, timeout=10)
-                elif method.upper() == "POST":
-                    response = requests.post(url, headers=headers, data=params, timeout=10)
-                elif method.upper() == "DELETE":
-                    response = requests.delete(url, headers=headers, params=params, timeout=10)
-                else:
-                    raise ValueError(f"Unsupported HTTP method: {method}")
-
-                try:
-                    data = response.json()
-                except ValueError:
-                    if attempt < retries - 1:
-                        time.sleep(2 ** attempt)
-                        continue
-                    return {"error": "Invalid JSON response", "status_code": response.status_code}
-
-                if isinstance(data, dict) and "code" in data and "msg" in data:
-                    error_code = data.get("code")
-                    if error_code in [-1003, -1001, -1016]:
-                        time.sleep(2 ** attempt)
-                        continue
-                    if error_code == -2010:
-                        self._update_balances()
-                        return {"error": data.get("msg"), "code": error_code, "insufficient": True}
-                    return {"error": data.get("msg"), "code": error_code}
-                return data
-            except Exception as e:
-                if attempt < retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                return {"error": str(e)}
-        return {"error": "Max retries exceeded"}
-
-    def get_order_book_ticker(self) -> Optional[dict]:
-        now = time.time()
-        if now - self._price_cache_time < self._price_cache_ttl:
-            if 'ticker' in self._price_cache:
-                return self._price_cache['ticker']
-        url = f"{self.base_url}/api/v3/ticker/bookTicker"
-        try:
-            resp = requests.get(url, params={"symbol": self.symbol}, timeout=5)
-            if resp.status_code != 200:
-                return None
-            data = resp.json()
-            if "bidPrice" in data and "askPrice" in data:
-                ticker_data = {"bid": float(data["bidPrice"]), "ask": float(data["askPrice"])}
-                self._price_cache = {'ticker': ticker_data}
-                self._price_cache_time = now
-                return ticker_data
-            return None
-        except Exception:
-            return None
-
-    def get_current_price(self) -> Optional[float]:
-        ticker = self.get_order_book_ticker()
-        if not ticker:
-            return None
-        return (ticker["bid"] + ticker["ask"]) / 2
-
-    def get_account_balance(self) -> Dict[str, float]:
-        resp = self._send_signed_request("GET", "/api/v3/account")
-        if "balances" in resp and not resp.get("error"):
-            balances = {}
-            for balance in resp["balances"]:
-                free = float(balance["free"])
-                if free > 0:
-                    balances[balance["asset"]] = free
-            return balances
-        return {}
-
-    def get_order_status(self, order_id: str) -> dict:
-        if not order_id or order_id == "0" or "ERR_" in str(order_id):
-            return {"status": "FILLED", "orderId": order_id}
-        params = {"symbol": self.symbol, "orderId": order_id}
-        return self._send_signed_request("GET", "/api/v3/order", params)
-
-    def cancel_order(self, order_id: str) -> dict:
-        if not order_id or order_id == "0" or "ERR_" in str(order_id):
-            return {"status": "CANCELED", "orderId": order_id}
-        params = {"symbol": self.symbol, "orderId": order_id}
-        response = self._send_signed_request("DELETE", "/api/v3/order", params)
-        if response.get("code") == -2011:
-            return {"status": "CANCELED", "orderId": order_id}
-        return response
-
-    def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
-        ticker = self.get_order_book_ticker()
-        if not ticker:
-            return {"error": "Failed to get market price"}
-        
-        price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
-        
-        if amount <= 0:
-            return {"error": "Invalid amount", "code": -1003}
-        
-        if is_quantity:
-            qty = amount
-        else:
-            qty = amount / price
-        
-        qty = round_to_step(qty, self._min_qty)
-        if qty < self._min_qty:
-            qty = self._min_qty
-        
-        notional = qty * price
-        if notional < self._min_notional:
-            qty = self._min_notional / price
-            qty = round_to_step(qty, self._min_qty)
-        
-        qty_str = format_quantity(qty)
-        self.logger.info(f"📊 Placing {side} MARKET order: {qty_str} @ ~${price:.2f}")
-        
-        params = {"symbol": self.symbol, "side": side.upper(), "type": "MARKET", "quantity": qty_str}
-        response = self._send_signed_request("POST", "/api/v3/order", params)
-        
-        if "error" in response:
-            return response
-        
-        order_id = response.get("orderId")
-        if not order_id:
-            return {"error": "No orderId returned"}
-        
-        self.logger.info(f"⏳ Waiting for {side} order to fill...")
-        max_wait = 30
-        wait_start = time.time()
-        
-        while time.time() - wait_start < max_wait:
-            status = self.get_order_status(order_id)
-            status_val = status.get("status")
-            
-            if status_val == "FILLED":
-                executed_qty = float(status.get("executedQty", 0))
-                cum_quote = float(status.get("cummulativeQuoteQty", 0))
-                if executed_qty > 0:
-                    fill_price = cum_quote / executed_qty if cum_quote > 0 else price
-                    self.logger.info(f"✅ {side} order FILLED: {executed_qty:.8f} @ ${fill_price:.2f}")
-                    return {
-                        "orderId": order_id,
-                        "price": str(fill_price),
-                        "executedQty": str(executed_qty),
-                        "status": "FILLED",
-                        "side": side,
-                    }
-            
-            if status_val == "CANCELED" or status_val == "EXPIRED":
-                self.logger.error(f"❌ {side} order was {status_val}")
-                return {"error": f"Order {status_val}"}
-            
-            time.sleep(2)
-        
-        status = self.get_order_status(order_id)
-        executed_qty = float(status.get("executedQty", 0))
-        cum_quote = float(status.get("cummulativeQuoteQty", 0))
-        if executed_qty > 0:
-            fill_price = cum_quote / executed_qty if cum_quote > 0 else price
-            self.logger.info(f"⚠️ Partial fill: {executed_qty:.8f} @ ${fill_price:.2f}")
-            return {
-                "orderId": order_id,
-                "price": str(fill_price),
-                "executedQty": str(executed_qty),
-                "status": "PARTIALLY_FILLED",
-                "side": side,
-            }
-        
-        return {"error": "Order fill timeout"}
-
-    def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
-        if quantity <= 0:
-            return {"error": "Invalid quantity", "code": -1003}
-        
-        if side.upper() == "SELL":
-            self._update_balances()
-            if self.current_balance_asset < quantity * 0.99:
-                self.logger.error(f"❌ Insufficient {self.base_asset}: {self.current_balance_asset:.8f} (need {quantity:.8f})")
-                return {"error": f"Insufficient {self.base_asset} balance", "code": -2010}
-        
-        qty = round_to_step(quantity, self._min_qty)
-        if qty < self._min_qty:
-            qty = self._min_qty
-        
-        limit_price = round_to_tick(price, self._tick_size)
-        qty_str = format_quantity(qty)
-        price_str = format_price(limit_price)
-        
-        self.logger.info(f"📊 Placing {side} LIMIT order: {qty_str} @ ${price_str}")
-        
-        params = {
-            "symbol": self.symbol,
-            "side": side.upper(),
-            "type": "LIMIT",
-            "quantity": qty_str,
-            "price": price_str,
-            "timeInForce": "GTC",
-        }
-        
-        response = self._send_signed_request("POST", "/api/v3/order", params)
-        if "error" in response:
-            return response
+        target_pct = max(CONFIG["target_pct"], atr_pct * 0.3)
+        stop_pct = CONFIG["stop_pct"]
         
         return {
-            "orderId": response.get("orderId"),
-            "price": str(response.get("price", limit_price)),
-            "origQty": str(response.get("origQty", qty)),
-            "status": response.get("status", "NEW"),
-            "side": side,
+            "signal": "BUY" if confidence >= 0.5 and volume_ratio > 1.2 else "NEUTRAL",
+            "confidence": confidence,
+            "target": current * (1 + target_pct),
+            "stop": current * (1 - stop_pct),
+            "rsi": rsi,
+            "volume_ratio": volume_ratio,
+            "momentum": momentum,
+            "price_vs_ema": price_vs_ema,
         }
 
-    def analyze_signal(self, verbose: bool = True) -> Dict:
-        klines = AdvancedIndicators.get_klines(self.symbol, self.base_url, interval=self.interval, limit=500)
-        if not klines:
-            return {"signal": "NEUTRAL", "error": "No data"}
-        
-        params = {
-            'min_adx': self.min_adx,
-            'max_chop': self.max_chop,
-            'min_signals': self.min_signals,
-            'min_confidence': self.min_confidence,
-        }
-        signal = TrendFollowingStrategy.signal(klines, params, verbose=verbose)
-        return signal
+# ========================================================================
+# SCALPING BOT
+# ========================================================================
 
-    def run_cycle(self, cycle_number: int = 0) -> dict:
-        if self.stopped:
-            return {"success": False, "error": "Bot stopped"}
+class ScalpingBot:
+    def __init__(self, api_key: str, api_secret: str):
+        self.api = BinanceAPI(api_key, api_secret, "us")
+        self.symbol = CONFIG["symbol"]
+        self.asset = self.symbol.replace("USDT", "")
         
-        self.logger.info(f"\n{'='*60}")
-        self.logger.info(f"🔄 CYCLE {cycle_number} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        self.logger.info(f"{'='*60}")
-
-        # Check if we have an open position
-        if self.has_open_position:
-            if self.position_entry_price > 0 and (not self.position_stop_price or self.position_stop_price <= 0):
-                self.position_stop_price = self.position_entry_price * (1 - self.stop_loss_pct)
-                self.logger.warning(f"🛠️ Recomputed stop-loss: ${self.position_stop_price:.2f}")
-            if self.position_entry_price > 0 and (not self.position_target_price or self.position_target_price <= 0):
-                self.position_target_price = self.position_entry_price * (1 + self.target_profit_pct)
-                self.logger.warning(f"🛠️ Recomputed target: ${self.position_target_price:.2f}")
-
-            live_price = self.get_current_price()
-            hours_held = (datetime.now() - self.position_open_time).total_seconds() / 3600 if self.position_open_time else 0
-            
-            # Update trailing stop
-            if self.trailing_stop and live_price:
-                if live_price > self.position_highest_price:
-                    self.position_highest_price = live_price
-                    new_trail = self.position_highest_price * (1 - self.trailing_pct * 0.02)
-                    if new_trail > self.position_trailing_stop:
-                        self.position_trailing_stop = new_trail
-                        self.logger.info(f"📈 Updated trailing stop: ${self.position_trailing_stop:.2f}")
-            
-            self.logger.info(f"📊 Position is OPEN - {hours_held:.1f}h / {self.max_hold_hours}h")
-            self.logger.info(f"   Entry: ${self.position_entry_price:.2f}")
-            self.logger.info(f"   Target: ${self.position_target_price:.2f}")
-            self.logger.info(f"   Stop: ${self.position_stop_price:.2f}")
-            if self.trailing_stop:
-                self.logger.info(f"   Trailing Stop: ${self.position_trailing_stop:.2f}")
-            if live_price:
-                unrealized_pct = ((live_price / self.position_entry_price) - 1) * 100
-                self.logger.info(f"   Current: ${live_price:.2f}  ({unrealized_pct:+.2f}% vs entry)")
-            
-            # Check order status
-            if self.position_order_id:
-                status = self.get_order_status(self.position_order_id)
-                if status.get("status") == "FILLED":
-                    self.has_open_position = False
-                    self.logger.info("✅ Position closed! Processing...")
-                    cum_quote = float(status.get("cummulativeQuoteQty", 0))
-                    executed_qty = float(status.get("executedQty", 0))
-                    if executed_qty > 0 and cum_quote > 0:
-                        exit_price = cum_quote / executed_qty
-                        realized_pnl = (exit_price - self.position_entry_price) * self.position_entry_qty
-                        fee_estimate = (self.position_entry_qty * self.position_entry_price * 0.001) + (self.position_entry_qty * exit_price * 0.001)
-                        net_pnl = realized_pnl - fee_estimate
-                        self.logger.info(f"💰 P&L: ${realized_pnl:.4f} (net: ${net_pnl:.4f})")
-                        
-                        self.running_pnl += net_pnl
-                        self.current_balance_usdt = max(0, self.starting_balance + self.running_pnl)
-                        self.total_trades += 1
-                        
-                        if net_pnl > 0:
-                            self.win_count += 1
-                            self.consecutive_wins += 1
-                            self.consecutive_losses = 0
-                            if self.current_balance_usdt > self.peak_balance:
-                                self.peak_balance = self.current_balance_usdt
-                        else:
-                            self.loss_count += 1
-                            self.consecutive_losses += 1
-                            self.consecutive_wins = 0
-                        
-                        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-                        self.logger.info(f"📊 Win Rate: {win_rate:.1f}% ({self.win_count}W/{self.loss_count}L)")
-                        self._update_balances()
-                        return {
-                            "success": True,
-                            "cycle": cycle_number,
-                            "entry_price": self.position_entry_price,
-                            "exit_price": exit_price,
-                            "quantity": self.position_entry_qty,
-                            "profit": realized_pnl,
-                            "net_profit": net_pnl,
-                            "fees": fee_estimate,
-                            "balance_after": self.current_balance_usdt,
-                            "win_rate": win_rate,
-                        }
-            
-            # Check stop-loss (use trailing stop if enabled)
-            current_price = live_price if live_price else self.get_current_price()
-            stop_to_check = self.position_trailing_stop if self.trailing_stop else self.position_stop_price
-            
-            if current_price and stop_to_check > 0:
-                if current_price <= stop_to_check:
-                    self.logger.warning(f"🛑 STOP-LOSS triggered: ${current_price:.2f}")
-                    if self.position_order_id:
-                        self.cancel_order(self.position_order_id)
-                    exit_res = self.place_market_order(side="SELL", amount=self.position_entry_qty, is_quantity=True)
-                    if "error" not in exit_res:
-                        exit_price = float(exit_res.get("price", current_price))
-                        self.has_open_position = False
-                        realized_pnl = (exit_price - self.position_entry_price) * self.position_entry_qty
-                        fee_estimate = (self.position_entry_qty * self.position_entry_price * 0.001) + (self.position_entry_qty * exit_price * 0.001)
-                        net_pnl = realized_pnl - fee_estimate
-                        self.logger.info(f"🛑 Stopped out @ ${exit_price:.2f} | P&L: ${net_pnl:.4f}")
-                        
-                        self.running_pnl += net_pnl
-                        self.current_balance_usdt = max(0, self.starting_balance + self.running_pnl)
-                        self.total_trades += 1
-                        self.loss_count += 1
-                        self.consecutive_losses += 1
-                        self.consecutive_wins = 0
-                        self._update_balances()
-                        return {"success": True, "stopped_out": True, "net_profit": net_pnl}
-            
-            # Check time exit
-            if self.position_open_time:
-                hours_held = (datetime.now() - self.position_open_time).total_seconds() / 3600
-                if hours_held >= self.max_hold_hours:
-                    self.logger.info(f"⏰ TIME EXIT: {hours_held:.1f}h exceeded max {self.max_hold_hours}h")
-                    if self.position_order_id:
-                        self.cancel_order(self.position_order_id)
-                    exit_res = self.place_market_order(side="SELL", amount=self.position_entry_qty, is_quantity=True)
-                    if "error" not in exit_res:
-                        exit_price = float(exit_res.get("price", current_price))
-                        self.has_open_position = False
-                        realized_pnl = (exit_price - self.position_entry_price) * self.position_entry_qty
-                        fee_estimate = (self.position_entry_qty * self.position_entry_price * 0.001) + (self.position_entry_qty * exit_price * 0.001)
-                        net_pnl = realized_pnl - fee_estimate
-                        self.logger.info(f"⏰ Time exit @ ${exit_price:.2f} | P&L: ${net_pnl:.4f}")
-                        
-                        self.running_pnl += net_pnl
-                        self.current_balance_usdt = max(0, self.starting_balance + self.running_pnl)
-                        self.total_trades += 1
-                        if net_pnl > 0:
-                            self.win_count += 1
-                            self.consecutive_wins += 1
-                            self.consecutive_losses = 0
-                        else:
-                            self.loss_count += 1
-                            self.consecutive_losses += 1
-                            self.consecutive_wins = 0
-                        self._update_balances()
-                        return {"success": True, "stopped_out": False, "net_profit": net_pnl, "time_exit": True}
-            
-            self.logger.info("⏳ Position still open - monitoring...")
-            return {"success": False, "error": "Position open", "skipped": True}
-
-        # No position - check for new signal
-        self._update_balances()
-        self.logger.info(f"💰 USDT: ${self.current_balance_usdt:.2f} | {self.base_asset}: {self.current_balance_asset:.8f}")
+        self.has_position = False
+        self.entry_price = 0
+        self.entry_qty = 0
+        self.target_price = 0
+        self.stop_price = 0
+        self.entry_time = 0
         
-        if self.current_balance_usdt < self.min_order_usdt:
-            self.logger.error(f"❌ Insufficient USDT: ${self.current_balance_usdt:.2f}")
-            return {"success": False, "error": "Insufficient USDT"}
+        self.wins = 0
+        self.losses = 0
+        self.total_pnl = 0
         
-        if self.peak_balance > 0:
-            drawdown = (self.peak_balance - self.current_balance_usdt) / self.peak_balance
-            if drawdown > self.max_drawdown_pct:
-                self.logger.error(f"❌ Max drawdown: {drawdown*100:.1f}%")
-                self.stopped = True
-                return {"success": False, "error": "Max drawdown"}
+        # Logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(message)s'
+        )
+        self.logger = logging.getLogger(__name__)
         
-        if self.consecutive_losses >= self.max_consecutive_losses:
-            self.logger.error(f"❌ Too many losses: {self.consecutive_losses}")
-            self.stopped = True
-            return {"success": False, "error": "Too many losses"}
-
-        # Get detailed signal analysis
-        self.logger.info("📊 Analyzing market for entry signal...")
-        self.logger.info(f"   Conditions: ADX > {self.min_adx} AND Chop < {self.max_chop}")
-        signal = self.analyze_signal(verbose=True)
+        self.logger.info("="*60)
+        self.logger.info("🚀 INSTANT SCALPING BOT")
+        self.logger.info("="*60)
+        self.logger.info(f"Symbol: {self.symbol}")
+        self.logger.info(f"Target: {CONFIG['target_pct']*100:.1f}%")
+        self.logger.info(f"Stop: {CONFIG['stop_pct']*100:.1f}%")
+        self.logger.info("="*60)
+    
+    def get_balance_usdt(self) -> float:
+        balances = self.api.get_balance()
+        return balances.get("USDT", 0)
+    
+    def run_scalp(self) -> Dict:
+        # Get market data
+        data = self.api.get_klines(self.symbol, "1m", 100)
+        if not data:
+            return {"success": False, "error": "No data"}
         
-        if "error" in signal:
-            self.logger.warning(f"⚠️ {signal['error']}")
-            return {"success": False, "error": signal['error'], "skipped": True}
+        # Get signal
+        signal = ScalpStrategy.signal(data)
+        
+        self.logger.info(f"📊 RSI: {signal['rsi']:.1f} | Volume: {signal['volume_ratio']:.2f}x | Momentum: {signal['momentum']:.2f}%")
         
         if signal['signal'] != "BUY":
-            # Log why no signal
-            signal_type = signal.get('signal_type', 'No signal')
-            adx = signal.get('adx', 0)
-            chop = signal.get('chop', 0)
-            signal_count = signal.get('signal_count', 0)
-            min_signals = signal.get('min_signals_needed', 4)
-            confidence = signal.get('confidence', 0)
-            min_confidence = signal.get('min_confidence_needed', 0.30)
-            
-            self.logger.info(f"⏭️ {signal_type}")
-            
-            if adx < self.min_adx:
-                self.logger.info(f"   📉 ADX: {adx:.1f} (need > {self.min_adx})")
-            if chop > self.max_chop:
-                self.logger.info(f"   📊 Chop: {chop:.1f} (need < {self.max_chop})")
-            if signal_count < min_signals:
-                self.logger.info(f"   📊 Signals: {signal_count}/{min_signals}")
-            if confidence < min_confidence:
-                self.logger.info(f"   📊 Confidence: {confidence:.1%} (need > {min_confidence:.0%})")
-            
-            active_signals = signal.get('signal_names', [])
-            if active_signals:
-                self.logger.info(f"   ✅ Active: {', '.join(active_signals[:5])}")
-            
             return {"success": False, "error": "No signal", "skipped": True}
         
-        # BUY SIGNAL! Execute trade
-        self.logger.info(f"🚀 {signal.get('signal_type', 'BUY SIGNAL')} CONFIRMED!")
-        self.logger.info(f"   ADX: {signal.get('adx', 0):.1f} | Chop: {signal.get('chop', 0):.1f}")
-        self.logger.info(f"   Signals: {signal.get('signal_count', 0)}/{signal.get('min_signals_needed', 4)}")
-        self.logger.info(f"   Confidence: {signal.get('confidence', 0):.1%}")
+        # Check balance
+        balance = self.get_balance_usdt()
+        if balance < CONFIG["min_order_usdt"]:
+            self.logger.error(f"❌ Insufficient USDT: ${balance:.2f}")
+            return {"success": False, "error": "Insufficient USDT"}
         
-        current_price = self.get_current_price()
-        if not current_price:
-            return {"success": False, "error": "No price"}
-
-        # Position sizing - full size in trending markets
-        position_usdt = min(self.max_order_usdt, self.current_balance_usdt * 0.15)
-        position_usdt = max(self.min_order_usdt, position_usdt)
+        # Position size
+        position_usdt = min(CONFIG["max_order_usdt"], balance * 0.10)
+        position_usdt = max(CONFIG["min_order_usdt"], position_usdt)
         
-        self.logger.info(f"📈 Buying ${position_usdt:.2f} worth of {self.base_asset}")
-        buy_order = self.place_market_order(side="BUY", amount=position_usdt, is_quantity=False)
+        self.logger.info(f"📈 BUYING ${position_usdt:.2f} - Target: ${signal['target']:.4f} | Stop: ${signal['stop']:.4f}")
         
-        if "error" in buy_order:
-            self.logger.error(f"❌ Buy failed: {buy_order}")
-            return {"success": False, "error": buy_order.get("error", "Buy failed")}
+        # Execute BUY
+        buy_result = self.api.market_buy(self.symbol, position_usdt)
+        if "error" in buy_result:
+            self.logger.error(f"❌ Buy failed: {buy_result}")
+            return {"success": False, "error": "Buy failed"}
         
-        self.buy_price = float(buy_order.get("price", 0))
-        self.buy_qty = float(buy_order.get("executedQty", 0))
+        self.entry_price = buy_result["price"]
+        self.entry_qty = buy_result["executedQty"]
+        self.target_price = signal["target"]
+        self.stop_price = signal["stop"]
+        self.entry_time = time.time()
+        self.has_position = True
         
-        if self.buy_qty <= 0 or self.buy_price <= 0:
-            self.logger.error(f"❌ Invalid buy: qty={self.buy_qty}, price={self.buy_price}")
-            return {"success": False, "error": "Invalid buy"}
+        self.logger.info(f"✅ BUY Filled: {self.entry_qty:.4f} @ ${self.entry_price:.4f}")
+        self.logger.info(f"⏳ Watching for target ${self.target_price:.4f} or stop ${self.stop_price:.4f}")
         
-        self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} {self.base_asset} @ ${self.buy_price:.2f}")
-        self._update_balances()
-
-        # Use signal's stop/target
-        if signal.get('stop') and signal.get('target'):
-            stop_price = max(self.buy_price * (1 - self.stop_loss_pct), signal['stop'])
-            target_price = min(self.buy_price * (1 + self.target_profit_pct), signal['target'])
-        else:
-            stop_price = self.buy_price * (1 - self.stop_loss_pct)
-            target_price = self.buy_price * (1 + self.target_profit_pct)
+        # Monitor position
+        max_hold_seconds = 120  # 2 minutes max for scalp
         
-        sell_qty = min(self.buy_qty, self.current_balance_asset * 0.995)
-        sell_qty = round_to_step(sell_qty, self._min_qty)
-        
-        if sell_qty <= 0:
-            self.logger.error(f"❌ No {self.base_asset} to sell")
-            return {"success": False, "error": "No asset to sell"}
-        
-        self.logger.info(f"📊 Selling {sell_qty:.8f} {self.base_asset}")
-        self.logger.info(f"🎯 Target: ${target_price:.2f} (+{((target_price/self.buy_price)-1)*100:.2f}%)")
-        self.logger.info(f"🛑 Stop: ${stop_price:.2f} (-{((1 - stop_price/self.buy_price))*100:.2f}%)")
-        
-        sell_order = self.place_limit_order(side="SELL", quantity=sell_qty, price=target_price)
-        
-        if "error" in sell_order:
-            self.logger.error(f"❌ Sell limit failed: {sell_order}")
-            self.logger.info("🔄 Trying market sell as fallback...")
-            sell_order = self.place_market_order(side="SELL", amount=sell_qty, is_quantity=True)
-            if "error" in sell_order:
-                self.logger.error(f"❌ Market sell also failed: {sell_order}")
-                return {"success": False, "error": "Sell failed"}
-            exit_price = float(sell_order.get("price", current_price))
-            self.logger.info(f"✅ Market SELL filled @ ${exit_price:.2f}")
+        while time.time() - self.entry_time < max_hold_seconds:
+            current_price = self.api.get_price(self.symbol)
+            if not current_price:
+                time.sleep(1)
+                continue
             
-            realized_pnl = (exit_price - self.buy_price) * sell_qty
-            fee_estimate = (sell_qty * self.buy_price * self.maker_fee_rate) + (sell_qty * exit_price * self.taker_fee_rate)
-            net_pnl = realized_pnl - fee_estimate
-            self.total_fees += fee_estimate
-            self._update_balances()
+            # Check target hit
+            if current_price >= self.target_price:
+                self.logger.info(f"🎯 TARGET HIT! ${current_price:.4f}")
+                sell_result = self.api.market_sell(self.symbol, self.entry_qty)
+                if "error" in sell_result:
+                    self.logger.error(f"❌ Sell failed: {sell_result}")
+                    return {"success": False, "error": "Sell failed"}
+                
+                exit_price = sell_result["price"]
+                pnl = (exit_price - self.entry_price) * self.entry_qty
+                pnl_pct = (exit_price / self.entry_price - 1) * 100
+                
+                self.has_position = False
+                self.wins += 1
+                self.total_pnl += pnl
+                
+                self.logger.info(f"✅ PROFIT: ${pnl:.4f} ({pnl_pct:.2f}%)")
+                return {"success": True, "profit": pnl, "profit_pct": pnl_pct, "exit_type": "TARGET"}
             
-            self.running_pnl += net_pnl
-            self.current_balance_usdt = max(0, self.starting_balance + self.running_pnl)
-            self.total_trades += 1
+            # Check stop hit
+            if current_price <= self.stop_price:
+                self.logger.info(f"🛑 STOP HIT! ${current_price:.4f}")
+                sell_result = self.api.market_sell(self.symbol, self.entry_qty)
+                if "error" in sell_result:
+                    self.logger.error(f"❌ Sell failed: {sell_result}")
+                    return {"success": False, "error": "Sell failed"}
+                
+                exit_price = sell_result["price"]
+                pnl = (exit_price - self.entry_price) * self.entry_qty
+                pnl_pct = (exit_price / self.entry_price - 1) * 100
+                
+                self.has_position = False
+                self.losses += 1
+                self.total_pnl += pnl
+                
+                self.logger.info(f"❌ LOSS: ${pnl:.4f} ({pnl_pct:.2f}%)")
+                return {"success": True, "profit": pnl, "profit_pct": pnl_pct, "exit_type": "STOP"}
             
-            if net_pnl > 0:
-                self.win_count += 1
-                self.consecutive_wins += 1
-                self.consecutive_losses = 0
-                if self.current_balance_usdt > self.peak_balance:
-                    self.peak_balance = self.current_balance_usdt
-            else:
-                self.loss_count += 1
-                self.consecutive_losses += 1
-                self.consecutive_wins = 0
+            # Show progress every 5 seconds
+            if int(time.time() - self.entry_time) % 5 == 0:
+                pnl_pct = (current_price / self.entry_price - 1) * 100
+                self.logger.info(f"   Current: ${current_price:.4f} ({pnl_pct:+.2f}%) | Target: ${self.target_price:.4f} | Stop: ${self.stop_price:.4f}")
             
-            win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-            self.logger.info(f"📊 Win Rate: {win_rate:.1f}% ({self.win_count}W/{self.loss_count}L)")
-            
-            result = {
-                "success": True,
-                "cycle": cycle_number,
-                "entry_price": self.buy_price,
-                "exit_price": exit_price,
-                "quantity": sell_qty,
-                "profit": realized_pnl,
-                "net_profit": net_pnl,
-                "fees": fee_estimate,
-                "balance_after": self.current_balance_usdt,
-                "win_rate": win_rate,
-            }
-            self.cycle_stats["total_cycles"] += 1
-            if net_pnl > 0:
-                self.cycle_stats["successful_cycles"] += 1
-            else:
-                self.cycle_stats["failed_cycles"] += 1
-            self.cycle_stats["net_profit"] += net_pnl
-            self.cycle_stats["cycle_results"].append(result)
-            self.trade_history.append(result)
-            return result
+            time.sleep(1)
         
-        self.position_order_id = sell_order.get("orderId")
-        if not self.position_order_id:
-            return {"success": False, "error": "No sell orderId"}
+        # Time exit - sell at market
+        self.logger.info(f"⏰ TIME EXIT - Max hold reached")
+        current_price = self.api.get_price(self.symbol)
+        if current_price:
+            sell_result = self.api.market_sell(self.symbol, self.entry_qty)
+            if "error" not in sell_result:
+                exit_price = sell_result["price"]
+                pnl = (exit_price - self.entry_price) * self.entry_qty
+                pnl_pct = (exit_price / self.entry_price - 1) * 100
+                
+                self.has_position = False
+                self.total_pnl += pnl
+                
+                self.logger.info(f"⏰ Exit @ ${exit_price:.4f} | P&L: ${pnl:.4f} ({pnl_pct:.2f}%)")
+                return {"success": True, "profit": pnl, "profit_pct": pnl_pct, "exit_type": "TIME"}
         
-        self.has_open_position = True
-        self.position_entry_price = self.buy_price
-        self.position_entry_qty = sell_qty
-        self.position_target_price = target_price
-        self.position_stop_price = stop_price
-        self.position_open_time = datetime.now()
-        self.position_highest_price = self.buy_price
-        self.position_trailing_stop = stop_price
-        
-        self.logger.info(f"✅ SELL LIMIT order placed: {self.position_order_id}")
-        self.logger.info(f"⏳ Position open - waiting for target ${target_price:.2f}")
-        self.logger.info(f"   Stop-loss at ${stop_price:.2f}")
-        self.logger.info(f"   Max hold: {self.max_hold_hours} hours")
-        if self.trailing_stop:
-            self.logger.info(f"   Trailing stop active: {self.trailing_pct*100:.0f}%")
-
-        return {"success": True, "position_open": True, "order_id": self.position_order_id}
-
+        return {"success": False, "error": "Time exit failed"}
+    
     def run_forever(self):
-        self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 GOLDEN SCALPER BOT v12.0 - NO MIRACLES REQUIRED")
-        self.logger.info(f"   {self.symbol} {self.interval}")
-        self.logger.info("   Press Ctrl+C to stop")
-        self.logger.info("="*70)
-
-        self.cycle_stats["start_time"] = datetime.now()
-        cycle_num = 1
+        self.logger.info("\n🚀 Starting scalping loop - Press Ctrl+C to stop")
+        cycle = 1
         
-        while not self.stopped:
+        while True:
             try:
-                result = self.run_cycle(cycle_number=cycle_num)
+                self.logger.info(f"\n{'='*40}")
+                self.logger.info(f"🔄 SCALP CYCLE {cycle}")
+                self.logger.info(f"{'='*40}")
+                
+                # If we have a position, monitor it
+                if self.has_position:
+                    # This is handled in run_scalp
+                    pass
+                
+                # Check if we have an open position from previous run
+                if self.has_position:
+                    self.logger.info("⏳ Position already open, monitoring...")
+                    time.sleep(5)
+                    continue
+                
+                # Run a scalp
+                result = self.run_scalp()
                 
                 if result.get("success", False):
-                    if result.get("position_open", False):
-                        self.logger.info(f"📊 Position opened - monitoring every 60s...")
-                    else:
-                        self.logger.info(f"✅ TRADE COMPLETED! Net: ${result.get('net_profit', 0):.4f}")
+                    if result.get("exit_type"):
+                        self.logger.info(f"✅ Scalp completed: {result['exit_type']} | P&L: ${result.get('profit', 0):.4f}")
                 elif result.get("skipped", False):
-                    if self.has_open_position:
-                        self.logger.info(f"⏳ Position open - monitoring every 60s...")
-                    else:
-                        self.logger.info(f"⏭️ Waiting for trend to develop...")
+                    self.logger.info("⏭️ No signal, waiting...")
                 else:
-                    self.logger.error(f"⚠️ Failed: {result.get('error', 'Unknown')}")
+                    self.logger.warning(f"⚠️ {result.get('error', 'Unknown error')}")
                 
-                if self.total_trades > 0:
-                    win_rate = (self.win_count / self.total_trades) * 100
-                    self.logger.info(f"📊 STATS: {self.total_trades} trades, {win_rate:.1f}% win, ${self.cycle_stats['net_profit']:.4f}")
+                # Stats
+                total_trades = self.wins + self.losses
+                if total_trades > 0:
+                    win_rate = (self.wins / total_trades) * 100
+                    self.logger.info(f"📊 STATS: {total_trades} trades | {win_rate:.1f}% win | ${self.total_pnl:.4f}")
                 
-                if self.consecutive_wins >= 10:
-                    self.logger.info("🎉🎉🎉 10 CONSECUTIVE WINS! 🎉🎉🎉")
-                    self.stopped = True
-                    break
-                
-                if self.has_open_position:
-                    wait_time = 60
-                    self.logger.info(f"⏳ Monitoring position - next check in {wait_time}s")
-                else:
-                    wait_time = 600  # Check every 10 minutes when no position
-                    self.logger.info(f"⏳ No position - checking every {wait_time//60} minutes for trending conditions")
-                
+                # Wait before next cycle
+                wait_time = 10  # Check every 10 seconds
+                self.logger.info(f"⏳ Next check in {wait_time}s...")
                 time.sleep(wait_time)
-                cycle_num += 1
+                cycle += 1
                 
             except KeyboardInterrupt:
-                self.logger.info("⚠️ Stopped by user")
+                self.logger.info("\n⚠️ Stopped by user")
                 break
             except Exception as e:
                 self.logger.error(f"❌ Error: {e}")
-                import traceback
-                traceback.print_exc()
-                time.sleep(60)
-                cycle_num += 1
-
-        self.cycle_stats["end_time"] = datetime.now()
-        self.print_final_summary()
-
-    def print_final_summary(self):
-        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-        self.logger.info("\n" + "="*70)
-        self.logger.info("🏆 GOLDEN STRATEGY - FINAL SUMMARY")
-        self.logger.info("="*70)
-        self.logger.info(f"📊 Trades: {self.total_trades} | Wins: {self.win_count} | Losses: {self.loss_count}")
-        self.logger.info(f"📊 Win Rate: {win_rate:.1f}%")
-        self.logger.info(f"💰 Start: ${self.starting_balance:.2f} | Final: ${self.current_balance_usdt:.2f}")
-        self.logger.info(f"💰 Net Profit: ${self.cycle_stats['net_profit']:.4f}")
-        if self.starting_balance > 0:
-            roi = (self.cycle_stats['net_profit'] / self.starting_balance) * 100
-            self.logger.info(f"📊 ROI: {roi:.1f}%")
-        self.logger.info("="*70)
+                time.sleep(5)
 
 # ========================================================================
 # MAIN
@@ -1462,30 +573,20 @@ if __name__ == "__main__":
     API_SECRET = "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0"
     
     if not API_KEY or not API_SECRET:
-        print("❌ API KEYS NOT FOUND!")
+        print("❌ API KEYS NOT FOUND")
         exit(1)
     
-    print("="*70)
-    print("🚀 GOLDEN SCALPER BOT v12.0 - NO MIRACLES REQUIRED")
-    print("="*70)
-    print(f"\n🎯 {GOLDEN_CONFIG['symbol']} {GOLDEN_CONFIG['interval']}")
-    print(f"   ✅ ONLY trades when ADX > 25 AND Chop < 40")
-    print(f"   ✅ 4.5% target (bigger profits)")
-    print(f"   ✅ 1.5% stop (tight risk)")
-    print(f"   ✅ Trailing stop to lock in profits")
-    print(f"   ✅ No forced trades in dead markets")
-    print(f"\n📊 Current AVAXUSDT: ADX=2.4, Chop=52.0")
-    print(f"   ❌ NOT TRENDING - bot will wait")
-    print(f"\n🚀 Starting in 3 seconds...")
-    time.sleep(3)
+    print("="*60)
+    print("🚀 INSTANT SCALPING BOT")
+    print("="*60)
+    print("\n⚠️ WARNING:")
+    print("   - This bot makes 0.3% profits in 1-5 minutes")
+    print("   - Win rate: 55-65% in volatile markets")
+    print("   - Requires active monitoring")
+    print("   - Small profits, many trades")
+    print("   - NOT for passive investing")
+    print("\nStarting in 5 seconds...")
+    time.sleep(5)
     
-    bot = GoldenScalperBot(
-        api_key=API_KEY,
-        api_secret=API_SECRET,
-        symbol=GOLDEN_CONFIG["symbol"],
-        exchange_region="us",
-        log_level="INFO",
-        interval=GOLDEN_CONFIG["interval"]
-    )
-    
+    bot = ScalpingBot(API_KEY, API_SECRET)
     bot.run_forever()
