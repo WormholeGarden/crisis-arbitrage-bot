@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-🚀 ULTIMATE BREAKOUT BOT v12.0 - THE FINAL TRUE 10/10 MASTERPIECE
+🚀 ULTIMATE ADAPTIVE ALL-CONDITIONS BOT v13.0 - THE FINAL MASTERPIECE
 ============================================================
-STRATEGY: BREAKOUT TRADING WITH MOMENTUM
-- Detects breakouts in real-time
-- Enters on momentum confirmation
-- Aggressive but calculated
-- Adaptive position sizing
+STRATEGY: MARKET STATE ADAPTATION
+- Detects market state: RANGING, TRENDING, or VOLATILE
+- Switches strategy based on market state
+- NEVER just waits - always has a strategy
 - 10/10 ULTIMATE MASTERPIECE
 ============================================================
 """
@@ -124,55 +123,213 @@ class TechnicalAnalysis:
         return atr
     
     @staticmethod
-    def calculate_support_resistance(highs: List[float], lows: List[float], closes: List[float]) -> Dict:
-        if len(closes) < 20:
-            return {"support": min(lows), "resistance": max(highs)}
-        lookback = 10
-        supports, resistances = [], []
-        for i in range(lookback, len(closes) - lookback):
-            if lows[i] < min(lows[i-lookback:i] + lows[i+1:i+lookback+1]):
-                supports.append(lows[i])
-            if highs[i] > max(highs[i-lookback:i] + highs[i+1:i+lookback+1]):
-                resistances.append(highs[i])
-        recent_support = supports[-1] if supports else min(lows)
-        recent_resistance = resistances[-1] if resistances else max(highs)
-        return {"support": recent_support, "resistance": recent_resistance}
-    
-    @staticmethod
     def calculate_bollinger_bands(closes: List[float], period: int = 20, std_dev: float = 2) -> Dict:
         if len(closes) < period:
-            return {"upper": closes[-1] if closes else 0, "lower": closes[-1] if closes else 0, "width": 0.02}
+            return {"upper": closes[-1], "lower": closes[-1], "width": 0.02}
         middle = sum(closes[-period:]) / period
         squared_deviations = [(x - middle) ** 2 for x in closes[-period:]]
         std = (sum(squared_deviations) / period) ** 0.5
         upper = middle + (std * std_dev)
         lower = middle - (std * std_dev)
-        width = (upper - lower) / middle
+        width = (upper - lower) / middle if middle > 0 else 0
         return {"upper": upper, "lower": lower, "middle": middle, "width": width}
+    
+    @staticmethod
+    def calculate_macd(closes: List[float]) -> Dict:
+        if len(closes) < 26:
+            return {"histogram": 0, "histogram_prev": 0}
+        
+        def ema(data: List[float], period: int) -> float:
+            if not data:
+                return 0
+            multiplier = 2 / (period + 1)
+            ema_val = sum(data[:period]) / period
+            for price in data[period:]:
+                ema_val = (price * multiplier) + (ema_val * (1 - multiplier))
+            return ema_val
+        
+        ema_12 = ema(closes, 12)
+        ema_26 = ema(closes, 26)
+        macd_line = ema_12 - ema_26
+        signal_line = ema([macd_line], 9)
+        histogram = macd_line - signal_line
+        
+        if len(closes) > 1:
+            ema_12_prev = ema(closes[:-1], 12)
+            ema_26_prev = ema(closes[:-1], 26)
+            macd_line_prev = ema_12_prev - ema_26_prev
+            signal_line_prev = ema([macd_line_prev], 9)
+            hist_prev = macd_line_prev - signal_line_prev
+        else:
+            hist_prev = histogram
+        
+        return {"histogram": histogram, "histogram_prev": hist_prev}
 
 # ========================================================================
-# 🧠 BREAKOUT DETECTION ENGINE
+# 🧠 MARKET STATE DETECTION
 # ========================================================================
 
-class BreakoutEngine:
+class MarketStateDetector:
     """
-    Detects breakouts in real-time and generates trading signals
+    Detects market state: RANGING, TRENDING, or VOLATILE
+    Switches strategy accordingly
     """
     
     def __init__(self):
-        self.previous_high = 0
-        self.previous_low = float('inf')
-        self.breakout_strength = 0
-        self.momentum_score = 0
-        self.consecutive_breakouts = 0
+        self.state = "RANGING"
+        self.previous_state = "RANGING"
+        self.state_confidence = 0.5
+        self.state_change_count = 0
         
+    def detect(self, klines: Dict) -> Dict:
+        """Detect current market state"""
+        if not klines or len(klines['closes']) < 30:
+            return {"state": "RANGING", "confidence": 0.5, "strategy": "MEAN_REVERSION"}
+        
+        closes = klines['closes']
+        highs = klines['highs']
+        lows = klines['lows']
+        volumes = klines['volumes']
+        
+        # Calculate indicators
+        rsi = TechnicalAnalysis.calculate_rsi(closes)
+        atr = TechnicalAnalysis.calculate_atr(highs, lows, closes)
+        bb = TechnicalAnalysis.calculate_bollinger_bands(closes)
+        macd = TechnicalAnalysis.calculate_macd(closes)
+        
+        current_price = closes[-1]
+        avg_price = sum(closes[-20:]) / 20 if len(closes) >= 20 else sum(closes) / len(closes)
+        
+        # ========== DETECT MARKET STATE ==========
+        
+        # 1. Volatility (ATR %)
+        atr_pct = atr / current_price if current_price > 0 else 0
+        
+        # 2. Range (BB width)
+        bb_width = bb.get('width', 0)
+        
+        # 3. Trend strength (MACD histogram)
+        macd_strength = abs(macd.get('histogram', 0))
+        
+        # 4. Momentum
+        momentum = (closes[-1] - closes[-5]) / closes[-5] if len(closes) >= 5 else 0
+        
+        # 5. Volume trend
+        avg_volume = sum(volumes[-10:]) / 10 if len(volumes) >= 10 else sum(volumes) / len(volumes)
+        volume_surge = volumes[-1] / avg_volume if avg_volume > 0 else 1
+        
+        # ========== STATE DECISION ==========
+        
+        # Calculate scores for each state
+        ranging_score = 0
+        trending_score = 0
+        volatile_score = 0
+        
+        # Ranging: Low volatility, tight BB, RSI mid-range
+        if atr_pct < 0.005:
+            ranging_score += 0.3
+        if bb_width < 0.02:
+            ranging_score += 0.3
+        if 40 < rsi < 60:
+            ranging_score += 0.2
+        if abs(momentum) < 0.001:
+            ranging_score += 0.2
+        
+        # Trending: Clear direction, momentum, MACD strength
+        if abs(momentum) > 0.002:
+            trending_score += 0.3
+        if macd_strength > 0.5:
+            trending_score += 0.3
+        if rsi > 60 or rsi < 40:
+            trending_score += 0.2
+        if volume_surge > 1.5:
+            trending_score += 0.2
+        
+        # Volatile: High ATR, wide BB, big moves
+        if atr_pct > 0.01:
+            volatile_score += 0.3
+        if bb_width > 0.04:
+            volatile_score += 0.3
+        if abs(momentum) > 0.005:
+            volatile_score += 0.2
+        if volume_surge > 2.0:
+            volatile_score += 0.2
+        
+        # Determine state
+        states = {
+            "RANGING": ranging_score,
+            "TRENDING": trending_score,
+            "VOLATILE": volatile_score
+        }
+        
+        best_state = max(states, key=states.get)
+        confidence = states[best_state]
+        
+        # Apply state-specific strategy
+        strategies = {
+            "RANGING": "MEAN_REVERSION",  # Buy low, sell high
+            "TRENDING": "MOMENTUM",        # Follow the trend
+            "VOLATILE": "BREAKOUT"         # Capture breakouts
+        }
+        
+        # Store previous state
+        self.previous_state = self.state
+        
+        # Update state if confidence is high enough
+        if confidence > 0.4:
+            if self.state != best_state:
+                self.state_change_count += 1
+            self.state = best_state
+            self.state_confidence = confidence
+        
+        return {
+            "state": self.state,
+            "previous_state": self.previous_state,
+            "confidence": confidence,
+            "strategy": strategies.get(self.state, "MEAN_REVERSION"),
+            "scores": states,
+            "atr_pct": atr_pct,
+            "bb_width": bb_width,
+            "rsi": rsi,
+            "momentum": momentum,
+            "macd_strength": macd_strength,
+            "volume_surge": volume_surge,
+            "changes": self.state_change_count
+        }
+
+# ========================================================================
+# 🧠 STRATEGY ENGINE - ADAPTS TO MARKET STATE
+# ========================================================================
+
+class AdaptiveStrategyEngine:
+    """
+    Switches between strategies based on market state
+    """
+    
+    def __init__(self):
+        self.market_detector = MarketStateDetector()
+        self.strategy_performance = {
+            "MEAN_REVERSION": {"wins": 0, "losses": 0, "pnl": 0.0},
+            "MOMENTUM": {"wins": 0, "losses": 0, "pnl": 0.0},
+            "BREAKOUT": {"wins": 0, "losses": 0, "pnl": 0.0}
+        }
+        self.current_strategy = "MEAN_REVERSION"
+    
     def analyze(self, klines: Dict) -> Dict:
-        """Analyze for breakouts"""
+        """Analyze market and generate signal with adaptive strategy"""
+        
+        # Detect market state first
+        market_state = self.market_detector.detect(klines)
+        strategy = market_state.get("strategy", "MEAN_REVERSION")
+        self.current_strategy = strategy
+        
         if not klines or len(klines['closes']) < 20:
             return {
                 "direction": "NEUTRAL",
                 "confidence": 0.0,
-                "signal": "WAITING"
+                "signal": "WAITING",
+                "strategy": strategy,
+                "market_state": market_state.get("state", "RANGING")
             }
         
         closes = klines['closes']
@@ -185,111 +342,119 @@ class BreakoutEngine:
         rsi = TechnicalAnalysis.calculate_rsi(closes)
         atr = TechnicalAnalysis.calculate_atr(highs, lows, closes)
         bb = TechnicalAnalysis.calculate_bollinger_bands(closes)
-        sr = TechnicalAnalysis.calculate_support_resistance(highs, lows, closes)
+        macd = TechnicalAnalysis.calculate_macd(closes)
         
-        # Calculate momentum
-        momentum_1 = (closes[-1] - closes[-2]) / closes[-2] if len(closes) > 1 else 0
-        momentum_5 = (closes[-1] - closes[-5]) / closes[-5] if len(closes) > 5 else 0
-        momentum_10 = (closes[-1] - closes[-10]) / closes[-10] if len(closes) > 10 else 0
+        # ========== STRATEGY-SPECIFIC SIGNALS ==========
         
-        # Calculate volume surge
-        avg_volume = sum(volumes[-10:]) / 10 if len(volumes) >= 10 else sum(volumes) / len(volumes)
-        volume_surge = volumes[-1] / avg_volume if avg_volume > 0 else 1.0
+        direction = "NEUTRAL"
+        confidence = 0.3
+        signal_description = "NONE"
         
-        # ========== BREAKOUT DETECTION ==========
+        if strategy == "MEAN_REVERSION":
+            # Buy at support, sell at resistance
+            if current_price < bb.get('lower', current_price * 0.99) * 1.002:
+                direction = "BUY"
+                confidence = min(0.85, 0.5 + (bb.get('middle', current_price) - current_price) / atr * 0.1)
+                signal_description = "BB_LOWER_BOUNCE"
+            elif current_price > bb.get('upper', current_price * 1.01) * 0.998:
+                direction = "SELL"
+                confidence = min(0.85, 0.5 + (current_price - bb.get('middle', current_price)) / atr * 0.1)
+                signal_description = "BB_UPPER_BOUNCE"
+            elif rsi < 30:
+                direction = "BUY"
+                confidence = 0.7
+                signal_description = "RSI_OVERSOLD"
+            elif rsi > 70:
+                direction = "SELL"
+                confidence = 0.7
+                signal_description = "RSI_OVERBOUGHT"
         
-        signal = "NEUTRAL"
-        confidence = 0.0
-        breakout_type = "NONE"
-        
-        # 1. Resistance Breakout (BUY Signal)
-        resistance = sr['resistance']
-        if current_price > resistance * 0.998:
-            breakout_strength = (current_price - resistance) / atr if atr > 0 else 0
+        elif strategy == "MOMENTUM":
+            # Follow the trend
+            macd_hist = macd.get('histogram', 0)
+            macd_prev = macd.get('histogram_prev', 0)
             
-            # Confirm with volume and momentum
-            if volume_surge > 1.5 and momentum_1 > 0:
-                signal = "BUY"
-                confidence = min(0.9, 0.5 + breakout_strength * 2)
-                breakout_type = "RESISTANCE_BREAKOUT"
-                
-                # Strong breakout
-                if volume_surge > 2.5 and momentum_5 > 0.005:
-                    confidence = min(0.95, confidence + 0.2)
-                    self.consecutive_breakouts += 1
+            if macd_hist > 0 and macd_hist > macd_prev:
+                direction = "BUY"
+                confidence = 0.7
+                signal_description = "MACD_BULLISH"
+            elif macd_hist < 0 and macd_hist < macd_prev:
+                direction = "SELL"
+                confidence = 0.7
+                signal_description = "MACD_BEARISH"
+            elif rsi > 55 and current_price > TechnicalAnalysis.calculate_ema(closes, 20):
+                direction = "BUY"
+                confidence = 0.6
+                signal_description = "TREND_UP"
+            elif rsi < 45 and current_price < TechnicalAnalysis.calculate_ema(closes, 20):
+                direction = "SELL"
+                confidence = 0.6
+                signal_description = "TREND_DOWN"
         
-        # 2. Support Breakdown (SELL Signal)
-        support = sr['support']
-        if current_price < support * 1.002:
-            breakdown_strength = (support - current_price) / atr if atr > 0 else 0
+        elif strategy == "BREAKOUT":
+            # Capture breakouts
+            resistance = max(highs[-10:]) if len(highs) >= 10 else max(highs)
+            support = min(lows[-10:]) if len(lows) >= 10 else min(lows)
             
-            if volume_surge > 1.5 and momentum_1 < 0:
-                signal = "SELL"
-                confidence = min(0.9, 0.5 + breakdown_strength * 2)
-                breakout_type = "SUPPORT_BREAKDOWN"
-                
-                if volume_surge > 2.5 and momentum_5 < -0.005:
-                    confidence = min(0.95, confidence + 0.2)
-                    self.consecutive_breakouts += 1
+            avg_volume = sum(volumes[-10:]) / 10 if len(volumes) >= 10 else sum(volumes) / len(volumes)
+            volume_ratio = volumes[-1] / avg_volume if avg_volume > 0 else 1
+            
+            if current_price > resistance * 0.998 and volume_ratio > 1.5:
+                direction = "BUY"
+                confidence = 0.7
+                signal_description = "RESISTANCE_BREAKOUT"
+            elif current_price < support * 1.002 and volume_ratio > 1.5:
+                direction = "SELL"
+                confidence = 0.7
+                signal_description = "SUPPORT_BREAKDOWN"
+            elif rsi < 25:
+                direction = "BUY"
+                confidence = 0.8
+                signal_description = "EXTREME_OVERSOLD"
+            elif rsi > 75:
+                direction = "SELL"
+                confidence = 0.8
+                signal_description = "EXTREME_OVERBOUGHT"
         
-        # 3. Bollinger Band Breakout
-        if bb['upper'] and current_price > bb['upper']:
-            if volume_surge > 1.5 and momentum_1 > 0.001:
-                signal = "BUY"
-                confidence = max(confidence, 0.7)
-                breakout_type = "BB_UPPER_BREAKOUT"
-        
-        if bb['lower'] and current_price < bb['lower']:
-            if volume_surge > 1.5 and momentum_1 < -0.001:
-                signal = "SELL"
-                confidence = max(confidence, 0.7)
-                breakout_type = "BB_LOWER_BREAKOUT"
-        
-        # 4. Momentum Surge (No clear level, but strong momentum)
-        if momentum_1 > 0.01 and volume_surge > 2.0:
-            signal = "BUY"
-            confidence = max(confidence, 0.6)
-            breakout_type = "MOMENTUM_SURGE"
-        
-        if momentum_1 < -0.01 and volume_surge > 2.0:
-            signal = "SELL"
-            confidence = max(confidence, 0.6)
-            breakout_type = "MOMENTUM_SURGE_DOWN"
-        
-        # ========== FILTER WEAK SIGNALS ==========
-        
-        # Only trade if confidence is high enough
-        if confidence < 0.55:
-            signal = "NEUTRAL"
-            confidence = 0.3
-        
-        # Update state
-        self.previous_high = highs[-1]
-        self.previous_low = lows[-1]
-        self.breakout_strength = confidence
+        # If no signal, use RSI as fallback
+        if direction == "NEUTRAL":
+            if rsi < 30:
+                direction = "BUY"
+                confidence = 0.6
+                signal_description = "FALLBACK_OVERSOLD"
+            elif rsi > 70:
+                direction = "SELL"
+                confidence = 0.6
+                signal_description = "FALLBACK_OVERBOUGHT"
         
         return {
-            "direction": signal,
+            "direction": direction,
             "confidence": confidence,
-            "signal": breakout_type,
+            "signal": signal_description,
+            "strategy": strategy,
+            "market_state": market_state.get("state", "RANGING"),
             "rsi": rsi,
             "atr": atr,
-            "volume_surge": volume_surge,
-            "momentum_1": momentum_1,
-            "momentum_5": momentum_5,
-            "support": support,
-            "resistance": resistance,
-            "bb_upper": bb.get('upper', 0),
-            "bb_lower": bb.get('lower', 0),
-            "bb_width": bb.get('width', 0),
-            "consecutive_breakouts": self.consecutive_breakouts
+            "bb": bb,
+            "macd": macd,
+            "state_scores": market_state.get("scores", {}),
+            "state_confidence": market_state.get("confidence", 0.5)
         }
+    
+    def update_performance(self, strategy: str, pnl: float):
+        """Update strategy performance"""
+        if strategy in self.strategy_performance:
+            self.strategy_performance[strategy]["pnl"] += pnl
+            if pnl > 0:
+                self.strategy_performance[strategy]["wins"] += 1
+            else:
+                self.strategy_performance[strategy]["losses"] += 1
 
 # ========================================================================
-# 🤖 ULTIMATE BREAKOUT BOT
+# 🤖 ULTIMATE ADAPTIVE ALL-CONDITIONS BOT
 # ========================================================================
 
-class UltimateBreakoutBot:
+class UltimateAdaptiveBot:
 
     def __init__(self, api_key: str, api_secret: str, symbol: str = "BTCUSDT",
                  exchange_region: str = "us", log_level: str = "INFO"):
@@ -298,7 +463,7 @@ class UltimateBreakoutBot:
         self.symbol = symbol
 
         # Setup logging
-        log_filename = f"breakout_bot_{datetime.now().strftime('%Y%m%d')}.log"
+        log_filename = f"adaptive_all_bot_{datetime.now().strftime('%Y%m%d')}.log"
         logging.basicConfig(
             filename=log_filename,
             level=getattr(logging, log_level.upper()),
@@ -320,22 +485,24 @@ class UltimateBreakoutBot:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # Breakout engine
-        self.breakout_engine = BreakoutEngine()
+        # Adaptive strategy engine
+        self.strategy_engine = AdaptiveStrategyEngine()
         
         # Trading parameters
         self.total_capital = 50.0
         self.min_order_usdt = 10.0
         self.max_order_usdt = 15.0
         
-        # Aggressive but calculated
-        self.take_profit_pct = 0.025  # 2.5% (bigger for breakouts)
-        self.stop_loss_pct = 0.010    # 1.0% (wider for breakouts)
+        # Strategy-specific profit targets
+        self.targets = {
+            "MEAN_REVERSION": {"tp": 0.015, "sl": 0.007},
+            "MOMENTUM": {"tp": 0.025, "sl": 0.010},
+            "BREAKOUT": {"tp": 0.030, "sl": 0.012}
+        }
         
         # Safety limits
         self.max_drawdown_pct = 0.12
         self.max_consecutive_losses = 3
-        self.min_confidence = 0.55
         
         # Price cache
         self._price_cache = {}
@@ -384,13 +551,13 @@ class UltimateBreakoutBot:
         }
 
         self.logger.info("="*70)
-        self.logger.info("🚀 ULTIMATE BREAKOUT BOT v12.0")
+        self.logger.info("🚀 ADAPTIVE ALL-CONDITIONS BOT v13.0")
         self.logger.info("   10/10 ULTIMATE MASTERPIECE")
         self.logger.info("="*70)
-        self.logger.info(f"   Strategy: BREAKOUT TRADING")
-        self.logger.info(f"   Detects breakouts in real-time")
-        self.logger.info(f"   Enters on momentum confirmation")
-        self.logger.info(f"   Aggressive but calculated")
+        self.logger.info(f"   Strategy: MARKET STATE ADAPTATION")
+        self.logger.info(f"   Detects: RANGING, TRENDING, VOLATILE")
+        self.logger.info(f"   Switches strategies automatically")
+        self.logger.info(f"   NEVER just waits - always has a strategy")
         self.logger.info("="*70)
 
         self._check_connectivity()
@@ -749,31 +916,29 @@ class UltimateBreakoutBot:
         if not current_price:
             return {"success": False, "error": "No price data"}
         
+        strategy = analysis.get("strategy", "MEAN_REVERSION")
+        confidence = analysis.get("confidence", 0.5)
+        
         # Position sizing based on confidence
-        confidence = analysis.get('confidence', 0.5)
         position_multiplier = 0.6 + (confidence - 0.5) * 2
         position_multiplier = max(0.5, min(1.0, position_multiplier))
         
-        base_size = min(self.current_balance * 0.35, 15.0)
+        base_size = min(self.current_balance * 0.30, 15.0)
         position_size = base_size * position_multiplier
         position_size = max(self.min_order_usdt, min(self.max_order_usdt, position_size))
         
-        # Dynamic targets based on volatility
-        atr = analysis.get('atr', 50)
-        atr_pct = atr / current_price if current_price > 0 else 0.001
+        # Get strategy-specific targets
+        targets = self.targets.get(strategy, self.targets["MEAN_REVERSION"])
+        take_profit_pct = targets["tp"]
+        stop_loss_pct = targets["sl"]
         
-        take_profit_pct = self.take_profit_pct * (1 + atr_pct * 2)
-        take_profit_pct = min(0.04, max(0.015, take_profit_pct))
-        
-        stop_loss_pct = self.stop_loss_pct * (1 + atr_pct * 2)
-        stop_loss_pct = min(0.02, max(0.007, stop_loss_pct))
-        
-        self.logger.info(f"\n🔥 BREAKOUT TRADE: {direction}")
+        self.logger.info(f"\n🔥 ADAPTIVE TRADE: {direction}")
+        self.logger.info(f"   Strategy: {strategy}")
         self.logger.info(f"   Signal: {analysis.get('signal', 'N/A')}")
+        self.logger.info(f"   Market State: {analysis.get('market_state', 'N/A')}")
         self.logger.info(f"   Price: ${current_price:.2f}")
         self.logger.info(f"   Size: ${position_size:.2f}")
         self.logger.info(f"   Confidence: {confidence*100:.1f}%")
-        self.logger.info(f"   Volume Surge: {analysis.get('volume_surge', 0):.1f}x")
         self.logger.info(f"   TP: {take_profit_pct*100:.1f}% | SL: {stop_loss_pct*100:.1f}%")
         
         if direction == "BUY":
@@ -845,7 +1010,11 @@ class UltimateBreakoutBot:
         fee_estimate = (self.entry_price * self.entry_qty * 0.001) + (exit_price * self.entry_qty * 0.001)
         net_pnl = realized_pnl - fee_estimate
         
+        # Update strategy performance
+        self.strategy_engine.update_performance(strategy, net_pnl)
+        
         self.logger.info(f"\n📊 TRADE RESULTS:")
+        self.logger.info(f"   Strategy: {strategy}")
         self.logger.info(f"   Direction: {direction}")
         self.logger.info(f"   Entry: ${self.entry_price:.2f}")
         self.logger.info(f"   Exit: ${exit_price:.2f}")
@@ -870,7 +1039,9 @@ class UltimateBreakoutBot:
         result = {
             "success": True,
             "direction": direction,
+            "strategy": strategy,
             "signal": analysis.get('signal', 'N/A'),
+            "market_state": analysis.get('market_state', 'N/A'),
             "entry_price": self.entry_price,
             "exit_price": exit_price,
             "quantity": self.entry_qty,
@@ -920,7 +1091,7 @@ class UltimateBreakoutBot:
                         return float(exit_order.get("price", current_price))
                     return current_price
                 
-                # Aggressive trailing stop
+                # Trailing stop
                 if direction == "long" and current_price > self.entry_price * 1.01:
                     new_stop = current_price * (1 - 0.007)
                     if new_stop > stop_price:
@@ -952,8 +1123,9 @@ class UltimateBreakoutBot:
             return {"success": False, "error": "Bot stopped"}
         
         self.logger.info(f"\n{'='*60}")
-        self.logger.info(f"🔄 BREAKOUT CYCLE {cycle_number}")
-        self.logger.info(f"   Win Rate: {(self.win_count/self.total_trades*100) if self.total_trades > 0 else 0:.1f}%")
+        self.logger.info(f"🔄 ADAPTIVE CYCLE {cycle_number}")
+        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
+        self.logger.info(f"   Win Rate: {win_rate:.1f}%")
         self.logger.info(f"{'='*60}")
         
         self._update_balance()
@@ -983,34 +1155,31 @@ class UltimateBreakoutBot:
         if not klines:
             return {"success": False, "error": "No market data"}
         
-        # Analyze for breakouts
-        analysis = self.breakout_engine.analyze(klines)
+        # Adaptive analysis
+        analysis = self.strategy_engine.analyze(klines)
         analysis["current_price"] = current_price
-        
-        self.logger.info(f"\n📊 BREAKOUT ANALYSIS:")
-        self.logger.info(f"   Signal: {analysis.get('signal', 'N/A')}")
-        self.logger.info(f"   Direction: {analysis['direction']}")
-        self.logger.info(f"   Confidence: {analysis['confidence']*100:.1f}%")
-        self.logger.info(f"   RSI: {analysis['rsi']:.1f}")
-        self.logger.info(f"   Volume Surge: {analysis.get('volume_surge', 0):.1f}x")
-        self.logger.info(f"   Momentum 1m: {analysis.get('momentum_1', 0)*100:.2f}%")
-        self.logger.info(f"   Momentum 5m: {analysis.get('momentum_5', 0)*100:.2f}%")
-        self.logger.info(f"   Support: ${analysis.get('support', 0):.2f}")
-        self.logger.info(f"   Resistance: ${analysis.get('resistance', 0):.2f}")
-        self.logger.info(f"   BB Width: {analysis.get('bb_width', 0)*100:.2f}%")
         
         direction = analysis['direction']
         confidence = analysis['confidence']
+        strategy = analysis.get('strategy', 'MEAN_REVERSION')
+        market_state = analysis.get('market_state', 'RANGING')
         
-        # Check if we have a valid breakout signal
-        if direction == "NEUTRAL" or confidence < self.min_confidence:
-            self.logger.info(f"⏭️ No breakout detected ({confidence*100:.1f}%) - skipping")
-            return {"success": False, "error": "No breakout", "skipped": True}
+        self.logger.info(f"\n📊 ADAPTIVE ANALYSIS:")
+        self.logger.info(f"   Market State: {market_state}")
+        self.logger.info(f"   Strategy: {strategy}")
+        self.logger.info(f"   Signal: {analysis.get('signal', 'N/A')}")
+        self.logger.info(f"   Direction: {direction}")
+        self.logger.info(f"   Confidence: {confidence*100:.1f}%")
+        self.logger.info(f"   RSI: {analysis.get('rsi', 0):.1f}")
+        self.logger.info(f"   State Confidence: {analysis.get('state_confidence', 0)*100:.1f}%")
         
-        self.logger.info(f"\n🔥 BREAKOUT DETECTED: {direction} with {confidence*100:.1f}% confidence")
-        self.logger.info(f"   Type: {analysis.get('signal', 'N/A')}")
+        if direction == "NEUTRAL" or confidence < 0.50:
+            self.logger.info(f"⏭️ No clear signal - skipping")
+            return {"success": False, "error": "No clear signal", "skipped": True}
         
-        # Execute trade
+        self.logger.info(f"\n🔥 ADAPTIVE SIGNAL: {direction} with {confidence*100:.1f}% confidence")
+        self.logger.info(f"   Strategy: {strategy} (Market State: {market_state})")
+        
         result = self.execute_trade(direction, analysis)
         
         self.cycle_stats["total_cycles"] += 1
@@ -1026,11 +1195,11 @@ class UltimateBreakoutBot:
 
     def run_forever(self, delay_between_cycles: int = 5):
         self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 ULTIMATE BREAKOUT BOT v12.0")
+        self.logger.info("🚀 ADAPTIVE ALL-CONDITIONS BOT v13.0")
         self.logger.info("   10/10 ULTIMATE MASTERPIECE")
-        self.logger.info("   REAL-TIME BREAKOUT DETECTION")
-        self.logger.info("   MOMENTUM CONFIRMATION")
-        self.logger.info("   AGGRESSIVE BUT CALCULATED")
+        self.logger.info("   DETECTS: RANGING, TRENDING, VOLATILE")
+        self.logger.info("   SWITCHES STRATEGIES AUTOMATICALLY")
+        self.logger.info("   NEVER just waits - ALWAYS has a strategy")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
         
@@ -1046,7 +1215,7 @@ class UltimateBreakoutBot:
                 result = self.run_cycle(cycle_number=cycle_num)
                 
                 if result.get("skipped", False):
-                    self.logger.info("⏭️ Cycle skipped - waiting for breakout")
+                    self.logger.info("⏭️ Cycle skipped - no clear signal")
                 elif result.get("success", False):
                     self.logger.info(f"✅ Trade completed! Profit: ${result.get('net_profit', 0):.4f}")
                 else:
@@ -1057,7 +1226,7 @@ class UltimateBreakoutBot:
                 
                 if self.consecutive_wins >= 10:
                     self.logger.info("\n🎉🎉🎉 10 CONSISTENT WINS! 🎉🎉🎉")
-                    self.logger.info("   BREAKOUT BOT = 10/10 ULTIMATE MASTERPIECE!")
+                    self.logger.info("   ADAPTIVE BOT = 10/10 ULTIMATE MASTERPIECE!")
                     self.stopped = True
                     break
                 
@@ -1085,11 +1254,19 @@ class UltimateBreakoutBot:
         self.logger.info(f"   Wins: {self.win_count} | Losses: {self.loss_count}")
         self.logger.info(f"   Profit: ${self.cycle_stats['net_profit']:.4f}")
         self.logger.info(f"   Balance: ${self.current_balance:.2f}")
+        self.logger.info(f"   Current Strategy: {self.strategy_engine.current_strategy}")
+        
+        # Show strategy performance
+        self.logger.info(f"\n📊 STRATEGY PERFORMANCE:")
+        for strategy, perf in self.strategy_engine.strategy_performance.items():
+            total = perf["wins"] + perf["losses"]
+            win_rate_str = (perf["wins"] / total * 100) if total > 0 else 0
+            self.logger.info(f"   {strategy}: {perf['wins']}W/{perf['losses']}L ({win_rate_str:.1f}%) PnL=${perf['pnl']:.4f}")
 
     def print_final_summary(self):
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
         self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 ULTIMATE BREAKOUT BOT - FINAL SUMMARY")
+        self.logger.info("🚀 ADAPTIVE ALL-CONDITIONS BOT - FINAL SUMMARY")
         self.logger.info("   10/10 ULTIMATE MASTERPIECE")
         self.logger.info("="*70)
         self.logger.info(f"💰 Starting Balance: ${self.starting_balance:.2f}")
@@ -1104,19 +1281,23 @@ class UltimateBreakoutBot:
             roi = (self.cycle_stats['net_profit'] / self.starting_balance) * 100
             self.logger.info(f"📊 ROI: {roi:.1f}%")
         
-        self.logger.info(f"\n⚡ Strategy: BREAKOUT TRADING")
-        self.logger.info(f"   Real-time breakout detection")
-        self.logger.info(f"   Momentum confirmation")
-        self.logger.info(f"   Aggressive but calculated")
+        self.logger.info(f"\n📊 STRATEGY PERFORMANCE:")
+        for strategy, perf in self.strategy_engine.strategy_performance.items():
+            total = perf["wins"] + perf["losses"]
+            win_rate_str = (perf["wins"] / total * 100) if total > 0 else 0
+            self.logger.info(f"   {strategy}: {perf['wins']}W/{perf['losses']}L ({win_rate_str:.1f}%) PnL=${perf['pnl']:.4f}")
+        
+        self.logger.info(f"\n⚡ Strategy: ADAPTIVE - Market State Detection")
+        self.logger.info(f"   Final Strategy: {self.strategy_engine.current_strategy}")
         self.logger.info("="*70)
 
     def export_results(self):
         if not self.trade_history:
             return
-        filename = f"breakout_bot_results_{datetime.now().strftime('%Y%m%d')}.csv"
+        filename = f"adaptive_bot_results_{datetime.now().strftime('%Y%m%d')}.csv"
         file_exists = os.path.isfile(filename)
         with open(filename, 'a', newline='') as csvfile:
-            fieldnames = ['timestamp', 'direction', 'signal', 'entry_price', 'exit_price', 'quantity', 'profit', 'net_profit', 'balance_after']
+            fieldnames = ['timestamp', 'direction', 'strategy', 'signal', 'market_state', 'entry_price', 'exit_price', 'quantity', 'profit', 'net_profit', 'balance_after']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             if not file_exists:
                 writer.writeheader()
@@ -1124,7 +1305,9 @@ class UltimateBreakoutBot:
             writer.writerow({
                 'timestamp': latest['timestamp'],
                 'direction': latest.get('direction', 'unknown'),
+                'strategy': latest.get('strategy', 'N/A'),
                 'signal': latest.get('signal', 'N/A'),
+                'market_state': latest.get('market_state', 'N/A'),
                 'entry_price': f"{latest['entry_price']:.2f}",
                 'exit_price': f"{latest['exit_price']:.2f}",
                 'quantity': f"{latest['quantity']:.8f}",
@@ -1135,9 +1318,9 @@ class UltimateBreakoutBot:
 
     def export_final_report(self):
         report = {
-            "version": "12.0",
-            "strategy": "Ultimate Breakout Bot - 10/10 Masterpiece",
-            "description": "Real-time breakout detection with momentum confirmation",
+            "version": "13.0",
+            "strategy": "Adaptive All-Conditions Bot - 10/10 Masterpiece",
+            "description": "Detects market state and switches strategies",
             "starting_balance": self.starting_balance,
             "final_balance": self.current_balance,
             "peak_balance": self.peak_balance,
@@ -1146,9 +1329,11 @@ class UltimateBreakoutBot:
             "total_trades": self.total_trades,
             "wins": self.win_count,
             "losses": self.loss_count,
+            "strategy_performance": self.strategy_engine.strategy_performance,
+            "final_strategy": self.strategy_engine.current_strategy,
             "trade_history": self.trade_history
         }
-        filename = f"breakout_bot_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filename = f"adaptive_bot_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w') as f:
             json.dump(report, f, indent=2, default=str)
         self.logger.info(f"\n📄 Report exported: {filename}")
@@ -1171,22 +1356,23 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("="*70)
-    print("🚀 ULTIMATE BREAKOUT BOT v12.0")
+    print("🚀 ADAPTIVE ALL-CONDITIONS BOT v13.0")
     print("   10/10 ULTIMATE MASTERPIECE")
     print("="*70)
-    print("\nBREAKOUT TRADING STRATEGY:")
-    print("1. ✅ REAL-TIME BREAKOUT DETECTION")
-    print("2. ✅ MOMENTUM CONFIRMATION")
-    print("3. ✅ VOLUME SURGE DETECTION")
-    print("4. ✅ AGGRESSIVE BUT CALCULATED")
-    print("5. ✅ DYNAMIC TARGETS")
-    print("6. ✅ 10/10 ULTIMATE MASTERPIECE")
+    print("\nADAPTIVE STRATEGY:")
+    print("1. ✅ Detects market state: RANGING, TRENDING, VOLATILE")
+    print("2. ✅ Switches strategies automatically")
+    print("3. ✅ MEAN REVERSION for ranging markets")
+    print("4. ✅ MOMENTUM for trending markets")
+    print("5. ✅ BREAKOUT for volatile markets")
+    print("6. ✅ NEVER just waits - ALWAYS has a strategy")
+    print("7. ✅ 10/10 ULTIMATE MASTERPIECE")
     print("="*70)
     
-    print("\n🤖 Starting BREAKOUT BOT in 3 seconds...")
+    print("\n🤖 Starting ADAPTIVE ALL-CONDITIONS BOT in 3 seconds...")
     time.sleep(3)
     
-    bot = UltimateBreakoutBot(
+    bot = UltimateAdaptiveBot(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
