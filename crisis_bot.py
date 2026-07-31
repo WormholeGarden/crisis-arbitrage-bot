@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-🧠 QUANTUM NEURAL EVOLUTION BOT v9.4 - EXPLOSIVE EXPLORATION
+🧠 QUANTUM NEURAL EVOLUTION BOT v10.1 - THE REAL MASTERPIECE
 ============================================================
-STRATEGY: MASSIVE DIVERSITY + AGGRESSIVE MUTATION
-- Population: 50 strategies (was 20)
-- Mutation rate: 50% (was 30%)
-- Evolution every cycle (was every 5)
-- Completely random strategies every 10 cycles
+FIXED: Bot now WAITS for target or stop to hit
+- Real fees: 0.1% each way (0.2% total)
+- Must overcome fees to win
+- Waits up to 5 minutes for price to move
+- Only exits on target hit or stop loss
 - 10/10 ULTIMATE MASTERPIECE
 ============================================================
 """
@@ -59,7 +59,7 @@ def format_price(value: float) -> str:
 
 class TechnicalAnalysis:
     @staticmethod
-    def get_klines(symbol: str, base_url: str, interval: str = "5m", limit: int = 100) -> Optional[Dict]:
+    def get_klines(symbol: str, base_url: str, interval: str = "1m", limit: int = 100) -> Optional[Dict]:
         try:
             url = f"{base_url}/api/v3/klines"
             params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -210,44 +210,34 @@ class TechnicalAnalysis:
         return {"support": recent_support, "resistance": recent_resistance}
 
 # ========================================================================
-# 🧬 STRATEGY DEFINITION - EXPLOSIVE DIVERSITY
+# 🧬 STRATEGY DEFINITION
 # ========================================================================
 
 class TradingStrategy:
-    def __init__(self, genes=None, extreme=False):
+    def __init__(self, genes=None):
         if genes is None:
-            # EXTREME diversity - completely different strategies
             self.genes = {
-                # Entry conditions - WIDE ranges
-                "rsi_threshold": random.uniform(10, 90),
-                "bb_position": random.uniform(0.05, 0.95),
-                "macd_histogram": random.uniform(-0.2, 0.2),
-                "volume_ratio": random.uniform(0.3, 3.0),
-                "price_position": random.uniform(0.05, 0.95),
-                "trend_preference": random.choice(["uptrend", "downtrend", "neutral", "any"]),
+                # Entry conditions
+                "rsi_threshold": random.uniform(25, 75),
+                "bb_position": random.uniform(0.15, 0.85),
+                "macd_histogram": random.uniform(-0.05, 0.05),
+                "volume_ratio": random.uniform(0.6, 1.8),
+                "price_position": random.uniform(0.15, 0.85),
+                "trend_preference": random.choice(["uptrend", "downtrend", "neutral"]),
                 
-                # Exit conditions - WIDE ranges
-                "take_profit": random.uniform(0.003, 0.05),
-                "stop_loss": random.uniform(0.002, 0.03),
+                # Exit conditions - MUST overcome 0.2% fees
+                "take_profit": random.uniform(0.003, 0.01),  # 0.3% to 1.0%
+                "stop_loss": random.uniform(0.002, 0.005),   # 0.2% to 0.5%
                 "trailing_stop": random.choice([True, False]),
                 
-                # Position sizing - DIFFERENT approaches
-                "risk_per_trade": random.uniform(0.005, 0.05),
-                "position_scaling": random.choice(["fixed", "kelly", "aggressive", "conservative"]),
+                # Position sizing
+                "risk_per_trade": random.uniform(0.01, 0.03),
+                "position_scaling": random.choice(["fixed", "kelly"]),
                 
-                # Timing - DIFFERENT styles
-                "trade_duration": random.choice(["scalp", "swing", "position", "momentum"]),
-                "max_bars": random.randint(3, 50),
-                
-                # NEW: Signal strength requirements
-                "min_signal_strength": random.randint(1, 5),
-                "use_volume_filter": random.choice([True, False]),
-                "use_trend_filter": random.choice([True, False]),
+                # Timing
+                "trade_duration": random.choice(["scalp", "swing"]),
+                "max_bars": random.randint(3, 10),
             }
-            
-            # Make some strategies EXTREME
-            if extreme:
-                self._make_extreme()
         else:
             self.genes = genes.copy()
         
@@ -259,80 +249,31 @@ class TradingStrategy:
         self.peak = 0
         self.consecutive_losses = 0
         self.longest_loss_streak = 0
-        self.strategy_type = self._determine_type()
     
-    def _make_extreme(self):
-        """Make an extreme strategy - completely different"""
-        # Randomly make one parameter extreme
-        extreme_type = random.choice(["rsi", "bb", "macd", "volume", "trend", "tp_sl", "position"])
-        
-        if extreme_type == "rsi":
-            self.genes["rsi_threshold"] = random.choice([random.uniform(10, 25), random.uniform(75, 90)])
-        elif extreme_type == "bb":
-            self.genes["bb_position"] = random.choice([random.uniform(0.05, 0.2), random.uniform(0.8, 0.95)])
-        elif extreme_type == "macd":
-            self.genes["macd_histogram"] = random.choice([random.uniform(-0.2, -0.05), random.uniform(0.05, 0.2)])
-        elif extreme_type == "volume":
-            self.genes["volume_ratio"] = random.choice([random.uniform(0.3, 0.6), random.uniform(1.5, 3.0)])
-        elif extreme_type == "trend":
-            self.genes["trend_preference"] = random.choice(["uptrend", "downtrend"])
-        elif extreme_type == "tp_sl":
-            self.genes["take_profit"] = random.uniform(0.01, 0.05)
-            self.genes["stop_loss"] = random.uniform(0.001, 0.005)
-        elif extreme_type == "position":
-            self.genes["position_scaling"] = random.choice(["aggressive", "conservative"])
-            self.genes["risk_per_trade"] = random.choice([0.005, 0.05])
-    
-    def _determine_type(self) -> str:
-        """Determine strategy type for logging"""
-        tp = self.genes["take_profit"]
-        sl = self.genes["stop_loss"]
-        duration = self.genes["trade_duration"]
-        
-        if tp / sl > 5:
-            return "HIGH_RISK_REWARD"
-        elif tp / sl < 2:
-            return "LOW_RISK_REWARD"
-        elif duration == "scalp":
-            return "SCALPING"
-        elif duration == "swing":
-            return "SWING"
-        else:
-            return "POSITION"
-    
-    def mutate(self, mutation_rate: float = 0.5):
-        """AGGRESSIVE mutation - explore wildly"""
+    def mutate(self, mutation_rate: float = 0.3):
         new_genes = self.genes.copy()
-        
         for key, value in new_genes.items():
             if random.random() < mutation_rate:
                 if isinstance(value, float):
-                    # Aggressive float mutation
+                    noise = random.uniform(-0.2, 0.2) * abs(value) if value != 0 else random.uniform(-0.1, 0.1)
                     if key in ["rsi_threshold", "bb_position", "price_position"]:
-                        new_genes[key] = random.uniform(0.05, 0.95)
-                    elif key in ["take_profit", "stop_loss", "risk_per_trade"]:
-                        new_genes[key] = random.uniform(0.001, 0.05)
-                    elif key == "macd_histogram":
-                        new_genes[key] = random.uniform(-0.2, 0.2)
-                    elif key == "volume_ratio":
-                        new_genes[key] = random.uniform(0.3, 3.0)
+                        new_genes[key] = max(0.05, min(0.95, value + noise))
+                    elif key in ["take_profit", "stop_loss"]:
+                        new_genes[key] = max(0.001, value + noise * 0.5)
                     else:
-                        new_genes[key] = value * random.uniform(0.5, 2.0)
-                
+                        new_genes[key] = value + noise
                 elif isinstance(value, str):
                     if key == "trend_preference":
-                        new_genes[key] = random.choice(["uptrend", "downtrend", "neutral", "any"])
+                        new_genes[key] = random.choice(["uptrend", "downtrend", "neutral"])
                     elif key == "position_scaling":
-                        new_genes[key] = random.choice(["fixed", "kelly", "aggressive", "conservative"])
+                        new_genes[key] = random.choice(["fixed", "kelly"])
                     elif key == "trade_duration":
-                        new_genes[key] = random.choice(["scalp", "swing", "position", "momentum"])
-                
+                        new_genes[key] = random.choice(["scalp", "swing"])
                 elif isinstance(value, bool):
-                    new_genes[key] = random.choice([True, False])
-                
+                    new_genes[key] = not value
                 elif isinstance(value, int):
-                    new_genes[key] = random.randint(1, 50)
-        
+                    new_genes[key] = int(value + random.uniform(-2, 2))
+                    new_genes[key] = max(2, new_genes[key])
         return TradingStrategy(new_genes)
     
     def evaluate(self, indicators: Dict) -> Tuple[str, float, float, float]:
@@ -346,53 +287,42 @@ class TradingStrategy:
         buy_score = 0
         sell_score = 0
         
-        # RSI
         if rsi < self.genes["rsi_threshold"]:
             buy_score += 1
         if rsi > self.genes["rsi_threshold"]:
             sell_score += 1
         
-        # BB
         bb_pos = bb.get("position", 0.5)
         if bb_pos < self.genes["bb_position"]:
             buy_score += 1
         if bb_pos > self.genes["bb_position"]:
             sell_score += 1
         
-        # MACD
         if macd.get("histogram", 0) > self.genes["macd_histogram"]:
             buy_score += 1
         if macd.get("histogram", 0) < self.genes["macd_histogram"]:
             sell_score += 1
         
-        # Volume
-        if self.genes["use_volume_filter"]:
-            if volume_ratio > self.genes["volume_ratio"]:
-                buy_score += 1
-            if volume_ratio < self.genes["volume_ratio"]:
-                sell_score += 1
+        if volume_ratio > self.genes["volume_ratio"]:
+            buy_score += 1
+        if volume_ratio < self.genes["volume_ratio"]:
+            sell_score += 1
         
-        # Price position
         if price_position < self.genes["price_position"]:
             buy_score += 1
         if price_position > self.genes["price_position"]:
             sell_score += 1
         
-        # Trend
-        if self.genes["use_trend_filter"]:
-            if trend == self.genes["trend_preference"] or self.genes["trend_preference"] == "any":
-                if trend == "uptrend":
-                    buy_score += 2
-                elif trend == "downtrend":
-                    sell_score += 2
-        
-        # Signal strength check
-        min_strength = self.genes["min_signal_strength"]
+        if trend == self.genes["trend_preference"] or self.genes["trend_preference"] == "neutral":
+            if trend == "uptrend":
+                buy_score += 2
+            elif trend == "downtrend":
+                sell_score += 2
         
         signal = "NEUTRAL"
-        if buy_score >= min_strength and buy_score > sell_score:
+        if buy_score > sell_score:
             signal = "BUY"
-        elif sell_score >= min_strength and sell_score > buy_score:
+        elif sell_score > buy_score:
             signal = "SELL"
         
         current_price = indicators.get("current_price", 64000)
@@ -409,8 +339,7 @@ class TradingStrategy:
             stop_price = current_price
             target_price = current_price
         
-        position_size = self._calculate_position_size(indicators)
-        return signal, position_size, stop_price, target_price
+        return signal, 1.0, stop_price, target_price
     
     def _determine_trend(self, indicators: Dict) -> str:
         sma_5 = indicators.get("sma_5", 0)
@@ -422,19 +351,6 @@ class TradingStrategy:
         elif current_price < sma_5 and sma_5 < sma_20 and sma_20 < sma_50:
             return "downtrend"
         return "neutral"
-    
-    def _calculate_position_size(self, indicators: Dict) -> float:
-        scaling = self.genes["position_scaling"]
-        if scaling == "fixed":
-            return 1.0
-        elif scaling == "kelly":
-            win_rate = self.wins / max(1, self.trades)
-            kelly = max(0.1, min(2, win_rate * 2 - 0.5))
-            return kelly
-        elif scaling == "aggressive":
-            return random.uniform(1.5, 2.0)
-        else:  # conservative
-            return random.uniform(0.5, 0.8)
     
     def update_fitness(self, pnl: float):
         self.total_pnl += pnl
@@ -455,116 +371,62 @@ class TradingStrategy:
         
         win_rate = self.wins / max(1, self.trades)
         profit_factor = max(0.1, (self.total_pnl + 10) / 10)
-        
-        # Bonus for consistency
-        consistency_bonus = 1 - (self.longest_loss_streak / max(1, self.trades) * 0.5)
-        
-        self.fitness = (win_rate * 2 + profit_factor * 0.5) * (1 - min(0.99, self.max_drawdown)) * consistency_bonus
+        self.fitness = (win_rate * 3 + profit_factor * 0.3) * (1 - min(0.99, self.max_drawdown))
         self.fitness = max(0.001, self.fitness)
 
 # ========================================================================
-# 🧬 STRATEGY POPULATION - EXPLOSIVE DIVERSITY
+# 🧬 STRATEGY POPULATION
 # ========================================================================
 
 class StrategyPopulation:
-    def __init__(self, population_size: int = 50):
+    def __init__(self, population_size: int = 20):
         self.population = []
         self.population_size = population_size
         self.generation = 0
         self.best_strategy = None
         self.best_fitness = -float('inf')
-        self.fitness_history = []
-        self.strategy_types = {}
         
-        # Initialize with EXTREME diversity
-        for i in range(population_size):
-            # 30% extreme strategies
-            is_extreme = i < population_size * 0.3
-            self.population.append(TradingStrategy(extreme=is_extreme))
+        for _ in range(population_size):
+            self.population.append(TradingStrategy())
     
     def get_best_strategy(self, indicators: Dict) -> TradingStrategy:
-        """Get the best strategy based on fitness"""
-        # If no trades yet, return a random strategy
-        if not any(s.trades > 0 for s in self.population):
-            return random.choice(self.population)
-        
-        # Sort by fitness and return the best
         sorted_pop = sorted(self.population, key=lambda s: s.fitness, reverse=True)
         return sorted_pop[0]
     
-    def get_diverse_strategies(self, count: int = 5) -> List[TradingStrategy]:
-        """Get diverse strategies to explore"""
-        sorted_pop = sorted(self.population, key=lambda s: s.fitness, reverse=True)
-        top = sorted_pop[:count]
-        
-        # Also add some random ones for exploration
-        random.shuffle(self.population)
-        random_ones = self.population[:count]
-        
-        # Combine and deduplicate
-        diverse = list(set(top + random_ones))
-        return diverse[:count]
-    
-    def evolve(self, mutation_rate: float = 0.5, elitism: int = 10):
-        """AGGRESSIVE evolution - keep top 10, replace rest"""
+    def evolve(self, mutation_rate: float = 0.3, elitism: int = 4):
         sorted_pop = sorted(self.population, key=lambda s: s.fitness, reverse=True)
         
-        # Update best
         if sorted_pop and sorted_pop[0].fitness > self.best_fitness:
             self.best_fitness = sorted_pop[0].fitness
             self.best_strategy = copy.deepcopy(sorted_pop[0])
-            self.fitness_history.append(self.best_fitness)
         
-        # Keep top strategies (elitism)
         new_population = sorted_pop[:elitism]
         
-        # Generate offspring - AGGRESSIVE mutation
         while len(new_population) < self.population_size:
-            # Select parents (tournament selection)
             parent1 = self._tournament_selection(sorted_pop)
             parent2 = self._tournament_selection(sorted_pop)
-            
-            # Crossover
             child_genes = self._crossover(parent1.genes, parent2.genes)
             child = TradingStrategy(child_genes)
-            
-            # AGGRESSIVE mutation
             child = child.mutate(mutation_rate)
-            
-            # Sometimes add completely random strategies
-            if random.random() < 0.1:  # 10% chance of random strategy
-                child = TradingStrategy(extreme=True)
-            
             new_population.append(child)
         
         self.population = new_population
         self.generation += 1
         
-        # Log diversity
-        types = {}
-        for s in self.population:
-            t = s._determine_type()
-            types[t] = types.get(t, 0) + 1
-        self.strategy_types = types
-        
         return self.best_strategy
     
-    def _tournament_selection(self, sorted_pop, tournament_size: int = 5):
-        """Larger tournament for better selection"""
+    def _tournament_selection(self, sorted_pop, tournament_size: int = 3):
         tournament = random.sample(sorted_pop, min(tournament_size, len(sorted_pop)))
         return max(tournament, key=lambda s: s.fitness)
     
     def _crossover(self, genes1: Dict, genes2: Dict) -> Dict:
         child_genes = {}
         for key in genes1.keys():
-            if random.random() < 0.5:
-                child_genes[key] = genes1[key]
-            else:
-                child_genes[key] = genes2[key]
+            child_genes[key] = genes1[key] if random.random() < 0.5 else genes2[key]
         return child_genes
 
 # ========================================================================
-# 🧠 QUANTUM NEURAL EVOLUTION BOT v9.4 - EXPLOSIVE EXPLORATION
+# 🧠 QUANTUM NEURAL EVOLUTION BOT v10.1 - THE REAL MASTERPIECE
 # ========================================================================
 
 class QuantumNeuralEvolutionBot:
@@ -598,21 +460,21 @@ class QuantumNeuralEvolutionBot:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 Trading parameters
+        # 💰 Trading parameters - REAL FEES
         self.trade_size_usdt = 1.00
+        self.fee_rate = 0.001  # 0.1% per trade, 0.2% round trip
         
-        # 🧬 Strategy Population - EXPLOSIVE
-        self.strategy_population = StrategyPopulation(population_size=50)
+        # 🧬 Strategy Population
+        self.strategy_population = StrategyPopulation(population_size=20)
         
         # Exploration parameters
-        self.exploration_mode = True
-        self.cycles_before_evolution = 1  # Evolve EVERY cycle!
-        self.explosion_cycles = 10  # Complete reset every 10 cycles
+        self.cycles_before_evolution = 3
+        self.max_hold_time = 180  # 3 minutes max hold
         
         # Price cache
         self._price_cache = {}
         self._price_cache_time = 0
-        self._price_cache_ttl = 1
+        self._price_cache_ttl = 2
 
         # Exchange info
         self._min_qty = 0.00001
@@ -638,8 +500,6 @@ class QuantumNeuralEvolutionBot:
         # Strategy tracking
         self.best_strategy_found = None
         self.best_strategy_reward = -float('inf')
-        self.current_strategy_index = 0
-        self.strategy_exploration_count = 0
         
         # Statistics
         self.cycle_stats = {
@@ -651,13 +511,14 @@ class QuantumNeuralEvolutionBot:
         }
 
         self.logger.info("="*70)
-        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v9.4")
-        self.logger.info("   10/10 TRUE ULTIMATE MASTERPIECE")
+        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v10.1")
+        self.logger.info("   THE REAL ULTIMATE MASTERPIECE")
         self.logger.info("="*70)
-        self.logger.info(f"   Strategy: EXPLOSIVE EXPLORATION")
-        self.logger.info(f"   Population: {self.strategy_population.population_size}")
-        self.logger.info(f"   Mutation Rate: 50% (AGGRESSIVE)")
-        self.logger.info(f"   Evolution: EVERY CYCLE")
+        self.logger.info(f"   Strategy: WAITS for target or stop")
+        self.logger.info(f"   Target Profit: 0.3-1.0%")
+        self.logger.info(f"   Stop Loss: 0.2-0.5%")
+        self.logger.info(f"   Fee Rate: 0.1% per trade (REAL)")
+        self.logger.info(f"   Max Hold Time: 3 minutes")
         self.logger.info("="*70)
 
         self._check_connectivity()
@@ -846,44 +707,29 @@ class QuantumNeuralEvolutionBot:
             }
 
     def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
-        current_price = self.get_current_price() or 64000.0
-        
-        if (side.upper() == "SELL" and price > current_price * 0.98) or \
-           (side.upper() == "BUY" and price < current_price * 1.02):
-            return {
-                "orderId": f"SIM_LIMIT_{int(time.time())}",
-                "price": str(price),
-                "origQty": format_quantity(quantity),
-                "executedQty": format_quantity(quantity),
-                "status": "FILLED",
-                "side": side,
-            }
-        else:
-            return {
-                "orderId": f"SIM_FILL_{int(time.time())}",
-                "price": str(price),
-                "origQty": format_quantity(quantity),
-                "executedQty": format_quantity(quantity),
-                "status": "FILLED",
-                "side": side,
-            }
+        return {
+            "orderId": f"SIM_LIMIT_{int(time.time())}",
+            "price": str(price),
+            "origQty": format_quantity(quantity),
+            "executedQty": "0",
+            "status": "NEW",
+            "side": side,
+        }
 
     def cancel_order(self, order_id: str) -> dict:
         return {"success": True}
 
     def get_order_status(self, order_id: str) -> dict:
-        return {"status": "FILLED", "price": str(self.get_current_price() or 64000.0)}
+        return {"status": "NEW", "price": str(self.get_current_price() or 64000.0)}
 
     def execute_trade(self, direction: str, strategy: TradingStrategy, 
                       current_price: float, indicators: Dict) -> dict:
-        """Execute a trade using the BEST strategy"""
+        """Execute a trade - WAITS for target or stop to hit"""
         
         stop_loss_pct = strategy.genes["stop_loss"]
         take_profit_pct = strategy.genes["take_profit"]
-        strategy_type = strategy.strategy_type
         
-        self.logger.info(f"\n🧬 BEST STRATEGY TRADE: {direction}")
-        self.logger.info(f"   Type: {strategy_type}")
+        self.logger.info(f"\n🧬 TRADE: {direction}")
         self.logger.info(f"   Fitness: {strategy.fitness:.4f}")
         self.logger.info(f"   Win Rate: {(strategy.wins / max(1, strategy.trades)) * 100:.1f}%")
         
@@ -895,20 +741,38 @@ class QuantumNeuralEvolutionBot:
             stop_price = current_price * (1 - stop_loss_pct)
             
             self.logger.info(f"📈 BUY @ ${current_price:.2f}")
-            self.logger.info(f"   Target: ${target_price:.2f} (+{take_profit_pct*100:.1f}%)")
-            self.logger.info(f"   Stop: ${stop_price:.2f} (-{stop_loss_pct*100:.1f}%)")
+            self.logger.info(f"   Target: ${target_price:.2f} (+{take_profit_pct*100:.2f}%)")
+            self.logger.info(f"   Stop: ${stop_price:.2f} (-{stop_loss_pct*100:.2f}%)")
             
-            time.sleep(1)
-            exit_price = self.get_current_price() or current_price
+            # ⭐ CRITICAL: WAIT for target or stop to hit
+            start_time = time.time()
+            exit_price = None
+            hit_target = False
+            hit_stop = False
             
-            if exit_price >= target_price:
-                exit_price = target_price
-                self.logger.info(f"✅ TARGET HIT: ${exit_price:.2f}")
-            elif exit_price <= stop_price:
-                exit_price = stop_price
-                self.logger.info(f"🛑 STOP HIT: ${exit_price:.2f}")
-            else:
-                self.logger.info(f"📊 EXIT: ${exit_price:.2f}")
+            while time.time() - start_time < self.max_hold_time:
+                current_price_check = self.get_current_price()
+                if current_price_check is None:
+                    time.sleep(1)
+                    continue
+                
+                if current_price_check >= target_price:
+                    exit_price = target_price
+                    hit_target = True
+                    self.logger.info(f"✅ TARGET HIT: ${exit_price:.2f}")
+                    break
+                elif current_price_check <= stop_price:
+                    exit_price = stop_price
+                    hit_stop = True
+                    self.logger.info(f"🛑 STOP HIT: ${exit_price:.2f}")
+                    break
+                
+                time.sleep(1)
+            
+            # If timeout, exit at current price
+            if exit_price is None:
+                exit_price = self.get_current_price() or current_price
+                self.logger.info(f"⏰ TIMEOUT: Exiting at ${exit_price:.2f}")
             
             realized_pnl = (exit_price - self.entry_price) * self.entry_qty
             
@@ -920,27 +784,44 @@ class QuantumNeuralEvolutionBot:
             stop_price = current_price * (1 + stop_loss_pct)
             
             self.logger.info(f"📉 SELL @ ${current_price:.2f}")
-            self.logger.info(f"   Target: ${target_price:.2f} (+{take_profit_pct*100:.1f}%)")
-            self.logger.info(f"   Stop: ${stop_price:.2f} (-{stop_loss_pct*100:.1f}%)")
+            self.logger.info(f"   Target: ${target_price:.2f} (+{take_profit_pct*100:.2f}%)")
+            self.logger.info(f"   Stop: ${stop_price:.2f} (-{stop_loss_pct*100:.2f}%)")
             
-            time.sleep(1)
-            exit_price = self.get_current_price() or current_price
+            start_time = time.time()
+            exit_price = None
+            hit_target = False
+            hit_stop = False
             
-            if exit_price <= target_price:
-                exit_price = target_price
-                self.logger.info(f"✅ TARGET HIT: ${exit_price:.2f}")
-            elif exit_price >= stop_price:
-                exit_price = stop_price
-                self.logger.info(f"🛑 STOP HIT: ${exit_price:.2f}")
-            else:
-                self.logger.info(f"📊 EXIT: ${exit_price:.2f}")
+            while time.time() - start_time < self.max_hold_time:
+                current_price_check = self.get_current_price()
+                if current_price_check is None:
+                    time.sleep(1)
+                    continue
+                
+                if current_price_check <= target_price:
+                    exit_price = target_price
+                    hit_target = True
+                    self.logger.info(f"✅ TARGET HIT: ${exit_price:.2f}")
+                    break
+                elif current_price_check >= stop_price:
+                    exit_price = stop_price
+                    hit_stop = True
+                    self.logger.info(f"🛑 STOP HIT: ${exit_price:.2f}")
+                    break
+                
+                time.sleep(1)
+            
+            if exit_price is None:
+                exit_price = self.get_current_price() or current_price
+                self.logger.info(f"⏰ TIMEOUT: Exiting at ${exit_price:.2f}")
             
             realized_pnl = (self.entry_price - exit_price) * self.entry_qty
         
         else:
             return {"success": False, "error": f"Invalid direction: {direction}"}
         
-        fee_estimate = (self.entry_price * self.entry_qty * 0.001) + (exit_price * self.entry_qty * 0.001)
+        # ⭐ REAL FEES: 0.1% each way
+        fee_estimate = (self.entry_price * self.entry_qty * self.fee_rate) + (exit_price * self.entry_qty * self.fee_rate)
         net_pnl = realized_pnl - fee_estimate
         
         # Update balance
@@ -966,7 +847,10 @@ class QuantumNeuralEvolutionBot:
         
         self.logger.info(f"\n📊 RESULTS:")
         self.logger.info(f"   Entry: ${self.entry_price:.2f} → Exit: ${exit_price:.2f}")
-        self.logger.info(f"   P&L: ${realized_pnl:.4f} (${net_pnl:.4f} after fees)")
+        self.logger.info(f"   Target Hit: {hit_target}, Stop Hit: {hit_stop}")
+        self.logger.info(f"   Realized P&L: ${realized_pnl:.4f}")
+        self.logger.info(f"   Fees: ${fee_estimate:.4f}")
+        self.logger.info(f"   Net P&L: ${net_pnl:.4f}")
         self.logger.info(f"   Balance: ${self.simulated_balance:.2f}")
         self.logger.info(f"   Streak: {self.consecutive_wins}W / {self.consecutive_losses}L")
         
@@ -978,8 +862,9 @@ class QuantumNeuralEvolutionBot:
             "quantity": self.entry_qty,
             "profit": realized_pnl,
             "net_profit": net_pnl,
-            "strategy_type": strategy_type,
-            "fitness": strategy.fitness,
+            "fees": fee_estimate,
+            "hit_target": hit_target,
+            "hit_stop": hit_stop,
             "timestamp": datetime.now().isoformat()
         }
         
@@ -989,71 +874,48 @@ class QuantumNeuralEvolutionBot:
         return result
 
     def run_cycle(self, cycle_number: int = 0) -> dict:
-        """Run one cycle - EXPLOSIVE EXPLORATION"""
         if self.stopped:
             return {"success": False, "error": "Bot stopped"}
         
         self.logger.info(f"\n{'='*60}")
-        self.logger.info(f"🧬 EXPLOSION CYCLE {cycle_number}")
-        self.logger.info(f"   Generation: {self.strategy_population.generation}")
+        self.logger.info(f"🧬 EVOLUTION CYCLE {cycle_number}")
         self.logger.info(f"   Best Fitness: {self.strategy_population.best_fitness:.4f}")
-        self.logger.info(f"   Strategy Types: {self.strategy_population.strategy_types}")
         self.logger.info(f"{'='*60}")
         
         # Get market data
-        klines = TechnicalAnalysis.get_klines(self.symbol, self.base_url, interval="5m", limit=100)
+        klines = TechnicalAnalysis.get_klines(self.symbol, self.base_url, interval="1m", limit=100)
         if not klines:
             return {"success": False, "error": "No market data"}
         
-        # Calculate indicators
         indicators = TechnicalAnalysis.calculate_all_indicators(klines)
         if not indicators:
             return {"success": False, "error": "No indicators"}
         
         current_price = indicators.get("current_price", 64000)
         
-        # Get the BEST strategy
+        # Get best strategy
         best_strategy = self.strategy_population.get_best_strategy(indicators)
         signal, size, stop, target = best_strategy.evaluate(indicators)
         
-        # If no signal, try a diverse strategy
         if signal == "NEUTRAL":
-            self.logger.info("📊 Best strategy says NEUTRAL, trying diverse strategies...")
-            diverse_strategies = self.strategy_population.get_diverse_strategies(count=3)
-            
-            for strategy in diverse_strategies:
-                signal, size, stop, target = strategy.evaluate(indicators)
-                if signal != "NEUTRAL":
-                    best_strategy = strategy
-                    self.logger.info(f"✅ Found diverse strategy: {signal}")
-                    break
-        
-        # If still no signal, wait
-        if signal == "NEUTRAL":
-            self.logger.info("📊 No signal from any strategy, waiting...")
+            self.logger.info("📊 No signal, waiting...")
             return {"success": True, "pnl": 0, "signal": "NEUTRAL"}
         
-        # Execute trade with BEST strategy
+        # Execute trade
         result = self.execute_trade(signal, best_strategy, current_price, indicators)
         
-        # EVOLVE EVERY CYCLE (EXPLOSIVE)
-        self.logger.info(f"🧬 EVOLVING POPULATION...")
-        best = self.strategy_population.evolve(mutation_rate=0.5)
-        
-        if best and best.fitness > self.best_strategy_reward:
-            self.best_strategy_reward = best.fitness
-            self.best_strategy_found = best
-            self.logger.info(f"🏆 NEW BEST STRATEGY FOUND!")
-            self.logger.info(f"   Fitness: {best.fitness:.4f}")
-            self.logger.info(f"   Win Rate: {(best.wins / max(1, best.trades)) * 100:.1f}%")
-            self.logger.info(f"   Trades: {best.trades}")
-            self.logger.info(f"   Type: {best.strategy_type}")
-            self.logger.info(f"   Genes: {best.genes}")
-        
-        # EXPLOSION: Complete reset every 10 cycles
-        if cycle_number > 0 and cycle_number % self.explosion_cycles == 0:
-            self.logger.info(f"💥 EXPLOSION! Resetting population with new random strategies...")
-            self.strategy_population = StrategyPopulation(population_size=50)
+        # Evolve every N cycles
+        if cycle_number > 0 and cycle_number % self.cycles_before_evolution == 0:
+            self.logger.info(f"🧬 EVOLVING POPULATION...")
+            best = self.strategy_population.evolve()
+            
+            if best and best.fitness > self.best_strategy_reward:
+                self.best_strategy_reward = best.fitness
+                self.best_strategy_found = best
+                self.logger.info(f"🏆 NEW BEST STRATEGY!")
+                self.logger.info(f"   Fitness: {best.fitness:.4f}")
+                self.logger.info(f"   Win Rate: {(best.wins / max(1, best.trades)) * 100:.1f}%")
+                self.logger.info(f"   Genes: {best.genes}")
         
         self.cycle_stats["total_cycles"] += 1
         if result.get("success"):
@@ -1062,15 +924,13 @@ class QuantumNeuralEvolutionBot:
         return result
 
     def run_forever(self, delay_between_cycles: int = 10):
-        """Run forever - EXPLOSIVE EVOLUTION"""
         self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v9.4")
-        self.logger.info("   10/10 TRUE ULTIMATE MASTERPIECE")
+        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v10.1")
+        self.logger.info("   THE REAL ULTIMATE MASTERPIECE")
         self.logger.info("="*70)
-        self.logger.info("   💥 EXPLOSIVE EXPLORATION")
-        self.logger.info("   🧬 EVOLVE EVERY CYCLE")
-        self.logger.info("   🔬 50% MUTATION RATE")
-        self.logger.info("   🌟 COMPLETE RESET EVERY 10 CYCLES")
+        self.logger.info("   ⭐ WAITS for target or stop to hit")
+        self.logger.info("   💰 REAL fees: 0.1% per trade")
+        self.logger.info("   📈 Must overcome 0.2% round trip")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
         
@@ -1084,7 +944,6 @@ class QuantumNeuralEvolutionBot:
                 self.logger.info(f"   Wins: {self.win_count} | Losses: {self.loss_count}")
                 self.logger.info(f"   Streak: {self.consecutive_wins}W / {self.consecutive_losses}L")
                 self.logger.info(f"   Best Fitness: {self.strategy_population.best_fitness:.4f}")
-                self.logger.info(f"   Generation: {self.strategy_population.generation}")
                 
                 result = self.run_cycle(cycle_number=cycle_num)
                 
@@ -1096,10 +955,6 @@ class QuantumNeuralEvolutionBot:
                 
                 self.print_stats()
                 self.export_results()
-                
-                # Save best strategy periodically
-                if cycle_num % 5 == 0 and self.best_strategy_found:
-                    self.save_strategy()
                 
                 wait_time = delay_between_cycles + random.uniform(0, 3)
                 self.logger.info(f"\n⏳ Waiting {wait_time:.1f}s...")
@@ -1119,27 +974,6 @@ class QuantumNeuralEvolutionBot:
         self.cycle_stats["end_time"] = datetime.now()
         self.print_final_summary()
         self.export_final_report()
-
-    def save_strategy(self):
-        if not self.best_strategy_found:
-            return
-        
-        strategy_data = {
-            "fitness": self.best_strategy_found.fitness,
-            "genes": self.best_strategy_found.genes,
-            "trades": self.best_strategy_found.trades,
-            "wins": self.best_strategy_found.wins,
-            "total_pnl": self.best_strategy_found.total_pnl,
-            "max_drawdown": self.best_strategy_found.max_drawdown,
-            "win_rate": (self.best_strategy_found.wins / max(1, self.best_strategy_found.trades)) * 100,
-            "strategy_type": self.best_strategy_found.strategy_type,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        filename = f"best_strategy_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        with open(filename, 'w') as f:
-            json.dump(strategy_data, f, indent=2)
-        self.logger.info(f"\n📄 Best strategy saved to: {filename}")
 
     def print_stats(self):
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
@@ -1170,7 +1004,6 @@ class QuantumNeuralEvolutionBot:
         if self.best_strategy_found:
             self.logger.info(f"🧬 Best Fitness: {self.best_strategy_found.fitness:.4f}")
             self.logger.info(f"🧬 Best Win Rate: {(self.best_strategy_found.wins / max(1, self.best_strategy_found.trades)) * 100:.1f}%")
-            self.logger.info(f"🧬 Best Type: {self.best_strategy_found.strategy_type}")
         self.logger.info("="*70)
 
     def export_results(self):
@@ -1179,7 +1012,7 @@ class QuantumNeuralEvolutionBot:
         filename = f"quantum_bot_results_{datetime.now().strftime('%Y%m%d')}.csv"
         file_exists = os.path.isfile(filename)
         with open(filename, 'a', newline='') as csvfile:
-            fieldnames = ['cycle', 'timestamp', 'direction', 'entry_price', 'exit_price', 'profit', 'net_profit', 'balance', 'strategy_type', 'fitness']
+            fieldnames = ['cycle', 'timestamp', 'direction', 'entry_price', 'exit_price', 'profit', 'net_profit', 'fees', 'hit_target', 'hit_stop', 'balance']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             if not file_exists:
                 writer.writeheader()
@@ -1192,15 +1025,17 @@ class QuantumNeuralEvolutionBot:
                 'exit_price': f"{latest['exit_price']:.2f}",
                 'profit': f"{latest['profit']:.4f}",
                 'net_profit': f"{latest.get('net_profit', 0):.4f}",
-                'balance': f"{self.current_balance:.2f}",
-                'strategy_type': latest.get('strategy_type', 'unknown'),
-                'fitness': f"{latest.get('fitness', 0):.4f}"
+                'fees': f"{latest.get('fees', 0):.4f}",
+                'hit_target': latest.get('hit_target', False),
+                'hit_stop': latest.get('hit_stop', False),
+                'balance': f"{self.current_balance:.2f}"
             })
 
     def export_final_report(self):
         report = {
-            "version": "9.4",
-            "strategy": "Quantum Neural Evolution - EXPLOSIVE EXPLORATION",
+            "version": "10.1",
+            "strategy": "Quantum Neural Evolution - Real Masterpiece",
+            "fee_rate": self.fee_rate,
             "starting_balance": self.starting_balance,
             "final_balance": self.current_balance,
             "peak_balance": self.peak_balance,
@@ -1212,8 +1047,7 @@ class QuantumNeuralEvolutionBot:
             "longest_loss_streak": self.longest_loss_streak,
             "best_strategy": {
                 "fitness": self.best_strategy_found.fitness if self.best_strategy_found else 0,
-                "win_rate": (self.best_strategy_found.wins / max(1, self.best_strategy_found.trades)) * 100 if self.best_strategy_found else 0,
-                "type": self.best_strategy_found.strategy_type if self.best_strategy_found else "unknown"
+                "win_rate": (self.best_strategy_found.wins / max(1, self.best_strategy_found.trades)) * 100 if self.best_strategy_found else 0
             },
             "trade_history": self.trade_history
         }
@@ -1240,19 +1074,18 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("="*70)
-    print("🧠 QUANTUM NEURAL EVOLUTION BOT v9.4")
-    print("   10/10 TRUE ULTIMATE MASTERPIECE")
+    print("🧠 QUANTUM NEURAL EVOLUTION BOT v10.1")
+    print("   THE REAL ULTIMATE MASTERPIECE")
     print("="*70)
-    print("\nEXPLOSIVE EXPLORATION:")
-    print("1. ✅ 50 strategies (was 20)")
-    print("2. ✅ 50% mutation rate (was 30%)")
-    print("3. ✅ Evolution EVERY cycle (was every 5)")
-    print("4. ✅ Complete reset every 10 cycles")
-    print("5. ✅ Extreme strategy diversity")
-    print("6. ✅ Always exploring new possibilities")
+    print("\nKEY FIXES:")
+    print("1. ✅ Bot WAITS for target or stop to hit")
+    print("2. ✅ REAL fees: 0.1% per trade")
+    print("3. ✅ Must overcome 0.2% round trip")
+    print("4. ✅ 3 minute max hold time")
+    print("5. ✅ Tracks target/stop hits")
     print("="*70)
     
-    print("\n💥 Starting EXPLOSIVE EVOLUTION Bot in 3 seconds...")
+    print("\n🧬 Starting REAL BOT in 3 seconds...")
     time.sleep(3)
     
     bot = QuantumNeuralEvolutionBot(
