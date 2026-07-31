@@ -1,13 +1,26 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v9.4 - 5 CONDITIONS OPTIMIZED
+CRISIS ARBITRAGE SCALPER v12.0 - FIXED + BACKTESTABLE
 ============================================================
-MAXIMUM TRADING FREQUENCY:
-- Requires only 5/9 conditions PASSING
-- 3-5x more trades than 6 conditions
-- Maintains 58-62% win rate
-- Optimal for small accounts ($50-500)
-- Trades frequently with "Perfect Trend Alignment"
+FIXES from v11:
+- Removed duplicate confidence condition (was counted twice,
+  artificially inflating "passing conditions")
+- Crisis/FSI bonus no longer counts toward the trading decision
+  (it was a constant +1 every cycle since the "top opportunity"
+  never changes trade to trade, and FSI has no causal link to
+  BTC price) - kept only for logging/context
+- Fixed inverted stop-loss bound that silently disabled the
+  ATR-adaptive stop widening
+- Added a fee-aware expectancy check before sizing a trade
+- Added a backtester (run in test mode against real historical
+  klines) so you can measure win rate/expectancy BEFORE risking
+  money, instead of assuming it
+- Added a walk-forward parameter search (train/test split) so any
+  parameters that look good aren't just curve-fit to one window -
+  see run_walk_forward_search(). This can legitimately come back
+  empty: that means no tested combination held up out-of-sample,
+  which is itself a real, useful result, not a bug to "fix".
+- Default entrypoint now runs the backtest, not live trading
 ============================================================
 """
 
@@ -28,7 +41,59 @@ import statistics
 import math
 
 # ========================================================================
-# 🔧 DECIMAL HELPERS
+# FSI 2024 DATA (subset) - context/logging only, NOT a trading signal
+# ========================================================================
+
+FSI_2024 = {
+    "SOM": {"name": "Somalia", "flag": "🇸🇴", "fsi_score": 111.3, "rank": 1, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.20},
+    "SDN": {"name": "Sudan", "flag": "🇸🇩", "fsi_score": 109.3, "rank": 2, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.22},
+    "SSD": {"name": "South Sudan", "flag": "🇸🇸", "fsi_score": 109.0, "rank": 3, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.18},
+    "SYR": {"name": "Syria", "flag": "🇸🇾", "fsi_score": 108.1, "rank": 4, "region": "middleeast", "wst_class": "Periphery", "recovery_rate": 0.20},
+    "COD": {"name": "Congo-Kinshasa", "flag": "🇨🇩", "fsi_score": 106.7, "rank": 5, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.20},
+    "YEM": {"name": "Yemen", "flag": "🇾🇪", "fsi_score": 106.6, "rank": 6, "region": "middleeast", "wst_class": "Periphery", "recovery_rate": 0.18},
+    "AFG": {"name": "Afghanistan", "flag": "🇦🇫", "fsi_score": 103.9, "rank": 7, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.20},
+    "CAF": {"name": "Central African Rep.", "flag": "🇨🇫", "fsi_score": 103.9, "rank": 8, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.18},
+    "HTI": {"name": "Haiti", "flag": "🇭🇹", "fsi_score": 103.5, "rank": 9, "region": "americas", "wst_class": "Periphery", "recovery_rate": 0.22},
+    "TCD": {"name": "Chad", "flag": "🇹🇩", "fsi_score": 102.7, "rank": 10, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.25},
+    "UKR": {"name": "Ukraine", "flag": "🇺🇦", "fsi_score": 93.1, "rank": 22, "region": "europe", "wst_class": "Semi", "recovery_rate": 0.35},
+    "LBN": {"name": "Lebanon", "flag": "🇱🇧", "fsi_score": 92.7, "rank": 23, "region": "middleeast", "wst_class": "Periphery", "recovery_rate": 0.18},
+    "TUR": {"name": "Turkey", "flag": "🇹🇷", "fsi_score": 84.0, "rank": 41, "region": "europe", "wst_class": "Semi", "recovery_rate": 0.42},
+    "RUS": {"name": "Russia", "flag": "🇷🇺", "fsi_score": 81.6, "rank": 48, "region": "europe", "wst_class": "Semi", "recovery_rate": 0.50},
+    "BRA": {"name": "Brazil", "flag": "🇧🇷", "fsi_score": 70.3, "rank": 78, "region": "americas", "wst_class": "Semi", "recovery_rate": 0.50},
+    "IND": {"name": "India", "flag": "🇮🇳", "fsi_score": 72.3, "rank": 75, "region": "asia", "wst_class": "Semi", "recovery_rate": 0.48},
+    "CHN": {"name": "China", "flag": "🇨🇳", "fsi_score": 64.4, "rank": 99, "region": "asia", "wst_class": "Semi", "recovery_rate": 0.55},
+    "USA": {"name": "United States", "flag": "🇺🇸", "fsi_score": 44.5, "rank": 141, "region": "americas", "wst_class": "Core", "recovery_rate": 0.85},
+    "GBR": {"name": "United Kingdom", "flag": "🇬🇧", "fsi_score": 40.8, "rank": 148, "region": "europe", "wst_class": "Core", "recovery_rate": 0.80},
+    "DEU": {"name": "Germany", "flag": "🇩🇪", "fsi_score": 24.0, "rank": 166, "region": "europe", "wst_class": "Core", "recovery_rate": 0.82},
+    "JPN": {"name": "Japan", "flag": "🇯🇵", "fsi_score": 30.2, "rank": 160, "region": "asia", "wst_class": "Core", "recovery_rate": 0.75},
+    "FRA": {"name": "France", "flag": "🇫🇷", "fsi_score": 28.3, "rank": 162, "region": "europe", "wst_class": "Core", "recovery_rate": 0.78},
+    "CAN": {"name": "Canada", "flag": "🇨🇦", "fsi_score": 18.6, "rank": 172, "region": "americas", "wst_class": "Core", "recovery_rate": 0.82},
+    "AUS": {"name": "Australia", "flag": "🇦🇺", "fsi_score": 19.6, "rank": 169, "region": "oceania", "wst_class": "Core", "recovery_rate": 0.80},
+    "CHE": {"name": "Switzerland", "flag": "🇨🇭", "fsi_score": 16.2, "rank": 174, "region": "europe", "wst_class": "Core", "recovery_rate": 0.88},
+    "NOR": {"name": "Norway", "flag": "🇳🇴", "fsi_score": 12.7, "rank": 179, "region": "europe", "wst_class": "Core", "recovery_rate": 0.90},
+    "SGP": {"name": "Singapore", "flag": "🇸🇬", "fsi_score": 25.4, "rank": 165, "region": "asia", "wst_class": "Core", "recovery_rate": 0.75},
+    "MMR": {"name": "Myanmar", "flag": "🇲🇲", "fsi_score": 100.0, "rank": 11, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.26},
+    "ETH": {"name": "Ethiopia", "flag": "🇪🇹", "fsi_score": 98.1, "rank": 12, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.28},
+    "MLI": {"name": "Mali", "flag": "🇲🇱", "fsi_score": 97.3, "rank": 14, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.26},
+    "NGA": {"name": "Nigeria", "flag": "🇳🇬", "fsi_score": 96.6, "rank": 15, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.30},
+    "LBY": {"name": "Libya", "flag": "🇱🇾", "fsi_score": 96.5, "rank": 16, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.26},
+    "ZWE": {"name": "Zimbabwe", "flag": "🇿🇼", "fsi_score": 95.7, "rank": 18, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.22},
+    "NER": {"name": "Niger", "flag": "🇳🇪", "fsi_score": 95.2, "rank": 19, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.24},
+    "CMR": {"name": "Cameroon", "flag": "🇨🇲", "fsi_score": 94.3, "rank": 20, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.28},
+    "BFA": {"name": "Burkina Faso", "flag": "🇧🇫", "fsi_score": 94.2, "rank": 21, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.26},
+    "PAK": {"name": "Pakistan", "flag": "🇵🇰", "fsi_score": 91.7, "rank": 27, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.26},
+    "UGA": {"name": "Uganda", "flag": "🇺🇬", "fsi_score": 91.1, "rank": 28, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.28},
+    "VEN": {"name": "Venezuela", "flag": "🇻🇪", "fsi_score": 89.0, "rank": 30, "region": "americas", "wst_class": "Periphery", "recovery_rate": 0.18},
+    "IRQ": {"name": "Iraq", "flag": "🇮🇶", "fsi_score": 88.6, "rank": 31, "region": "middleeast", "wst_class": "Periphery", "recovery_rate": 0.28},
+    "LKA": {"name": "Sri Lanka", "flag": "🇱🇰", "fsi_score": 88.2, "rank": 33, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.24},
+    "KEN": {"name": "Kenya", "flag": "🇰🇪", "fsi_score": 86.5, "rank": 36, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.32},
+    "BGD": {"name": "Bangladesh", "flag": "🇧🇩", "fsi_score": 85.9, "rank": 37, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.30},
+    "EGY": {"name": "Egypt", "flag": "🇪🇬", "fsi_score": 82.8, "rank": 44, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.28},
+    "IRN": {"name": "Iran", "flag": "🇮🇷", "fsi_score": 82.9, "rank": 43, "region": "middleeast", "wst_class": "Periphery", "recovery_rate": 0.30},
+}
+
+# ========================================================================
+# DECIMAL HELPERS
 # ========================================================================
 
 def round_to_step(value: float, step: float) -> float:
@@ -44,19 +109,54 @@ def round_to_tick(value: float, tick: float) -> float:
     return float(rounded)
 
 def format_quantity(value: float) -> str:
-    """Format quantity without scientific notation"""
-    return f"{Decimal(str(value)):.8f}".rstrip('0').rstrip('.')
+    if value <= 0:
+        return "0.00000000"
+    return f"{Decimal(str(value)):.8f}"
 
 def format_price(value: float) -> str:
     return f"{Decimal(str(value)):.2f}"
 
 # ========================================================================
-# 🧠 EINSTEIN-LEVEL MATHEMATICAL ANALYSIS
+# CRISIS SCORING ENGINE (context/logging only - see note below)
+# ========================================================================
+
+class CrisisScoringEngine:
+    @staticmethod
+    def get_crisis_score(iso: str) -> Dict:
+        return FSI_2024.get(iso)
+
+    @staticmethod
+    def score_opportunity(iso: str) -> float:
+        data = CrisisScoringEngine.get_crisis_score(iso)
+        if not data:
+            return 0.0
+        fsi = data["fsi_score"]
+        recovery = data["recovery_rate"]
+        wst_class = data["wst_class"]
+        fsi_score = min(1.0, fsi / 120)
+        recovery_score = 1 - recovery
+        wst_bonus = 0.2 if wst_class == "Periphery" else 0.1 if wst_class == "Semi" else 0
+        score = (fsi_score * 0.5) + (recovery_score * 0.3) + (wst_bonus * 0.2)
+        return min(1.0, max(0.0, score))
+
+    @staticmethod
+    def get_top_opportunities(limit: int = 5) -> List[Dict]:
+        opportunities = []
+        for iso, data in FSI_2024.items():
+            score = CrisisScoringEngine.score_opportunity(iso)
+            opportunities.append({
+                "iso": iso, "name": data["name"], "flag": data["flag"],
+                "fsi_score": data["fsi_score"], "wst_class": data["wst_class"],
+                "recovery_rate": data["recovery_rate"], "opportunity_score": score,
+            })
+        opportunities.sort(key=lambda x: x["opportunity_score"], reverse=True)
+        return opportunities[:limit]
+
+# ========================================================================
+# POSITION SIZING MATH
 # ========================================================================
 
 class EinsteinMath:
-    """Pure mathematical edge - no emotion, just numbers"""
-    
     @staticmethod
     def kelly_criterion(win_rate: float, avg_win: float, avg_loss: float) -> float:
         if avg_loss == 0:
@@ -64,9 +164,9 @@ class EinsteinMath:
         b = avg_win / avg_loss
         q = 1 - win_rate
         kelly = (win_rate * b - q) / b
-        half_kelly = max(0.01, min(0.10, kelly * 0.5))
+        half_kelly = max(0.005, min(0.05, kelly * 0.5))
         return half_kelly
-    
+
     @staticmethod
     def sharpe_ratio(returns: List[float], risk_free_rate: float = 0.0) -> float:
         if not returns or len(returns) < 2:
@@ -75,296 +175,212 @@ class EinsteinMath:
         std_dev = statistics.stdev(returns) if len(returns) > 1 else 0.001
         if std_dev == 0:
             return 0.0
-        sharpe = (avg_return - risk_free_rate) / std_dev
-        return sharpe
-    
-    @staticmethod
-    def risk_of_ruin(win_rate: float, risk_per_trade: float, account_size: float, max_loss: float) -> float:
-        if win_rate >= 0.5:
-            q = 1 - win_rate
-            p = win_rate
-            if p == q:
-                return 1.0
-            advantage = p - q
-            ruin_prob = math.exp(-2 * advantage * (account_size / max_loss))
-            return max(0, min(1, ruin_prob))
-        else:
-            return 1.0
-    
+        return (avg_return - risk_free_rate) / std_dev
+
     @staticmethod
     def optimal_stop_loss(atr: float, volatility: float, confidence: float) -> float:
-        base_stop = atr * 1.5
-        vol_multiplier = 1 + (volatility * 10)
-        confidence_adjust = 1 - (confidence * 0.3)
+        base_stop = atr * 2.0
+        vol_multiplier = 1 + (volatility * 5)
+        confidence_adjust = 1 - (confidence * 0.2)
         optimal_stop = base_stop * vol_multiplier * confidence_adjust
-        return min(max(optimal_stop, atr * 0.5), atr * 3.0)
-    
-    @staticmethod
-    def expected_value(win_rate: float, avg_win: float, avg_loss: float) -> float:
-        ev = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
-        return ev
-    
-    @staticmethod
-    def compound_growth(balance: float, daily_return: float, days: int) -> float:
-        if daily_return <= 0:
-            return balance
-        growth = balance * ((1 + daily_return) ** days)
-        return growth
+        return min(max(optimal_stop, atr * 0.8), atr * 4.0)
 
 # ========================================================================
-# 📊 ADVANCED TECHNICAL ANALYSIS
+# TECHNICAL ANALYSIS
 # ========================================================================
 
 class AdvancedTA:
-    """Multi-timeframe analysis with 8+ indicators"""
-    
     @staticmethod
-    def get_klines(symbol: str, base_url: str, interval: str = "1m", limit: int = 300) -> Optional[Dict]:
+    def get_klines(symbol: str, base_url: str, interval: str = "1m", limit: int = 300,
+                    end_time_ms: int = None) -> Optional[Dict]:
         try:
             url = f"{base_url}/api/v3/klines"
-            params = {
-                "symbol": symbol,
-                "interval": interval,
-                "limit": limit
-            }
-            resp = requests.get(url, params=params, timeout=5)
+            params = {"symbol": symbol, "interval": interval, "limit": limit}
+            if end_time_ms:
+                params["endTime"] = end_time_ms
+            resp = requests.get(url, params=params, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
                 return {
-                    "timestamps": [candle[0] for candle in data],
-                    "opens": [float(candle[1]) for candle in data],
-                    "highs": [float(candle[2]) for candle in data],
-                    "lows": [float(candle[3]) for candle in data],
-                    "closes": [float(candle[4]) for candle in data],
-                    "volumes": [float(candle[5]) for candle in data],
+                    "timestamps": [c[0] for c in data],
+                    "opens": [float(c[1]) for c in data],
+                    "highs": [float(c[2]) for c in data],
+                    "lows": [float(c[3]) for c in data],
+                    "closes": [float(c[4]) for c in data],
+                    "volumes": [float(c[5]) for c in data],
                 }
             return None
-        except Exception as e:
+        except Exception:
             return None
-    
+
     @staticmethod
     def calculate_rsi(closes: List[float], period: int = 14) -> float:
         if len(closes) < period + 1:
             return 50.0
-        
-        gains = []
-        losses = []
+        gains, losses = [], []
         for i in range(1, len(closes)):
             diff = closes[i] - closes[i-1]
-            if diff > 0:
-                gains.append(diff)
-                losses.append(0)
-            else:
-                gains.append(0)
-                losses.append(abs(diff))
-        
-        gains = gains[-period:] if len(gains) >= period else gains
-        losses = losses[-period:] if len(losses) >= period else losses
-        
+            gains.append(diff if diff > 0 else 0)
+            losses.append(abs(diff) if diff < 0 else 0)
+        gains = gains[-period:]
+        losses = losses[-period:]
         avg_gain = sum(gains) / len(gains) if gains else 0
         avg_loss = sum(losses) / len(losses) if losses else 1
-        
         if avg_loss == 0:
             return 100.0
-        
         rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi
-    
-    @staticmethod
-    def calculate_macd(closes: List[float]) -> Dict:
-        if len(closes) < 26:
-            return {"macd": 0, "signal": 0, "histogram": 0}
-        
-        ema_12 = AdvancedTA.calculate_ema(closes, 12)
-        ema_26 = AdvancedTA.calculate_ema(closes, 26)
-        macd_line = ema_12 - ema_26
-        
-        signal_line = AdvancedTA.calculate_ema([macd_line], 9)
-        histogram = macd_line - signal_line
-        
-        if len(closes) >= 30:
-            ema_12_prev = AdvancedTA.calculate_ema(closes[:-1], 12)
-            ema_26_prev = AdvancedTA.calculate_ema(closes[:-1], 26)
-            macd_prev = ema_12_prev - ema_26_prev
-            signal_prev = AdvancedTA.calculate_ema([macd_prev], 9)
-            
-            bullish_cross = macd_line > signal_line and macd_prev <= signal_prev
-            bearish_cross = macd_line < signal_line and macd_prev >= signal_prev
-        else:
-            bullish_cross = False
-            bearish_cross = False
-        
-        return {
-            "macd": macd_line,
-            "signal": signal_line,
-            "histogram": histogram,
-            "bullish_cross": bullish_cross,
-            "bearish_cross": bearish_cross
-        }
-    
+        return 100 - (100 / (1 + rs))
+
     @staticmethod
     def calculate_ema(closes: List[float], period: int) -> float:
         if not closes:
             return 0
         if len(closes) < period:
             return sum(closes) / len(closes)
-        
         multiplier = 2 / (period + 1)
         ema = sum(closes[:period]) / period
-        
         for price in closes[period:]:
             ema = (price * multiplier) + (ema * (1 - multiplier))
-        
         return ema
-    
+
+    @staticmethod
+    def calculate_macd(closes: List[float]) -> Dict:
+        if len(closes) < 26:
+            return {"macd": 0, "signal": 0, "histogram": 0, "bullish_cross": False, "bearish_cross": False}
+        ema_12 = AdvancedTA.calculate_ema(closes, 12)
+        ema_26 = AdvancedTA.calculate_ema(closes, 26)
+        macd_line = ema_12 - ema_26
+        signal_line = AdvancedTA.calculate_ema([macd_line], 9)
+        histogram = macd_line - signal_line
+        if len(closes) >= 30:
+            ema_12_prev = AdvancedTA.calculate_ema(closes[:-1], 12)
+            ema_26_prev = AdvancedTA.calculate_ema(closes[:-1], 26)
+            macd_prev = ema_12_prev - ema_26_prev
+            signal_prev = AdvancedTA.calculate_ema([macd_prev], 9)
+            bullish_cross = macd_line > signal_line and macd_prev <= signal_prev
+            bearish_cross = macd_line < signal_line and macd_prev >= signal_prev
+        else:
+            bullish_cross = False
+            bearish_cross = False
+        return {"macd": macd_line, "signal": signal_line, "histogram": histogram,
+                "bullish_cross": bullish_cross, "bearish_cross": bearish_cross}
+
     @staticmethod
     def calculate_bollinger_bands(closes: List[float], period: int = 20, std_dev: float = 2) -> Dict:
         if len(closes) < period:
-            return {"upper": closes[-1] if closes else 0, "middle": closes[-1] if closes else 0, "lower": closes[-1] if closes else 0}
-        
+            last = closes[-1] if closes else 0
+            return {"upper": last, "middle": last, "lower": last, "position": 0.5, "width": 0, "squeeze": False}
         middle = sum(closes[-period:]) / period
         squared_deviations = [(x - middle) ** 2 for x in closes[-period:]]
         std = (sum(squared_deviations) / period) ** 0.5
-        
         upper = middle + (std * std_dev)
         lower = middle - (std * std_dev)
-        
         position = (closes[-1] - lower) / (upper - lower) if upper != lower else 0.5
-        width = (upper - lower) / middle
-        
-        return {
-            "upper": upper,
-            "middle": middle,
-            "lower": lower,
-            "position": position,
-            "width": width,
-            "squeeze": width < 0.02
-        }
-    
+        width = (upper - lower) / middle if middle else 0
+        return {"upper": upper, "middle": middle, "lower": lower, "position": position,
+                "width": width, "squeeze": width < 0.02}
+
     @staticmethod
     def calculate_atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
         if len(closes) < period:
             return (max(highs) - min(lows)) if highs and lows else 0
-        
         tr_values = []
         for i in range(1, len(closes)):
             high_low = highs[i] - lows[i]
             high_close = abs(highs[i] - closes[i-1])
             low_close = abs(lows[i] - closes[i-1])
-            tr = max(high_low, high_close, low_close)
-            tr_values.append(tr)
-        
-        atr = sum(tr_values[-period:]) / period
-        return atr
-    
+            tr_values.append(max(high_low, high_close, low_close))
+        return sum(tr_values[-period:]) / period
+
     @staticmethod
-    def calculate_vwap(highs: List[float], lows: List[float], closes: List[float], volumes: List[float]) -> float:
+    def calculate_vwap(highs, lows, closes, volumes) -> float:
         if not volumes:
             return closes[-1] if closes else 0
-        
         typical_prices = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
-        
         start = max(0, len(typical_prices) - 50)
         typical_prices = typical_prices[start:]
         volumes_used = volumes[start:]
-        
         if not volumes_used or sum(volumes_used) == 0:
             return closes[-1] if closes else 0
-        
-        vwap = sum(tp * v for tp, v in zip(typical_prices, volumes_used)) / sum(volumes_used)
-        return vwap
-    
+        return sum(tp * v for tp, v in zip(typical_prices, volumes_used)) / sum(volumes_used)
+
     @staticmethod
-    def calculate_support_resistance(highs: List[float], lows: List[float], closes: List[float]) -> Dict:
+    def calculate_support_resistance(highs, lows, closes) -> Dict:
         if len(closes) < 20:
-            return {"support": min(lows), "resistance": max(highs)}
-        
+            return {"support": min(lows), "resistance": max(highs), "near_support": False,
+                    "near_resistance": False, "support_strength": 0, "resistance_strength": 0}
         lookback = 10
-        supports = []
-        resistances = []
-        
+        supports, resistances = [], []
         for i in range(lookback, len(closes) - lookback):
             if lows[i] < min(lows[i-lookback:i] + lows[i+1:i+lookback+1]):
                 supports.append(lows[i])
             if highs[i] > max(highs[i-lookback:i] + highs[i+1:i+lookback+1]):
                 resistances.append(highs[i])
-        
         recent_support = supports[-1] if supports else min(lows)
         recent_resistance = resistances[-1] if resistances else max(highs)
-        
         current_price = closes[-1]
         near_support = abs(current_price - recent_support) / current_price < 0.001
         near_resistance = abs(current_price - recent_resistance) / current_price < 0.001
-        
         support_strength = len([s for s in supports if abs(s - recent_support) / recent_support < 0.001])
         resistance_strength = len([r for r in resistances if abs(r - recent_resistance) / recent_resistance < 0.001])
-        
-        return {
-            "support": recent_support,
-            "resistance": recent_resistance,
-            "near_support": near_support,
-            "near_resistance": near_resistance,
-            "support_strength": min(5, support_strength),
-            "resistance_strength": min(5, resistance_strength)
-        }
-    
+        return {"support": recent_support, "resistance": recent_resistance, "near_support": near_support,
+                "near_resistance": near_resistance, "support_strength": min(5, support_strength),
+                "resistance_strength": min(5, resistance_strength)}
+
     @staticmethod
-    def calculate_stochastic(closes: List[float], highs: List[float], lows: List[float], period: int = 14) -> float:
+    def calculate_stochastic(closes, highs, lows, period: int = 14) -> float:
         if len(closes) < period:
             return 50.0
-        
         highest_high = max(highs[-period:])
         lowest_low = min(lows[-period:])
-        
         if highest_high == lowest_low:
             return 50.0
-        
-        stochastic = ((closes[-1] - lowest_low) / (highest_high - lowest_low)) * 100
-        return stochastic
-    
+        return ((closes[-1] - lowest_low) / (highest_high - lowest_low)) * 100
+
     @staticmethod
     def calculate_volume_profile(volumes: List[float]) -> Dict:
         if not volumes:
-            return {"trend": "neutral", "strength": 0}
-        
+            return {"ratio": 1, "trend": 1, "spike": False, "strength": 0}
         avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
         current_volume = volumes[-1]
         volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
-        
         if len(volumes) >= 10:
             recent_volume_avg = sum(volumes[-10:]) / 10
             older_volume_avg = sum(volumes[-20:-10]) / 10 if len(volumes) >= 20 else recent_volume_avg
             volume_trend = recent_volume_avg / older_volume_avg if older_volume_avg > 0 else 1
         else:
             volume_trend = 1
-        
-        return {
-            "ratio": volume_ratio,
-            "trend": volume_trend,
-            "spike": volume_ratio > 2.0,
-            "strength": min(1.0, volume_ratio / 3.0)
-        }
+        return {"ratio": volume_ratio, "trend": volume_trend, "spike": volume_ratio > 2.0,
+                "strength": min(1.0, volume_ratio / 3.0)}
 
 # ========================================================================
-# 📊 5 CONDITIONS STRATEGY
+# STRATEGY - FIXED: no duplicate confidence condition, no fake crisis edge
 # ========================================================================
 
 class EinsteinStrategy:
-    """5 CONDITIONS - Maximum trading frequency"""
-    
+    """
+    NOTE ON THE FSI/crisis_score ARGUMENTS:
+    These are accepted for logging/context only. They no longer influence
+    the trading decision. A country's Fragile States Index score has no
+    causal relationship to BTC/USDT price action, and in the old version
+    the "top opportunity" never changed between cycles, so the crisis bonus
+    was a constant +1 that made the filter easier to pass than it looked.
+    """
+
     @staticmethod
-    def analyze_market(klines: Dict) -> Dict:
+    def analyze_market(klines: Dict, crisis_score: float = 0.0, wst_class: str = "Periphery") -> Dict:
         if not klines or len(klines['closes']) < 50:
-            return {"signal": "neutral", "confidence": 0, "reason": "Insufficient data"}
-        
+            return {"signal": "neutral", "confidence": 0, "reason": "Insufficient data",
+                    "passing_conditions": 0, "total_conditions": 9, "reasons": [],
+                    "expected_win_rate": 0.5, "kelly_fraction": 0.01, "atr": 0, "atr_pct": 0,
+                    "volatility": 0.001, "crisis_bonus": 0, "sr": {"near_resistance": False, "resistance": 0}}
+
         closes = klines['closes']
         highs = klines['highs']
         lows = klines['lows']
         volumes = klines['volumes']
         current_price = closes[-1]
-        
-        # Calculate ALL indicators
+
         rsi = AdvancedTA.calculate_rsi(closes)
         macd = AdvancedTA.calculate_macd(closes)
         bb = AdvancedTA.calculate_bollinger_bands(closes)
@@ -373,253 +389,204 @@ class EinsteinStrategy:
         sr = AdvancedTA.calculate_support_resistance(highs, lows, closes)
         stochastic = AdvancedTA.calculate_stochastic(closes, highs, lows)
         volume_profile = AdvancedTA.calculate_volume_profile(volumes)
-        
-        # Multi-timeframe moving averages
+
         sma_5 = sum(closes[-5:]) / 5
         sma_10 = sum(closes[-10:]) / 10
         sma_20 = sum(closes[-20:]) / 20
         sma_50 = sum(closes[-50:]) / 50 if len(closes) >= 50 else sma_20
-        
-        # Momentum
+
         momentum_5 = (closes[-1] - closes[-5]) / closes[-5] if len(closes) >= 5 else 0
-        momentum_10 = (closes[-1] - closes[-10]) / closes[-10] if len(closes) >= 10 else 0
-        
-        # Volatility
+
         returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
         volatility = statistics.stdev(returns[-30:]) if len(returns) >= 30 else 0.001
-        
-        # ============ BUILD SIGNAL ============
+
+        # Context only - NOT added to bullish_signals/passing_conditions anymore
+        crisis_bonus = 0
+        if crisis_score > 0.6:
+            crisis_bonus += 1
+        if crisis_score > 0.7:
+            crisis_bonus += 1
+        if wst_class == "Periphery":
+            crisis_bonus += 1
+        elif wst_class == "Semi":
+            crisis_bonus += 0.5
+
         bullish_signals = 0
         bearish_signals = 0
         strong_bullish = 0
         signal_reasons = []
-        
-        # Signal 1: RSI
-        if rsi < 25 and current_price < sma_20:
-            bullish_signals += 2
-            strong_bullish += 1
-            signal_reasons.append(f"🔥 RSI EXTREME OVERSOLD ({rsi:.1f})")
-        elif rsi < 30 and current_price < sma_20:
-            bullish_signals += 2
-            signal_reasons.append(f"📊 RSI oversold ({rsi:.1f}) - BUY")
-        elif rsi < 35:
+
+        if rsi < 30 and current_price < sma_20:
+            bullish_signals += 2; strong_bullish += 1
+            signal_reasons.append(f"RSI extreme oversold ({rsi:.1f})")
+        elif rsi < 35 and current_price < sma_20:
             bullish_signals += 1
-            signal_reasons.append(f"RSI low ({rsi:.1f}) - Good")
-        elif rsi > 70:
+            signal_reasons.append(f"RSI oversold ({rsi:.1f})")
+        elif rsi < 45:
+            bullish_signals += 1
+            signal_reasons.append(f"RSI low ({rsi:.1f})")
+        elif rsi > 75:
             bearish_signals += 1
-            signal_reasons.append(f"RSI high ({rsi:.1f}) - Not ideal")
+            signal_reasons.append(f"RSI high ({rsi:.1f}) - wait")
         else:
             signal_reasons.append(f"RSI neutral ({rsi:.1f})")
-        
-        # Signal 2: MACD
+
         if macd['bullish_cross']:
-            bullish_signals += 2
-            strong_bullish += 1
-            signal_reasons.append("🔥 MACD BULLISH CROSSOVER")
-        elif macd['histogram'] > 0 and closes[-1] > closes[-2]:
+            bullish_signals += 2; strong_bullish += 1
+            signal_reasons.append("MACD bullish crossover")
+        elif macd['histogram'] > 0:
             bullish_signals += 1
-            signal_reasons.append("MACD positive - Good momentum")
+            signal_reasons.append("MACD positive")
         else:
             bearish_signals += 1
             signal_reasons.append("MACD negative")
-        
-        # Signal 3: Bollinger Bands
-        if bb['position'] < 0.15 and current_price < sma_20:
-            bullish_signals += 2
-            strong_bullish += 1
-            signal_reasons.append(f"🔥 AT LOWER BB ({bb['position']:.2f})")
-        elif bb['position'] < 0.25:
+
+        if bb['position'] < 0.20 and current_price < sma_20:
+            bullish_signals += 2; strong_bullish += 1
+            signal_reasons.append(f"At lower BB ({bb['position']:.2f})")
+        elif bb['position'] < 0.35:
             bullish_signals += 1
             signal_reasons.append(f"Near lower BB ({bb['position']:.2f})")
-        elif bb['position'] > 0.80:
+        elif bb['position'] > 0.85:
             bearish_signals += 1
-            signal_reasons.append(f"⚠️ Near upper BB ({bb['position']:.2f})")
+            signal_reasons.append(f"Near upper BB ({bb['position']:.2f})")
         else:
             signal_reasons.append(f"BB neutral ({bb['position']:.2f})")
-        
-        # Signal 4: Moving Averages
-        if current_price > sma_5 > sma_10 > sma_20 > sma_50:
-            bullish_signals += 2
-            strong_bullish += 1
-            signal_reasons.append("🔥 PERFECT TREND ALIGNMENT - ALL MAs UPTREND")
-        elif current_price > sma_20 and current_price > sma_50:
+
+        if current_price > sma_5 > sma_10 > sma_20:
+            bullish_signals += 2; strong_bullish += 1
+            signal_reasons.append("Trend alignment")
+        elif current_price > sma_20:
             bullish_signals += 1
-            signal_reasons.append("Uptrend confirmed")
+            signal_reasons.append("Above SMA20 - uptrend")
         elif current_price < sma_20:
             bearish_signals += 1
-            signal_reasons.append("Downtrend - Skip")
-        else:
-            signal_reasons.append("MA mixed")
-        
-        # Signal 5: Support/Resistance
+            signal_reasons.append("Below SMA20 - skip")
+
         if sr['near_support'] and sr['support_strength'] >= 2:
-            bullish_signals += 2
-            strong_bullish += 1
-            signal_reasons.append(f"🔥 STRONG SUPPORT (${sr['support']:.2f})")
+            bullish_signals += 2; strong_bullish += 1
+            signal_reasons.append(f"Strong support (${sr['support']:.2f})")
         elif sr['near_support']:
             bullish_signals += 1
             signal_reasons.append(f"Near support (${sr['support']:.2f})")
         elif sr['near_resistance']:
             bearish_signals += 1
-            signal_reasons.append(f"⚠️ Near resistance (${sr['resistance']:.2f})")
-        
-        # Signal 6: VWAP
-        if current_price > vwap * 1.002:
+            signal_reasons.append(f"Near resistance (${sr['resistance']:.2f})")
+
+        if current_price > vwap:
             bullish_signals += 1
-            signal_reasons.append("Above VWAP - Institutional support")
-        elif current_price < vwap * 0.998:
-            bearish_signals += 1
-            signal_reasons.append("Below VWAP - Institutional pressure")
+            signal_reasons.append("Above VWAP")
         else:
-            signal_reasons.append("At VWAP level")
-        
-        # Signal 7: Stochastic
-        if stochastic < 20 and current_price < sma_20:
-            bullish_signals += 1
-            strong_bullish += 1
-            signal_reasons.append(f"🔥 STOCHASTIC OVERSOLD ({stochastic:.1f})")
+            bearish_signals += 1
+            signal_reasons.append("Below VWAP")
+
+        if stochastic < 25 and current_price < sma_20:
+            bullish_signals += 1; strong_bullish += 1
+            signal_reasons.append(f"Stochastic oversold ({stochastic:.1f})")
         elif stochastic > 80:
             bearish_signals += 1
             signal_reasons.append(f"Stochastic overbought ({stochastic:.1f})")
-        else:
-            signal_reasons.append(f"Stochastic neutral ({stochastic:.1f})")
-        
-        # Signal 8: Volume
+
         if volume_profile['spike'] and current_price > sma_20:
             bullish_signals += 1
             signal_reasons.append("Volume spike confirmation")
-        
-        # Signal 9: Momentum
-        if momentum_5 > 0.002 and momentum_10 > 0:
-            bullish_signals += 1
-            signal_reasons.append("Strong momentum - GOOD")
-        elif momentum_5 > 0.001:
+
+        if momentum_5 > 0.001:
             bullish_signals += 1
             signal_reasons.append("Positive momentum")
         elif momentum_5 < -0.002:
             bearish_signals += 1
-            signal_reasons.append("Negative momentum - Bad")
-        
-        # Signal 10: Volatility
+            signal_reasons.append("Negative momentum")
+
         atr_pct = atr / current_price if current_price > 0 else 0
-        if atr_pct < 0.004:
+        if atr_pct < 0.005:
             bullish_signals += 1
-            signal_reasons.append(f"Low volatility ({atr_pct*100:.2f}%) - Safe")
-        elif atr_pct > 0.015:
+            signal_reasons.append(f"Low volatility ({atr_pct*100:.2f}%)")
+        elif atr_pct > 0.02:
             bearish_signals += 1
-            signal_reasons.append(f"High volatility ({atr_pct*100:.2f}%) - Risky")
-        
-        # ============ 5 CONDITIONS DECISION ============
+            signal_reasons.append(f"High volatility ({atr_pct*100:.2f}%) - risky")
+
         total_signals = bullish_signals + bearish_signals
-        if total_signals > 0:
-            raw_confidence = (bullish_signals - bearish_signals) / total_signals
-        else:
-            raw_confidence = 0
-        
+        raw_confidence = (bullish_signals - bearish_signals) / total_signals if total_signals > 0 else 0
         confidence = max(-1, min(1, raw_confidence))
-        
-        # Calculate how many conditions are PASSING - MUCH LOOSER
+
+        # FIX: 9 genuinely distinct conditions. Removed the duplicate
+        # confidence check and the always-true crisis_bonus check that
+        # were in v11.
         passing_conditions = 0
         total_conditions = 9
-        
-        # Check each condition - LOOSER requirements
-        if raw_confidence > 0.15:  # LOWERED from 0.20
+        if raw_confidence > 0.10:
             passing_conditions += 1
         if strong_bullish >= 1:
             passing_conditions += 1
-        if bullish_signals >= 3:  # LOWERED from 4
+        if bullish_signals >= 3:
             passing_conditions += 1
-        if bearish_signals <= 5:  # LOWERED from 4
+        if bearish_signals <= 4:
             passing_conditions += 1
-        if confidence > 0.15:  # LOWERED from 0.20
+        if bb['position'] < 0.50:
             passing_conditions += 1
-        if bb['position'] < 0.55:  # LOWERED from 0.40
-            passing_conditions += 1
-        if 15 <= rsi <= 58:  # LOWERED (wider range)
+        if rsi < 60:
             passing_conditions += 1
         if current_price > sma_20:
             passing_conditions += 1
         if current_price > vwap:
             passing_conditions += 1
-        
-        # Determine signal based on passing conditions
-        if passing_conditions >= 5:  # ONLY NEED 5 CONDITIONS!
-            signal = "BUY"
-            signal_strength = "strong" if passing_conditions >= 6 else "moderate"
-            expected_win_rate = 0.62 if passing_conditions >= 6 else 0.58
-        elif passing_conditions >= 3:
-            signal = "CONSIDER"
-            signal_strength = "weak"
-            expected_win_rate = 0.50
+        if macd['histogram'] > 0:
+            passing_conditions += 1
+
+        if passing_conditions >= 6:
+            signal = "BUY"; signal_strength = "strong"; expected_win_rate = 0.55
+        elif passing_conditions >= 5:
+            signal = "BUY"; signal_strength = "moderate"; expected_win_rate = 0.52
+        elif passing_conditions >= 4:
+            signal = "CONSIDER"; signal_strength = "weak"; expected_win_rate = 0.50
         else:
-            signal = "NEUTRAL"
-            signal_strength = "weak"
-            expected_win_rate = 0.45
-        
-        # Calculate Kelly fraction
+            signal = "NEUTRAL"; signal_strength = "weak"; expected_win_rate = 0.45
+
+        # NOTE: expected_win_rate above is still a rough heuristic, not a
+        # measured statistic. Use run_backtest() to replace it with a real
+        # number for your actual signal thresholds before trusting it.
         if signal == "BUY":
-            kelly_fraction = EinsteinMath.kelly_criterion(expected_win_rate, 0.02, 0.008)
+            kelly_fraction = EinsteinMath.kelly_criterion(expected_win_rate, 0.012, 0.008)
         else:
             kelly_fraction = 0.01
-        
+
         return {
-            "signal": signal,
-            "strength": signal_strength,
-            "confidence": abs(confidence),
-            "premium": passing_conditions >= 5,
-            "passing_conditions": passing_conditions,
-            "total_conditions": total_conditions,
-            "bullish_signals": bullish_signals,
-            "bearish_signals": bearish_signals,
-            "strong_bullish": strong_bullish,
-            "reasons": signal_reasons,
-            "expected_win_rate": expected_win_rate,
-            "kelly_fraction": kelly_fraction,
-            "rsi": rsi,
-            "macd": macd,
-            "bb": bb,
-            "atr": atr,
-            "atr_pct": atr_pct,
-            "vwap": vwap,
-            "sr": sr,
-            "stochastic": stochastic,
-            "current_price": current_price,
-            "sma_20": sma_20,
-            "sma_50": sma_50,
-            "volatility": volatility,
-            "momentum_5": momentum_5,
+            "signal": signal, "strength": signal_strength, "confidence": abs(confidence),
+            "premium": passing_conditions >= 5, "passing_conditions": passing_conditions,
+            "total_conditions": total_conditions, "bullish_signals": bullish_signals,
+            "bearish_signals": bearish_signals, "strong_bullish": strong_bullish,
+            "reasons": signal_reasons, "expected_win_rate": expected_win_rate,
+            "kelly_fraction": kelly_fraction, "rsi": rsi, "macd": macd, "bb": bb, "atr": atr,
+            "atr_pct": atr_pct, "vwap": vwap, "sr": sr, "stochastic": stochastic,
+            "current_price": current_price, "sma_20": sma_20, "sma_50": sma_50,
+            "volatility": volatility, "momentum_5": momentum_5, "crisis_bonus": crisis_bonus,
         }
 
 # ========================================================================
-# 🤖 SCALPER BOT - 5 CONDITIONS EDITION
+# SCALPER BOT - FIXED
 # ========================================================================
 
-class ScalperBotV94:
+class ScalperBotV12:
 
     def __init__(self, api_key: str, api_secret: str, symbol: str = "BTCUSDT",
                  exchange_region: str = "us", log_level: str = "INFO"):
-        """
-        MAXIMUM FREQUENCY: Only 5 conditions needed
-        """
         self.api_key = api_key
         self.api_secret = api_secret
         self.symbol = symbol
         self.test_mode = False
 
-        # Setup logging
+        self.crisis_engine = CrisisScoringEngine()
+        top = self.crisis_engine.get_top_opportunities(1)
+        self.context_country = top[0] if top else None
+
         log_filename = f"crisis_scalper_{datetime.now().strftime('%Y%m%d')}.log"
-        logging.basicConfig(
-            filename=log_filename,
-            level=getattr(logging, log_level.upper()),
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
+        logging.basicConfig(filename=log_filename, level=getattr(logging, log_level.upper()),
+                             format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
         self.logger = logging.getLogger(__name__)
-        
         console = logging.StreamHandler()
         console.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        console.setFormatter(formatter)
+        console.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
         self.logger.addHandler(console)
 
         if exchange_region.lower() == "us":
@@ -629,55 +596,44 @@ class ScalperBotV94:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 OPTIMIZED PARAMETERS FOR 5 CONDITIONS
         self.total_balance_usdt = 50.0
-        
-        # MINIMUM ORDER SIZE
-        self.min_order_usdt = 10.0
-        self.max_order_usdt = 25.0
-        
-        # RISK:REWARD = 1:3
-        self.stop_loss_pct = 0.005          # 0.5% stop loss
-        self.target_profit_pct = 0.015      # 1.5% target
-        
-        # Position sizing
-        self.base_risk_per_trade = 0.02
-        self.max_risk_per_trade = 0.05
+        self.min_order_usdt = 8.0
+        self.max_order_usdt = 20.0
+
+        self.stop_loss_pct = 0.008
+        self.target_profit_pct = 0.012
+
+        self.base_risk_per_trade = 0.015
+        self.max_risk_per_trade = 0.035
         self.min_risk_per_trade = 0.01
-        
-        # 5 CONDITIONS - Maximum frequency
-        self.min_passing_conditions = 5     # Only need 5/9 conditions!
-        self.min_confidence = 0.20
-        self.min_signal_strength = "moderate"
-        self.min_strong_signals = 0
-        
-        # Safety limits - TIGHTER to compensate for more trades
-        self.max_drawdown_pct = 0.08
-        self.max_consecutive_losses = 4     # Increased from 3 (more trades)
-        self.max_skips_before_pause = 50
+
+        # FIX: threshold rescaled to the new 9-condition total (was 5/10)
+        self.min_passing_conditions = 5
+        self.min_confidence = 0.15
+
+        self.max_drawdown_pct = 0.12
+        self.max_consecutive_losses = 5
+        self.max_skips_before_pause = 40
         self.target_consecutive_wins = 7
-        
-        # Trade management
+
         self.chase_timeout_sec = 60
         self.stop_loss_poll_sec = 2
         self.maker_fee_rate = 0.001
-        
-        # Price cache
+        self.taker_fee_rate = 0.001
+
         self._price_cache = {}
         self._price_cache_time = 0
         self._price_cache_ttl = 1
 
-        # Exchange info cache
         self._min_qty = 0.00001
         self._tick_size = 0.01
         self._min_notional = 10.0
 
-        # Internal state
         self.active_order_id = None
         self.buy_price = None
         self.buy_qty = None
-        
-        # Track running P&L
+        self.last_known_qty = 0.0
+
         self.running_pnl = 0.0
         self.current_balance = 0.0
         self.peak_balance = 0.0
@@ -686,98 +642,37 @@ class ScalperBotV94:
         self.consecutive_wins = 0
         self.balance_fetched = False
         self.stopped = False
-        self.initialized = False
         self.skipped_count = 0
-        
-        # Advanced performance metrics
+
         self.trade_history = []
-        self.returns = []
         self.win_count = 0
         self.loss_count = 0
         self.total_trades = 0
         self.skipped_trades = 0
         self.total_fees = 0.0
-        
-        # Statistics tracking
-        self.cycle_stats = {
-            "total_cycles": 0,
-            "successful_cycles": 0,
-            "failed_cycles": 0,
-            "skipped_cycles": 0,
-            "total_profit": 0.0,
-            "total_loss": 0.0,
-            "net_profit": 0.0,
-            "start_time": None,
-            "end_time": None,
-            "cycle_results": []
-        }
+
+        self.cycle_stats = {"total_cycles": 0, "successful_cycles": 0, "failed_cycles": 0,
+                             "total_profit": 0.0, "total_loss": 0.0, "net_profit": 0.0,
+                             "start_time": None, "end_time": None, "cycle_results": []}
 
         self.logger.info("="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.4 - 5 CONDITIONS OPTIMIZED")
+        self.logger.info("CRISIS ARBITRAGE SCALPER v12.0 - FIXED")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
-        self.logger.info(f"   Mode: 💰 LIVE TRADING")
-        self.logger.info(f"   Min Order: ${self.min_order_usdt:.2f}")
-        self.logger.info(f"   Target Profit: {self.target_profit_pct*100:.1f}%")
-        self.logger.info(f"   Stop Loss: {self.stop_loss_pct*100:.1f}%")
-        self.logger.info(f"   Risk:Reward: 1:{self.target_profit_pct/self.stop_loss_pct:.1f}")
-        self.logger.info(f"   Win Rate Needed: 25.0%")
-        self.logger.info(f"   Passing Conditions Required: {self.min_passing_conditions}/9")
-        self.logger.info(f"   Expected Win Rate: 58-62%")
-        self.logger.info(f"   Expected Trades/Day: 15-25 (3-5x more!)")
-        self.logger.info(f"   Max Drawdown: {self.max_drawdown_pct*100:.0f}%")
+        if self.context_country:
+            self.logger.info(f"   Context only (not a signal): {self.context_country['flag']} "
+                              f"{self.context_country['name']} FSI {self.context_country['fsi_score']:.1f}")
+        self.logger.info(f"   Target: {self.target_profit_pct*100:.1f}% | Stop: {self.stop_loss_pct*100:.1f}%")
+        self.logger.info(f"   Passing Conditions needed: {self.min_passing_conditions}/9")
         self.logger.info("="*70)
 
-        # Auto-initialize
-        self._check_connectivity()
-        self._get_exchange_info()
-        self._initialize_balance()
-
-    def _initialize_balance(self):
-        try:
-            balances = self.get_account_balance()
-            if "USDT" in balances and balances["USDT"] > 0:
-                self.current_balance = balances["USDT"]
-                self.starting_balance = self.current_balance
-                self.peak_balance = self.current_balance
-                self.total_balance_usdt = self.current_balance
-                self.balance_fetched = True
-                self.initialized = True
-                self.logger.info(f"💰 Starting Balance: ${self.current_balance:.2f}")
-                return True
-            else:
-                self.logger.warning("⚠️ Could not fetch valid balance")
-                self.balance_fetched = False
-                return False
-        except Exception as e:
-            self.logger.error(f"Error fetching balance: {e}")
-            self.balance_fetched = False
-            return False
-
-    def _update_balance(self):
-        try:
-            balances = self.get_account_balance()
-            if "USDT" in balances and balances["USDT"] > 0:
-                self.current_balance = balances["USDT"]
-                self.total_balance_usdt = self.current_balance
-                self.balance_fetched = True
-                if self.peak_balance == 0 or self.current_balance > self.peak_balance:
-                    self.peak_balance = self.current_balance
-                self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
-            else:
-                self.logger.warning("⚠️ Could not fetch valid balance")
-                self.balance_fetched = False
-        except Exception as e:
-            self.logger.error(f"Error fetching balance: {e}")
-            self.balance_fetched = False
-
     def _check_connectivity(self):
-        self.logger.info("🔍 Running startup connectivity check...")
+        self.logger.info("Running startup connectivity check...")
         ticker = self.get_order_book_ticker()
         if not ticker:
-            self.logger.error("❌ STARTUP CHECK FAILED")
+            self.logger.error("STARTUP CHECK FAILED - fix exchange_region / API key / network before trading live.")
             raise SystemExit("Aborting: fix connectivity before running live cycles.")
-        self.logger.info(f"✅ Connectivity OK.")
+        self.logger.info("Connectivity OK.")
 
     def _get_exchange_info(self):
         try:
@@ -786,42 +681,78 @@ class ScalperBotV94:
                 data = resp.json()
                 for symbol_info in data.get("symbols", []):
                     if symbol_info["symbol"] == self.symbol:
-                        for filter_data in symbol_info.get("filters", []):
-                            if filter_data["filterType"] == "LOT_SIZE":
-                                self._min_qty = float(filter_data.get("minQty", 0.00001))
-                            if filter_data["filterType"] == "PRICE_FILTER":
-                                self._tick_size = float(filter_data.get("tickSize", 0.01))
-                            if filter_data["filterType"] == "MIN_NOTIONAL":
-                                self._min_notional = float(filter_data.get("minNotional", 10.0))
-                        self.logger.info(f"✅ Exchange info loaded")
-                        self.logger.info(f"   Min Qty: {self._min_qty}")
-                        self.logger.info(f"   Min Notional: ${self._min_notional:.2f}")
+                        for f in symbol_info.get("filters", []):
+                            if f["filterType"] == "LOT_SIZE":
+                                self._min_qty = float(f.get("minQty", 0.00001))
+                            if f["filterType"] == "PRICE_FILTER":
+                                self._tick_size = float(f.get("tickSize", 0.01))
+                            if f["filterType"] == "MIN_NOTIONAL":
+                                self._min_notional = float(f.get("minNotional", 10.0))
+                        self.logger.info("Exchange info loaded")
                         break
         except Exception as e:
             self.logger.warning(f"Could not fetch exchange info: {e}")
 
+    def _initialize_balance(self):
+        try:
+            balances = self.get_account_balance()
+            if balances.get("USDT", 0) > 0:
+                self.current_balance = balances["USDT"]
+                self.starting_balance = self.current_balance
+                self.peak_balance = self.current_balance
+                self.total_balance_usdt = self.current_balance
+                self.balance_fetched = True
+                self.logger.info(f"Starting Balance: ${self.current_balance:.2f}")
+                return True
+            self.logger.warning("Could not fetch valid balance")
+            return False
+        except Exception as e:
+            self.logger.error(f"Error fetching balance: {e}")
+            return False
+
+    def _update_balance(self):
+        try:
+            balances = self.get_account_balance()
+            if balances.get("USDT", 0) > 0:
+                self.current_balance = balances["USDT"]
+                self.total_balance_usdt = self.current_balance
+                self.balance_fetched = True
+                if self.current_balance > self.peak_balance:
+                    self.peak_balance = self.current_balance
+            else:
+                self.balance_fetched = False
+        except Exception as e:
+            self.logger.error(f"Error fetching balance: {e}")
+            self.balance_fetched = False
+
     def _generate_signature(self, params: dict) -> str:
         query_string = urllib.parse.urlencode(params)
-        return hmac.new(
-            self.api_secret.encode("utf-8"),
-            query_string.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
+        return hmac.new(self.api_secret.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def _send_signed_request(self, method: str, endpoint: str, params: dict = None, retries: int = 3) -> dict:
         if params is None:
             params = {}
-        
         if "quantity" in params:
-            params["quantity"] = format_quantity(float(params["quantity"]))
+            try:
+                qty_val = float(params["quantity"])
+                if qty_val <= 0:
+                    return {"error": "Invalid quantity", "code": -1003}
+                params["quantity"] = format_quantity(qty_val)
+            except (ValueError, TypeError):
+                return {"error": "Invalid quantity", "code": -1003}
         if "price" in params:
-            params["price"] = format_price(float(params["price"]))
-        
+            try:
+                price_val = float(params["price"])
+                if price_val <= 0:
+                    return {"error": "Invalid price", "code": -1003}
+                params["price"] = format_price(price_val)
+            except (ValueError, TypeError):
+                return {"error": "Invalid price", "code": -1003}
+
         for attempt in range(retries):
             try:
                 params["timestamp"] = int(time.time() * 1000)
                 params["signature"] = self._generate_signature(params)
-
                 headers = {"X-MBX-APIKEY": self.api_key}
                 url = f"{self.base_url}{endpoint}"
 
@@ -837,96 +768,69 @@ class ScalperBotV94:
                 try:
                     data = response.json()
                 except ValueError:
-                    self.logger.error(f"Failed to decode JSON (status {response.status_code})")
                     if attempt < retries - 1:
-                        time.sleep(2 ** attempt)
-                        continue
+                        time.sleep(2 ** attempt); continue
                     return {"error": "Invalid JSON response", "status_code": response.status_code}
 
                 if isinstance(data, dict) and "code" in data and "msg" in data:
                     error_code = data.get("code")
                     if error_code in [-1003, -1001, -1016]:
-                        wait_time = 2 ** attempt
-                        self.logger.warning(f"Rate limit hit, waiting {wait_time}s...")
-                        time.sleep(wait_time)
-                        continue
-                    self.logger.error(f"Binance API error {error_code}: {data.get('msg')}")
+                        time.sleep(2 ** attempt); continue
+                    if error_code == -2010:
+                        self._update_balance()
+                        return {"error": data.get("msg"), "code": error_code, "insufficient": True}
                     return {"error": data.get("msg"), "code": error_code}
-
                 return data
-                
             except requests.exceptions.RequestException as e:
-                self.logger.error(f"Network error (attempt {attempt+1}/{retries}): {e}")
                 if attempt < retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
+                    time.sleep(2 ** attempt); continue
                 return {"error": str(e)}
             except Exception as e:
-                self.logger.error(f"API Error (attempt {attempt+1}/{retries}): {e}")
                 if attempt < retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
+                    time.sleep(2 ** attempt); continue
                 return {"error": str(e)}
-        
         return {"error": "Max retries exceeded"}
 
     def get_order_book_ticker(self) -> Optional[dict]:
         now = time.time()
-        if now - self._price_cache_time < self._price_cache_ttl:
-            if 'ticker' in self._price_cache:
-                return self._price_cache['ticker']
-        
+        if now - self._price_cache_time < self._price_cache_ttl and 'ticker' in self._price_cache:
+            return self._price_cache['ticker']
         url = f"{self.base_url}/api/v3/ticker/bookTicker"
         try:
             resp = requests.get(url, params={"symbol": self.symbol}, timeout=5)
             if resp.status_code != 200:
+                self.logger.warning(f"Ticker request failed ({resp.status_code}): {resp.text[:200]}")
                 return None
-            
             data = resp.json()
             if "bidPrice" in data and "askPrice" in data:
-                ticker_data = {
-                    "bid": float(data["bidPrice"]),
-                    "ask": float(data["askPrice"]),
-                }
-                self._price_cache = {'ticker': ticker_data, 'time': now}
+                ticker_data = {"bid": float(data["bidPrice"]), "ask": float(data["askPrice"])}
+                self._price_cache = {'ticker': ticker_data}
                 self._price_cache_time = now
                 return ticker_data
             return None
         except Exception as e:
+            self.logger.warning(f"Error fetching ticker: {e}")
             return None
 
     def get_current_price(self) -> Optional[float]:
-        now = time.time()
-        if now - self._price_cache_time < self._price_cache_ttl:
-            if 'mid' in self._price_cache:
-                return self._price_cache['mid']
-        
         ticker = self.get_order_book_ticker()
         if not ticker:
             return None
-        
-        mid = (ticker["bid"] + ticker["ask"]) / 2
-        self._price_cache['mid'] = mid
-        self._price_cache_time = now
-        return mid
+        return (ticker["bid"] + ticker["ask"]) / 2
 
     def get_account_balance(self) -> Dict[str, float]:
         resp = self._send_signed_request("GET", "/api/v3/account")
         if "balances" in resp and not resp.get("error"):
             balances = {}
-            for balance in resp["balances"]:
-                free = float(balance["free"])
-                locked = float(balance["locked"])
-                if free > 0 or locked > 0:
-                    balances[balance["asset"]] = free
+            for b in resp["balances"]:
+                free = float(b["free"])
+                if free > 0:
+                    balances[b["asset"]] = free
             return balances
         return {"USDT": 0.0}
 
     def get_order_fill_price(self, order_id: str) -> Optional[float]:
-        status = self._send_signed_request("GET", "/api/v3/order", {
-            "symbol": self.symbol,
-            "orderId": order_id,
-        })
+        status = self._send_signed_request("GET", "/api/v3/order", {"symbol": self.symbol, "orderId": order_id})
         if status.get("status") == "FILLED":
             cum_quote = float(status.get("cummulativeQuoteQty", 0))
             executed_qty = float(status.get("executedQty", 0))
@@ -934,223 +838,166 @@ class ScalperBotV94:
                 return cum_quote / executed_qty
         return None
 
+    def place_limit_order_entry(self, side: str, amount: float) -> dict:
+        ticker = self.get_order_book_ticker()
+        if not ticker:
+            return {"error": "Failed to get market price"}
+        limit_price = ticker["bid"] * 0.9995 if side.upper() == "BUY" else ticker["ask"] * 1.0005
+        limit_price = round_to_tick(limit_price, self._tick_size)
+        qty = round_to_step(amount / limit_price, self._min_qty)
+        if qty < self._min_qty:
+            qty = self._min_qty
+        params = {"symbol": self.symbol, "side": side.upper(), "type": "LIMIT",
+                  "quantity": format_quantity(qty), "price": format_price(limit_price), "timeInForce": "GTC"}
+        response = self._send_signed_request("POST", "/api/v3/order", params)
+        if "error" in response:
+            return response
+        return {"orderId": response.get("orderId"), "price": str(limit_price), "origQty": str(qty),
+                "executedQty": "0", "status": response.get("status", "NEW"), "side": side}
+
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
         ticker = self.get_order_book_ticker()
         if not ticker:
             return {"error": "Failed to get market price"}
-
         price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
-        
-        if amount < self.min_order_usdt:
-            amount = self.min_order_usdt
-        if amount > self.max_order_usdt and self.current_balance > 50:
-            amount = self.max_order_usdt
-        
-        if is_quantity:
-            qty = round_to_step(amount, self._min_qty)
-        else:
-            qty = round_to_step(amount / price, self._min_qty)
-
+        if amount <= 0:
+            return {"error": "Invalid amount", "code": -1003}
+        qty = amount if is_quantity else amount / price
+        qty = round_to_step(qty, self._min_qty)
         if qty < self._min_qty:
             qty = self._min_qty
-
-        qty_str = format_quantity(qty)
-        
-        notional = qty * price
-        if notional < self._min_notional:
-            qty = self._min_notional / price
-            qty = round_to_step(qty, self._min_qty)
-            qty_str = format_quantity(qty)
-
-        self.logger.info(f"Placing {side} MARKET order: {qty_str} (${qty * price:.2f})")
-
-        params = {
-            "symbol": self.symbol,
-            "side": side.upper(),
-            "type": "MARKET",
-            "quantity": qty_str,
-        }
-        
+        self.last_known_qty = qty
+        params = {"symbol": self.symbol, "side": side.upper(), "type": "MARKET", "quantity": format_quantity(qty)}
         response = self._send_signed_request("POST", "/api/v3/order", params)
-        
         if "error" in response:
             return response
-        
         order_id = response.get("orderId")
         if order_id:
-            time.sleep(0.3)
+            time.sleep(0.5)
             fill_price = self.get_order_fill_price(order_id)
-            if fill_price:
-                price = str(fill_price)
-            else:
-                price = str(ticker["ask"] if side.upper() == "BUY" else ticker["bid"])
-        else:
-            price = "0"
-        
-        return {
-            "orderId": order_id,
-            "price": price,
-            "executedQty": response.get("executedQty", str(qty)),
-            "origQty": response.get("origQty", str(qty)),
-            "status": response.get("status", "FILLED"),
-            "side": side,
-        }
+            price = str(fill_price) if fill_price else str(price)
+        return {"orderId": order_id, "price": price, "executedQty": response.get("executedQty", str(qty)),
+                "origQty": response.get("origQty", str(qty)), "status": response.get("status", "FILLED"), "side": side}
 
     def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
+        if quantity <= 0:
+            return {"error": "Invalid quantity", "code": -1003}
         if quantity * price < self._min_notional:
-            quantity = self._min_notional / price
-            quantity = round_to_step(quantity, self._min_qty)
-
+            quantity = round_to_step(self._min_notional / price, self._min_qty)
         qty = round_to_step(quantity, self._min_qty)
         if qty < self._min_qty:
             qty = self._min_qty
-
+        self.last_known_qty = qty
         limit_price = round_to_tick(price, self._tick_size)
-        qty_str = format_quantity(qty)
-        price_str = format_price(limit_price)
-
-        self.logger.info(f"Placing {side} LIMIT order: {qty_str} @ ${price_str} (${qty * limit_price:.2f})")
-
-        params = {
-            "symbol": self.symbol,
-            "side": side.upper(),
-            "type": "LIMIT",
-            "quantity": qty_str,
-            "price": price_str,
-            "timeInForce": "GTC",
-        }
-        
+        params = {"symbol": self.symbol, "side": side.upper(), "type": "LIMIT",
+                  "quantity": format_quantity(qty), "price": format_price(limit_price), "timeInForce": "GTC"}
         response = self._send_signed_request("POST", "/api/v3/order", params)
-        
         if "error" in response:
             return response
-        
-        return {
-            "orderId": response.get("orderId", f"ERR_{int(time.time())}"),
-            "price": str(response.get("price", limit_price)),
-            "origQty": str(response.get("origQty", qty)),
-            "executedQty": str(response.get("executedQty", "0")),
-            "status": response.get("status", "NEW"),
-            "side": side,
-        }
+        return {"orderId": response.get("orderId"), "price": str(limit_price), "origQty": str(qty),
+                "executedQty": "0", "status": response.get("status", "NEW"), "side": side}
 
     def cancel_order(self, order_id: str) -> dict:
-        params = {"symbol": self.symbol, "orderId": order_id}
-        return self._send_signed_request("DELETE", "/api/v3/order", params)
+        if not order_id or order_id == "0" or "ERR_" in str(order_id):
+            return {"status": "CANCELED", "orderId": order_id}
+        response = self._send_signed_request("DELETE", "/api/v3/order", {"symbol": self.symbol, "orderId": order_id})
+        if response.get("code") == -2011:
+            return {"status": "CANCELED", "orderId": order_id}
+        return response
 
     def get_order_status(self, order_id: str) -> dict:
-        params = {"symbol": self.symbol, "orderId": order_id}
-        return self._send_signed_request("GET", "/api/v3/order", params)
+        if not order_id or order_id == "0" or "ERR_" in str(order_id):
+            return {"status": "FILLED", "orderId": order_id}
+        return self._send_signed_request("GET", "/api/v3/order", {"symbol": self.symbol, "orderId": order_id})
 
     def calculate_position_size(self, analysis: Dict) -> float:
-        kelly_fraction = analysis.get('kelly_fraction', 0.02)
+        kelly_fraction = analysis.get('kelly_fraction', 0.015)
         risk_pct = max(self.min_risk_per_trade, min(self.max_risk_per_trade, kelly_fraction))
-        
-        loss_penalty = max(0.5, 1.0 - (self.consecutive_losses * 0.15))
+        loss_penalty = max(0.5, 1.0 - (self.consecutive_losses * 0.10))
         risk_pct = risk_pct * loss_penalty
-        
-        win_bonus = min(1.3, 1.0 + (self.consecutive_wins * 0.05))
+        win_bonus = min(1.2, 1.0 + (self.consecutive_wins * 0.03))
         risk_pct = min(self.max_risk_per_trade, risk_pct * win_bonus)
-        
-        position_size = self.current_balance * risk_pct
-        position_size = max(self.min_order_usdt, position_size)
-        position_size = min(self.max_order_usdt, position_size)
-        
-        self.logger.info(f"📊 Position Size: ${position_size:.2f} ({risk_pct*100:.2f}% of balance)")
+        position_size = max(self.min_order_usdt, min(self.max_order_usdt, self.current_balance * risk_pct))
+        self.logger.info(f"Position: ${position_size:.2f} ({risk_pct*100:.2f}% of balance)")
         return position_size
+
+    def _has_positive_expectancy(self, analysis: Dict) -> bool:
+        """FIX: require the trade to actually clear round-trip fees with
+        margin, using the analysis's own (heuristic, not yet validated)
+        win-rate estimate. This won't make the strategy profitable by
+        itself, but it stops taking trades that can't possibly be net
+        positive even in the best case for this signal."""
+        win_rate = analysis.get('expected_win_rate', 0.5)
+        round_trip_fee_pct = self.maker_fee_rate + self.taker_fee_rate
+        net_target = self.target_profit_pct - round_trip_fee_pct
+        net_stop = self.stop_loss_pct + round_trip_fee_pct
+        expectancy = (win_rate * net_target) - ((1 - win_rate) * net_stop)
+        return expectancy > 0
 
     def run_cycle(self, cycle_number: int = 0) -> dict:
         if self.stopped:
             return {"success": False, "error": "Bot stopped"}
-            
-        self.logger.info(f"\n{'='*60}")
-        self.logger.info(f"🔄 CYCLE {cycle_number}")
-        self.logger.info(f"{'='*60}")
 
+        self.logger.info(f"\n{'='*60}\nCYCLE {cycle_number}\n{'='*60}")
         self._update_balance()
-        
+
         if not self.balance_fetched or self.current_balance <= 0:
-            self.logger.error("❌ Invalid balance")
-            self.stopped = True
+            self.logger.error("Invalid balance"); self.stopped = True
             return {"success": False, "error": "Invalid balance"}
-        
+
         if self.peak_balance > 0:
             drawdown = (self.peak_balance - self.current_balance) / self.peak_balance
             if drawdown > self.max_drawdown_pct:
-                self.logger.error(f"❌ Max drawdown exceeded: {drawdown*100:.1f}%")
-                self.stopped = True
+                self.logger.error(f"Max drawdown exceeded: {drawdown*100:.1f}%"); self.stopped = True
                 return {"success": False, "error": "Max drawdown exceeded"}
-        
+
         if self.consecutive_losses >= self.max_consecutive_losses:
-            self.logger.error(f"❌ Too many consecutive losses: {self.consecutive_losses}")
-            self.stopped = True
+            self.logger.error(f"Too many consecutive losses: {self.consecutive_losses}"); self.stopped = True
             return {"success": False, "error": "Too many consecutive losses"}
-        
+
         if self.current_balance < self.min_order_usdt:
-            self.logger.error(f"❌ Balance too low: ${self.current_balance:.2f}")
-            self.stopped = True
+            self.logger.error(f"Balance too low: ${self.current_balance:.2f}"); self.stopped = True
             return {"success": False, "error": "Balance too low"}
 
-        # Get market data
         klines = AdvancedTA.get_klines(self.symbol, self.base_url, interval="1m", limit=300)
         if not klines:
-            self.logger.warning("⚠️ Could not fetch market data - skipping")
-            self.skipped_trades += 1
-            self.skipped_count += 1
+            self.logger.warning("Could not fetch market data - skipping")
+            self.skipped_trades += 1; self.skipped_count += 1
             return {"success": False, "error": "No market data", "skipped": True}
-        
-        # Analyze with 5 conditions strategy
-        analysis = EinsteinStrategy.analyze_market(klines)
-        
-        self.logger.info(f"📊 5 CONDITIONS MARKET ANALYSIS:")
-        self.logger.info(f"   Signal: {analysis['signal']} ({analysis['strength']})")
-        self.logger.info(f"   Passing Conditions: {analysis['passing_conditions']}/{analysis['total_conditions']}")
-        self.logger.info(f"   Confidence: {analysis['confidence']:.2f}")
-        self.logger.info(f"   Bullish/Bearish: {analysis['bullish_signals']}/{analysis['bearish_signals']}")
-        self.logger.info(f"   Strong Bullish: {analysis['strong_bullish']}")
-        self.logger.info(f"   RSI: {analysis['rsi']:.1f}")
-        self.logger.info(f"   BB Position: {analysis['bb']['position']:.2f}")
-        self.logger.info(f"   Expected Win Rate: {analysis['expected_win_rate']*100:.0f}%")
-        
-        for reason in analysis['reasons'][:8]:
-            self.logger.info(f"   → {reason}")
-        
-        # ============ 5 CONDITIONS ENTRY ============
+
+        crisis_score = self.context_country["opportunity_score"] if self.context_country else 0
+        wst_class = self.context_country["wst_class"] if self.context_country else "Periphery"
+        analysis = EinsteinStrategy.analyze_market(klines, crisis_score, wst_class)
+
+        self.logger.info(f"Signal: {analysis['signal']} ({analysis['strength']}) | "
+                          f"Passing: {analysis['passing_conditions']}/{analysis['total_conditions']} | "
+                          f"Confidence: {analysis['confidence']:.2f}")
+
         passing = analysis['passing_conditions']
-        needed = self.min_passing_conditions  # This is now 5!
-        
-        if passing >= needed:
-            self.logger.info(f"✅ {passing}/{analysis['total_conditions']} conditions PASSING - TRADING!")
-            self.skipped_count = 0
-        else:
-            self.logger.info(f"⏭️ Only {passing}/{analysis['total_conditions']} passing (need {needed}) - SKIPPING")
-            self.skipped_trades += 1
-            self.skipped_count += 1
-            
+        if passing < self.min_passing_conditions:
+            self.logger.info(f"Only {passing}/{analysis['total_conditions']} passing - skipping")
+            self.skipped_trades += 1; self.skipped_count += 1
             if self.skipped_count >= self.max_skips_before_pause:
-                self.logger.warning(f"⚠️ {self.skipped_count} consecutive skips - taking a break...")
-                time.sleep(60)
-                self.skipped_count = 0
-            
+                self.logger.warning(f"{self.skipped_count} consecutive skips - pausing 60s")
+                time.sleep(60); self.skipped_count = 0
             return {"success": False, "error": "Not enough conditions passing", "skipped": True}
 
-        # Get current price
+        # FIX: new expectancy gate, on top of the condition-count filter
+        if not self._has_positive_expectancy(analysis):
+            self.logger.info("Signal passes condition count but fails fee-aware expectancy check - skipping")
+            self.skipped_trades += 1; self.skipped_count += 1
+            return {"success": False, "error": "Non-positive expectancy after fees", "skipped": True}
+
+        self.skipped_count = 0
         current_price = self.get_current_price()
         if not current_price:
             return {"success": False, "error": "No price data"}
 
-        # Calculate position size
         position_size = self.calculate_position_size(analysis)
-        buy_amount = min(position_size, self.current_balance * 0.40)
-        
-        self.logger.info(f"📈 Placing BUY MARKET order for ~${buy_amount:.2f}")
-        
-        buy_order = self.place_market_order(
-            side="BUY",
-            amount=buy_amount,
-            is_quantity=False,
-        )
+        buy_amount = min(position_size, self.current_balance * 0.30)
 
+        self.logger.info(f"Placing BUY LIMIT order for ~${buy_amount:.2f}")
+        buy_order = self.place_limit_order_entry(side="BUY", amount=buy_amount)
         if "error" in buy_order:
             self.logger.error(f"Failed to place buy order: {buy_order}")
             return {"success": False, "error": buy_order.get("error", "Buy order failed")}
@@ -1159,68 +1006,77 @@ class ScalperBotV94:
         if not order_id:
             return {"success": False, "error": "Missing orderId"}
 
-        self.buy_price = float(buy_order.get("price", 0))
-        self.buy_qty = float(buy_order.get("executedQty", buy_order.get("origQty", 0)))
-        
-        if self.buy_price == 0 and order_id:
-            fill_price = self.get_order_fill_price(order_id)
-            if fill_price:
-                self.buy_price = fill_price
-            else:
-                self.buy_price = self.get_current_price() or 64000.0
-        
-        if self.buy_qty == 0:
-            return {"success": False, "error": "Invalid quantity"}
+        filled = False
+        start_time = time.time()
+        while not filled:
+            status = self.get_order_status(order_id)
+            if status.get("status") == "FILLED":
+                filled = True
+                executed_qty = float(status.get("executedQty", 0))
+                cum_quote = float(status.get("cummulativeQuoteQty", 0))
+                if executed_qty > 0 and cum_quote > 0:
+                    self.buy_price = cum_quote / executed_qty
+                    self.buy_qty = executed_qty
+                else:
+                    self.buy_price = float(status.get("price", current_price))
+                    self.buy_qty = float(status.get("origQty", 0))
+                self.logger.info(f"BUY Filled: {self.buy_qty:.8f} @ ${self.buy_price:.2f}")
+                break
+            if status.get("status") == "CANCELED":
+                self.logger.warning("Order cancelled"); break
 
-        self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} BTC @ ${self.buy_price:.2f} (${self.buy_qty * self.buy_price:.2f})")
+            current_mid = self.get_current_price()
+            if current_mid and self.buy_price:
+                if abs(current_mid - self.buy_price) / self.buy_price > 0.002:
+                    self.logger.info("Price moved, adjusting order..."); self.cancel_order(order_id); break
 
-        # Calculate Exit Levels
-        atr_stop = EinsteinMath.optimal_stop_loss(
-            analysis['atr'], 
-            analysis['volatility'], 
-            analysis['confidence']
-        )
-        
+            time.sleep(1)
+            if time.time() - start_time > 60:
+                self.logger.warning("Limit order taking too long, converting to market...")
+                self.cancel_order(order_id)
+                market_buy = self.place_market_order("BUY", buy_amount, is_quantity=False)
+                if "error" in market_buy:
+                    return {"success": False, "error": "Market buy failed"}
+                self.buy_price = float(market_buy.get("price", current_price))
+                self.buy_qty = float(market_buy.get("executedQty", 0))
+                filled = True; break
+
+        if not filled or not self.buy_qty or self.buy_qty <= 0:
+            return {"success": False, "error": "Buy order failed"}
+
+        self.last_known_qty = self.buy_qty
+
+        atr_stop = EinsteinMath.optimal_stop_loss(analysis['atr'], analysis['volatility'], analysis['confidence'])
         stop_price = self.buy_price - atr_stop
         target_price = self.buy_price * (1 + self.target_profit_pct)
-        
-        min_stop = self.buy_price * (1 - self.stop_loss_pct)
-        max_stop = self.buy_price * (1 - 0.015)
-        stop_price = max(min_stop, min(max_stop, stop_price))
-        
+
+        # FIX: min_stop/max_stop were swapped in v11, which silently
+        # disabled ATR-adaptive widening. min_stop = the tightest allowed
+        # stop (closest to entry); max_stop = the widest allowed stop
+        # (furthest from entry). Both expressed as prices below entry.
+        min_stop = self.buy_price * (1 - self.stop_loss_pct)   # tightest (closest)
+        max_stop = self.buy_price * (1 - 0.02)                  # widest (furthest)
+        stop_price = min(min_stop, max(max_stop, stop_price))
+
         if analysis['sr']['near_resistance']:
             resistance = analysis['sr']['resistance']
             if resistance < target_price:
                 target_price = min(target_price, resistance * 0.998)
-                self.logger.info(f"📊 Adjusted target due to resistance: ${target_price:.2f}")
-        
+
         actual_risk = self.buy_price - stop_price
         actual_reward = target_price - self.buy_price
         rr_ratio = actual_reward / actual_risk if actual_risk > 0 else 0
-        
-        self.logger.info(f"🎯 Target: ${target_price:.2f} (+{((target_price/self.buy_price)-1)*100:.2f}%)")
-        self.logger.info(f"🛑 Stop: ${stop_price:.2f} (-{((1 - stop_price/self.buy_price))*100:.2f}%)")
-        self.logger.info(f"📊 Risk:Reward: 1:{rr_ratio:.2f}")
+        self.logger.info(f"Target: ${target_price:.2f} | Stop: ${stop_price:.2f} | R:R 1:{rr_ratio:.2f}")
 
-        # Place SELL LIMIT order
-        self.logger.info(f"📉 Placing SELL LIMIT order @ ${target_price:.2f}")
-        sell_order = self.place_limit_order(
-            side="SELL",
-            quantity=self.buy_qty,
-            price=target_price,
-        )
+        sell_qty = self.buy_qty
+        sell_order = self.place_limit_order(side="SELL", quantity=sell_qty, price=target_price)
 
+        stopped_out = False
         if "error" in sell_order:
-            self.logger.error(f"Failed to place sell order: {sell_order}")
-            self.logger.info("Attempting market sell as fallback...")
-            fallback_sell = self.place_market_order("SELL", self.buy_qty, is_quantity=True)
+            fallback_sell = self.place_market_order("SELL", sell_qty, is_quantity=True)
             if "error" in fallback_sell:
                 return {"success": False, "error": "Sell order failed"}
-            exit_price = float(fallback_sell.get("price", self.buy_price))
-            if exit_price == 0:
-                exit_price = self.buy_price
-            sell_filled = True
-            stopped_out = False
+            exit_price = float(fallback_sell.get("price", self.buy_price)) or self.buy_price
         else:
             sell_order_id = sell_order.get("orderId")
             if not sell_order_id:
@@ -1229,174 +1085,105 @@ class ScalperBotV94:
             sell_filled = False
             sell_start = time.time()
             exit_price = target_price
-            stopped_out = False
-
             while not sell_filled:
                 now = time.time()
-                
                 status = self.get_order_status(sell_order_id)
                 if status.get("status") == "FILLED":
                     sell_filled = True
                     cum_quote = float(status.get("cummulativeQuoteQty", 0))
                     executed_qty = float(status.get("executedQty", 0))
-                    if executed_qty > 0 and cum_quote > 0:
-                        exit_price = cum_quote / executed_qty
-                    else:
-                        exit_price = float(status.get("price", target_price))
-                    self.logger.info(f"✅ SELL Filled @ ${exit_price:.2f}")
+                    exit_price = cum_quote / executed_qty if executed_qty > 0 and cum_quote > 0 else float(status.get("price", target_price))
+                    self.logger.info(f"SELL Filled @ ${exit_price:.2f}")
                     break
-                
-                if now - sell_start > 2:
+
+                if now - sell_start > 1:
                     current_price = self.get_current_price()
                     if current_price and current_price <= stop_price:
-                        self.logger.warning(f"🛑 STOP-LOSS breached: ${current_price:.2f}")
+                        self.logger.warning(f"STOP-LOSS hit: ${current_price:.2f}")
                         self.cancel_order(sell_order_id)
                         exit_res = self.place_market_order("SELL", self.buy_qty, is_quantity=True)
                         if "error" in exit_res:
-                            self.logger.error(f"Stop-loss exit failed: {exit_res}")
-                            time.sleep(1)
-                            continue
-                        sell_filled = True
-                        stopped_out = True
-                        exit_price = float(exit_res.get("price", current_price))
-                        if exit_price == 0:
-                            exit_price = current_price
-                        self.logger.info(f"🛑 Stopped out @ ${exit_price:.2f}")
+                            time.sleep(1); continue
+                        sell_filled = True; stopped_out = True
+                        exit_price = float(exit_res.get("price", current_price)) or current_price
+                        self.logger.info(f"Stopped out @ ${exit_price:.2f}")
                         break
-                
+
                 if now - sell_start > self.chase_timeout_sec:
-                    self.logger.info("Sell order taking too long, converting to market...")
                     self.cancel_order(sell_order_id)
                     exit_res = self.place_market_order("SELL", self.buy_qty, is_quantity=True)
                     if "error" in exit_res:
-                        self.logger.error(f"Chase sell failed: {exit_res}")
-                        time.sleep(1)
-                        continue
+                        time.sleep(1); continue
                     sell_filled = True
-                    exit_price = float(exit_res.get("price", self.buy_price))
-                    if exit_price == 0:
-                        exit_price = self.buy_price
-                    self.logger.info(f"✅ SELL Filled @ ${exit_price:.2f} (chased)")
+                    exit_price = float(exit_res.get("price", self.buy_price)) or self.buy_price
+                    self.logger.info(f"SELL Filled @ ${exit_price:.2f} (chased)")
                     break
-                
+
                 time.sleep(1)
 
-        # Calculate P&L
         realized_pnl = (exit_price - self.buy_price) * self.buy_qty
-        fee_estimate = (self.buy_qty * self.buy_price * 0.001) + (self.buy_qty * exit_price * 0.001)
+        fee_estimate = (self.buy_qty * self.buy_price * self.maker_fee_rate) + (self.buy_qty * exit_price * self.taker_fee_rate)
         net_pnl = realized_pnl - fee_estimate
         self.total_fees += fee_estimate
-        
-        self.logger.info(f"💰 P&L: ${realized_pnl:.4f} (net: ${net_pnl:.4f})" + (" (stop-loss exit)" if stopped_out else ""))
-        self.logger.info(f"📊 Fees: ${fee_estimate:.4f}")
-        
-        # Update metrics
+
+        self.logger.info(f"P&L: ${realized_pnl:.4f} (net ${net_pnl:.4f})" + (" [stopped]" if stopped_out else ""))
+
         self.running_pnl += net_pnl
         self.current_balance = max(0, self.total_balance_usdt + self.running_pnl)
         self.total_trades += 1
-        
+
         if net_pnl > 0:
-            self.win_count += 1
-            self.consecutive_wins += 1
-            self.consecutive_losses = 0
+            self.win_count += 1; self.consecutive_wins += 1; self.consecutive_losses = 0
             if self.current_balance > self.peak_balance:
                 self.peak_balance = self.current_balance
         else:
-            self.loss_count += 1
-            self.consecutive_losses += 1
-            self.consecutive_wins = 0
-        
-        trade_return = net_pnl / self.current_balance if self.current_balance > 0 else 0
-        self.returns.append(trade_return)
-        
-        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-        self.logger.info(f"📊 Win Rate: {win_rate:.1f}% ({self.win_count}W/{self.loss_count}L)")
-        self.logger.info(f"📊 Consecutive Wins: {self.consecutive_wins} | Losses: {self.consecutive_losses}")
-        self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
+            self.loss_count += 1; self.consecutive_losses += 1; self.consecutive_wins = 0
 
-        result = {
-            "success": True,
-            "cycle": cycle_number,
-            "entry_price": self.buy_price,
-            "exit_price": exit_price,
-            "quantity": self.buy_qty,
-            "profit": realized_pnl,
-            "net_profit": net_pnl,
-            "fees": fee_estimate,
-            "profit_percent": (realized_pnl / (self.buy_price * self.buy_qty)) * 100 if self.buy_price * self.buy_qty > 0 else 0,
-            "stopped_out": stopped_out,
-            "balance_after": self.current_balance,
-            "consecutive_wins": self.consecutive_wins,
-            "consecutive_losses": self.consecutive_losses,
-            "win_rate": win_rate,
-            "passing_conditions": analysis['passing_conditions'],
-            "rsi": analysis['rsi'],
-            "bb_position": analysis['bb']['position'],
-            "timestamp": datetime.now().isoformat()
-        }
+        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
+        self.logger.info(f"Win Rate: {win_rate:.1f}% ({self.win_count}W/{self.loss_count}L) | Balance: ${self.current_balance:.2f}")
+
+        result = {"success": True, "cycle": cycle_number, "entry_price": self.buy_price, "exit_price": exit_price,
+                  "quantity": self.buy_qty, "profit": realized_pnl, "net_profit": net_pnl, "fees": fee_estimate,
+                  "profit_percent": (realized_pnl / (self.buy_price * self.buy_qty)) * 100 if self.buy_price * self.buy_qty > 0 else 0,
+                  "stopped_out": stopped_out, "balance_after": self.current_balance,
+                  "consecutive_wins": self.consecutive_wins, "consecutive_losses": self.consecutive_losses,
+                  "win_rate": win_rate, "passing_conditions": analysis['passing_conditions'],
+                  "timestamp": datetime.now().isoformat()}
 
         self.cycle_stats["total_cycles"] += 1
         if net_pnl > 0:
-            self.cycle_stats["successful_cycles"] += 1
-            self.cycle_stats["total_profit"] += net_pnl
+            self.cycle_stats["successful_cycles"] += 1; self.cycle_stats["total_profit"] += net_pnl
         else:
-            self.cycle_stats["failed_cycles"] += 1
-            self.cycle_stats["total_loss"] += abs(net_pnl)
-
+            self.cycle_stats["failed_cycles"] += 1; self.cycle_stats["total_loss"] += abs(net_pnl)
         self.cycle_stats["net_profit"] += net_pnl
         self.cycle_stats["cycle_results"].append(result)
         self.trade_history.append(result)
-
         return result
 
-    def run_forever(self, delay_between_cycles: int = 8):
-        """Run continuously - 5 conditions for maximum trades"""
-        self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.4 - 5 CONDITIONS OPTIMIZED")
-        self.logger.info("   5/9 conditions = 3-5x MORE TRADES!")
-        self.logger.info("   Win Rate: 58-62% (still profitable)")
-        self.logger.info("   Press Ctrl+C to stop")
-        self.logger.info("="*70)
+    def run_forever(self, delay_between_cycles: int = 10):
+        self._check_connectivity()
+        self._get_exchange_info()
+        self._initialize_balance()
 
+        self.logger.info("\nStarting live trading loop. Press Ctrl+C to stop.")
         self.cycle_stats["start_time"] = datetime.now()
-        
         cycle_num = 1
         while not self.stopped:
             try:
-                self.logger.info(f"\n📊 Cycle {cycle_num}")
-                self.logger.info(f"   Streak: {self.consecutive_wins} wins | {self.consecutive_losses} losses")
-                self.logger.info(f"   Skips: {self.skipped_count} in a row")
-                self.logger.info(f"   Balance: ${self.current_balance:.2f}")
-                
                 result = self.run_cycle(cycle_number=cycle_num)
-
-                if result.get("skipped", False):
-                    self.logger.info(f"⏭️ Waiting for 5 conditions... ({self.skipped_count} skips)")
-                elif not result.get("success", False):
-                    self.logger.error(f"⚠️ Cycle failed: {result.get('error', 'Unknown error')}")
-                else:
-                    self.logger.info(f"✅ TRADE COMPLETED! Profit: ${result.get('net_profit', 0):.4f}")
-
-                self.print_current_stats()
+                if not result.get("skipped") and result.get("success"):
+                    self.logger.info(f"Trade completed. Net profit: ${result.get('net_profit', 0):.4f}")
                 self.export_results_to_csv()
-
                 if self.consecutive_wins >= self.target_consecutive_wins:
-                    self.logger.info("\n" + "="*70)
-                    self.logger.info("🎉🎉🎉 TARGET ACHIEVED! 7 CONSECUTIVE WINS! 🎉🎉🎉")
-                    self.logger.info("="*70)
-                    self.stopped = True
-                    break
-
-                wait_time = delay_between_cycles + random.uniform(0, 2)
-                self.logger.info(f"\n⏳ Waiting {wait_time:.1f} seconds...")
+                    self.logger.info(f"Target of {self.target_consecutive_wins} consecutive wins reached.")
+                    self.stopped = True; break
+                wait_time = delay_between_cycles + random.uniform(0, 3)
                 time.sleep(wait_time)
                 cycle_num += 1
-
             except KeyboardInterrupt:
-                self.logger.info("\n⚠️ Stopped by user")
-                break
+                self.logger.info("Stopped by user"); break
             except Exception as e:
-                self.logger.error(f"❌ Error: {e}")
+                self.logger.error(f"Error: {e}")
                 time.sleep(delay_between_cycles * 2)
                 cycle_num += 1
 
@@ -1404,193 +1191,508 @@ class ScalperBotV94:
         self.print_final_summary()
         self.export_final_report()
 
-    def print_current_stats(self):
-        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-        self.logger.info(f"\n📊 CURRENT STATISTICS:")
-        self.logger.info(f"   Total Cycles: {self.cycle_stats['total_cycles']}")
-        self.logger.info(f"   Skipped: {self.cycle_stats.get('skipped_cycles', 0)}")
-        self.logger.info(f"   Wins: {self.win_count} | Losses: {self.loss_count}")
-        self.logger.info(f"   Win Rate: {win_rate:.1f}%")
-        self.logger.info(f"   Consecutive Wins: {self.consecutive_wins} | Losses: {self.consecutive_losses}")
-        self.logger.info(f"   Net Profit: ${self.cycle_stats['net_profit']:.4f}")
-        self.logger.info(f"   Current Balance: ${self.current_balance:.2f}")
-
     def print_final_summary(self):
         stats = self.cycle_stats
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-        duration = (stats['end_time'] - stats['start_time']).total_seconds()
-        hours = duration // 3600
-        minutes = (duration % 3600) // 60
-        seconds = duration % 60
-
         self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.4 - FINAL SUMMARY")
-        self.logger.info("="*70)
-        self.logger.info(f"📅 Start Time: {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
-        self.logger.info(f"📅 End Time:   {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
-        self.logger.info(f"⏱️  Duration:   {int(hours)}h {int(minutes)}m {int(seconds)}s")
-        self.logger.info("-"*70)
-        self.logger.info(f"📊 Total Cycles:       {stats['total_cycles']}")
-        self.logger.info(f"✅ Successful Cycles:  {stats['successful_cycles']}")
-        self.logger.info(f"❌ Failed Cycles:      {stats['failed_cycles']}")
-        self.logger.info(f"⏭️ Skipped Cycles:     {stats.get('skipped_cycles', 0)}")
-        self.logger.info(f"🏆 Win Rate:           {win_rate:.1f}%")
-        self.logger.info(f"📊 Consecutive Wins:   {self.consecutive_wins}")
-        self.logger.info("-"*70)
-        self.logger.info(f"💰 Starting Balance:   ${self.starting_balance:.2f}")
-        self.logger.info(f"💰 Final Balance:      ${self.current_balance:.2f}")
-        self.logger.info(f"💰 Peak Balance:       ${self.peak_balance:.2f}")
-        self.logger.info(f"📈 Total Profit:       ${stats['net_profit']:.4f}")
-        self.logger.info(f"📊 Total Fees:         ${self.total_fees:.4f}")
-        
-        if stats['total_cycles'] > 0:
-            avg_profit = stats['net_profit'] / max(1, stats['total_cycles'])
-            self.logger.info(f"📊 Avg Profit/Cycle:   ${avg_profit:.4f}")
-        
-        if self.starting_balance > 0:
-            roi = (stats['net_profit'] / self.starting_balance) * 100
-            self.logger.info(f"📊 ROI:                {roi:.1f}%")
-        
-        if self.peak_balance > 0:
-            drawdown = (self.peak_balance - self.current_balance) / self.peak_balance * 100
-            self.logger.info(f"📊 Max Drawdown:       {drawdown:.1f}%")
-        
-        self.logger.info("-"*70)
-        self.logger.info(f"📊 Total Trades:        {self.total_trades}")
+        self.logger.info(f"Total Cycles: {stats['total_cycles']} | Win Rate: {win_rate:.1f}%")
+        self.logger.info(f"Net Profit: ${stats['net_profit']:.4f} | Fees Paid: ${self.total_fees:.4f}")
+        self.logger.info(f"Final Balance: ${self.current_balance:.2f} (started ${self.starting_balance:.2f})")
         self.logger.info("="*70)
 
     def export_results_to_csv(self):
         if not self.cycle_stats["cycle_results"]:
             return
-
         filename = f"crisis_scalper_results_{datetime.now().strftime('%Y%m%d')}.csv"
         file_exists = os.path.isfile(filename)
-
         with open(filename, 'a', newline='') as csvfile:
-            fieldnames = ['cycle', 'timestamp', 'entry_price', 'exit_price', 'quantity',
-                         'profit', 'net_profit', 'fees', 'profit_percent', 'stopped_out', 
-                         'balance_after', 'consecutive_wins', 'consecutive_losses', 'win_rate',
-                         'passing_conditions', 'rsi', 'bb_position', 'success']
+            fieldnames = ['cycle', 'timestamp', 'entry_price', 'exit_price', 'quantity', 'profit',
+                          'net_profit', 'fees', 'profit_percent', 'stopped_out', 'balance_after',
+                          'consecutive_wins', 'consecutive_losses', 'win_rate', 'passing_conditions', 'success']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
             if not file_exists:
                 writer.writeheader()
-
             latest = self.cycle_stats["cycle_results"][-1]
-            writer.writerow({
-                'cycle': latest['cycle'],
-                'timestamp': latest['timestamp'],
-                'entry_price': f"{latest['entry_price']:.2f}",
-                'exit_price': f"{latest['exit_price']:.2f}",
-                'quantity': f"{latest['quantity']:.8f}",
-                'profit': f"{latest['profit']:.4f}",
-                'net_profit': f"{latest.get('net_profit', 0):.4f}",
-                'fees': f"{latest.get('fees', 0):.4f}",
-                'profit_percent': f"{latest['profit_percent']:.2f}",
-                'stopped_out': latest.get('stopped_out', False),
-                'balance_after': f"{latest.get('balance_after', 0):.2f}",
-                'consecutive_wins': latest.get('consecutive_wins', 0),
-                'consecutive_losses': latest.get('consecutive_losses', 0),
-                'win_rate': f"{latest.get('win_rate', 0):.1f}",
-                'passing_conditions': latest.get('passing_conditions', 0),
-                'rsi': f"{latest.get('rsi', 0):.1f}",
-                'bb_position': f"{latest.get('bb_position', 0):.2f}",
-                'success': latest['success']
-            })
+            writer.writerow({k: latest.get(k, '') for k in fieldnames})
 
     def export_final_report(self):
-        roi_percent = 0.0
-        if self.starting_balance > 0:
-            roi_percent = ((self.current_balance - self.starting_balance) / self.starting_balance) * 100
-        
-        max_drawdown_percent = 0.0
-        if self.peak_balance > 0:
-            max_drawdown_percent = ((self.peak_balance - self.current_balance) / self.peak_balance * 100)
-        
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-        
-        report = {
-            "version": "9.4",
-            "name": "5 Conditions - Maximum Frequency",
-            "rule": "Requires only 5/9 conditions PASSING",
-            "starting_balance": self.starting_balance,
-            "final_balance": self.current_balance,
-            "peak_balance": self.peak_balance,
-            "max_drawdown_percent": max_drawdown_percent,
-            "consecutive_wins": self.consecutive_wins,
-            "consecutive_losses": self.consecutive_losses,
-            "roi_percent": roi_percent,
-            "win_rate": win_rate,
-            "total_trades": self.total_trades,
-            "wins": self.win_count,
-            "losses": self.loss_count,
-            "skipped_trades": self.skipped_trades,
-            "total_fees": self.total_fees,
-            "target_achieved": self.consecutive_wins >= self.target_consecutive_wins,
-            "bot_stopped": self.stopped,
-            "settings": {
-                "min_order_usdt": self.min_order_usdt,
-                "target_profit_pct": self.target_profit_pct,
-                "stop_loss_pct": self.stop_loss_pct,
-                "risk_reward": self.target_profit_pct / self.stop_loss_pct,
-                "min_passing_conditions": self.min_passing_conditions,
-                "strategy": "5 Conditions - Maximum trades, 58-62% win rate"
-            },
-            "summary": self.cycle_stats,
-            "trade_history": self.trade_history
-        }
-
+        report = {"version": "12.0", "starting_balance": self.starting_balance,
+                  "final_balance": self.current_balance, "peak_balance": self.peak_balance,
+                  "win_rate": win_rate, "total_trades": self.total_trades, "wins": self.win_count,
+                  "losses": self.loss_count, "total_fees": self.total_fees, "summary": self.cycle_stats,
+                  "trade_history": self.trade_history[-20:]}
         filename = f"crisis_scalper_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w') as f:
             json.dump(report, f, indent=2, default=str)
+        self.logger.info(f"Report exported to: {filename}")
 
-        self.logger.info(f"\n📄 Detailed report exported to: {filename}")
+    # ====================================================================
+    # BACKTESTER - run this before trusting the strategy with real money
+    # ====================================================================
+
+    def _fetch_historical_klines(self, days_back: int) -> Dict:
+        print(f"Fetching ~{days_back} day(s) of 1m history for {self.symbol}...")
+        candles_needed = days_back * 24 * 60
+        all_klines = {"timestamps": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
+        end_time = None
+        fetched = 0
+        while fetched < candles_needed:
+            batch = AdvancedTA.get_klines(self.symbol, self.base_url, interval="1m", limit=1000, end_time_ms=end_time)
+            if not batch or not batch["timestamps"]:
+                break
+            for k in all_klines:
+                all_klines[k] = batch[k] + all_klines[k]
+            fetched += len(batch["timestamps"])
+            end_time = batch["timestamps"][0] - 1
+            time.sleep(0.2)  # be nice to the public endpoint
+        return all_klines
+
+    def _precompute_analyses(self, klines: Dict, label: str = "") -> List[Optional[Dict]]:
+        """Run analyze_market() exactly once per candle. This is the
+        expensive part (RSI/MACD/BB/support-resistance/etc over a rolling
+        300-candle window) and it does NOT depend on stop/target/threshold
+        parameters, so it must only be done once per candle regardless of
+        how many parameter combinations get swept afterward. Returns a
+        list the same length as klines['closes'], with None for indices
+        before there's enough history (i < 300)."""
+        total = len(klines["closes"])
+        crisis_score = self.context_country["opportunity_score"] if self.context_country else 0
+        wst_class = self.context_country["wst_class"] if self.context_country else "Periphery"
+        analyses: List[Optional[Dict]] = [None] * total
+
+        report_every = max(1, (total - 300) // 10)
+        for i in range(300, total):
+            window = {k: klines[k][i-300:i] for k in klines}
+            analyses[i] = EinsteinStrategy.analyze_market(window, crisis_score, wst_class)
+            if label and (i - 300) % report_every == 0:
+                pct = (i - 300) / max(1, total - 300) * 100
+                print(f"  [{label}] analyzing candles: {pct:.0f}%")
+        return analyses
+
+    def _simulate_trades_from_analyses(self, analyses: List[Optional[Dict]], klines: Dict,
+                                        min_passing_conditions: int, stop_loss_pct: float,
+                                        target_profit_pct: float) -> List[float]:
+        """Cheap part of the sweep: given already-computed indicator
+        analyses, apply a given (threshold, stop, target) combination and
+        return the resulting closed-trade returns. Safe/fast to call many
+        times per set of analyses."""
+        total = len(klines["closes"])
+        trades = []
+        in_position = False
+        entry_price = entry_i = stop_price = target_price = None
+        round_trip_fee_pct = self.maker_fee_rate + self.taker_fee_rate
+
+        for i in range(300, total):
+            if not in_position:
+                analysis = analyses[i]
+                win_rate = analysis.get('expected_win_rate', 0.5)
+                net_target = target_profit_pct - round_trip_fee_pct
+                net_stop = stop_loss_pct + round_trip_fee_pct
+                positive_expectancy = (win_rate * net_target) - ((1 - win_rate) * net_stop) > 0
+
+                if analysis['passing_conditions'] >= min_passing_conditions and positive_expectancy:
+                    entry_price = klines["closes"][i]
+                    atr_stop = EinsteinMath.optimal_stop_loss(analysis['atr'], analysis['volatility'], analysis['confidence'])
+                    min_stop = entry_price * (1 - stop_loss_pct)
+                    max_stop = entry_price * (1 - 0.02)
+                    stop_price = min(min_stop, max(max_stop, entry_price - atr_stop))
+                    target_price = entry_price * (1 + target_profit_pct)
+                    in_position = True
+                    entry_i = i
+            else:
+                high = klines["highs"][i]
+                low = klines["lows"][i]
+                exit_price = None
+                if low <= stop_price:
+                    exit_price = stop_price
+                elif high >= target_price:
+                    exit_price = target_price
+                elif i - entry_i > 240:
+                    exit_price = klines["closes"][i]
+
+                if exit_price is not None:
+                    gross_pnl_pct = (exit_price - entry_price) / entry_price
+                    trades.append(gross_pnl_pct - round_trip_fee_pct)
+                    in_position = False
+
+        return trades
+
+    def _simulate_trades(self, klines: Dict, min_passing_conditions: int,
+                          stop_loss_pct: float, target_profit_pct: float) -> List[float]:
+        """Convenience wrapper for a single (threshold, stop, target)
+        evaluation - precomputes analyses then simulates once. Used by
+        run_backtest(). The walk-forward search below precomputes analyses
+        ONCE and reuses them across all 64 combinations instead of calling
+        this repeatedly, which is what made the search slow."""
+        analyses = self._precompute_analyses(klines)
+        return self._simulate_trades_from_analyses(analyses, klines, min_passing_conditions,
+                                                     stop_loss_pct, target_profit_pct)
+
+    @staticmethod
+    def _summarize_trades(trades: List[float]) -> Dict:
+        if not trades:
+            return {"trades": 0, "win_rate": 0, "avg_win": 0, "avg_loss": 0, "expectancy_pct": 0, "total_return_pct": 0}
+        wins = [t for t in trades if t > 0]
+        losses = [t for t in trades if t <= 0]
+        return {
+            "trades": len(trades),
+            "win_rate": len(wins) / len(trades),
+            "avg_win": sum(wins) / len(wins) if wins else 0,
+            "avg_loss": sum(losses) / len(losses) if losses else 0,
+            "expectancy_pct": sum(trades) / len(trades),
+            "total_return_pct": sum(trades),
+        }
+
+    def run_backtest(self, days_back: int = 3, verbose: bool = False) -> dict:
+        """
+        Walks forward through real historical 1-minute candles, applies the
+        exact same analyze_market() decision logic used live, and simulates
+        entries/exits with the same target/stop/fee assumptions. This does
+        NOT guarantee future results will match, but it replaces "we assume
+        a 55% win rate" with an actual measurement on real data, which is
+        the minimum bar before trading a strategy like this with money.
+        """
+        all_klines = self._fetch_historical_klines(days_back)
+        total = len(all_klines["closes"])
+        if total < 350:
+            print("Not enough historical data returned to backtest.")
+            return {}
+
+        print(f"Backtesting over {total} candles (~{total/1440:.1f} days)...")
+        trades = self._simulate_trades(all_klines, self.min_passing_conditions,
+                                        self.stop_loss_pct, self.target_profit_pct)
+
+        if not trades:
+            print("No trades were triggered by the strategy over this window.")
+            return {"trades": 0}
+
+        summary = self._summarize_trades(trades)
+        win_rate, avg_win, avg_loss, expectancy_pct = (
+            summary["win_rate"], summary["avg_win"], summary["avg_loss"], summary["expectancy_pct"])
+
+        print("\n" + "="*60)
+        print("BACKTEST RESULTS (net of estimated fees)")
+        print("="*60)
+        print(f"  Trades:          {len(trades)}")
+        print(f"  Win rate:        {win_rate*100:.1f}%")
+        print(f"  Avg win:         {avg_win*100:.3f}%")
+        print(f"  Avg loss:        {avg_loss*100:.3f}%")
+        print(f"  Expectancy/trade:{expectancy_pct*100:.3f}%")
+        print(f"  Total return:    {sum(trades)*100:.2f}% (naive, no compounding/sizing)")
+        print("="*60)
+        if expectancy_pct <= 0:
+            print("Expectancy is NOT positive on this historical window.")
+            print("Do not run this live as-is - the filter/thresholds need more work,")
+            print("or this approach may not have a real edge on this symbol/timeframe.")
+        else:
+            print("Expectancy is positive on this window, but this is one sample of")
+            print("history, on default parameters, with no walk-forward validation.")
+            print("Treat this as a first checkpoint, not proof of a working system.")
+
+        return {"trades": len(trades), "win_rate": win_rate, "avg_win": avg_win,
+                "avg_loss": avg_loss, "expectancy_pct": expectancy_pct, "total_return_pct": sum(trades)}
+
+    def run_walk_forward_search(self, days_back: int = 14, train_frac: float = 0.7,
+                                 min_trades_per_split: int = 15) -> List[Dict]:
+        """
+        Fetches a longer history, splits it CHRONOLOGICALLY into a training
+        segment and a held-out test segment, then sweeps parameter
+        combinations on the training segment only. A combination is only
+        reported as a candidate if it is ALSO positive on the untouched
+        test segment - that's what separates a real signal from a
+        combination that happened to fit noise in one window.
+
+        This can come back with zero candidates. That is a legitimate,
+        informative result: it means nothing tested here held up
+        out-of-sample, on this symbol/timeframe, with this feature set.
+        It is not something to keep tweaking until it "passes" - doing
+        that just moves the overfitting from the code to you.
+        """
+        all_klines = self._fetch_historical_klines(days_back)
+        total = len(all_klines["closes"])
+        if total < 700:
+            print("Not enough historical data for a meaningful train/test split.")
+            return []
+
+        split_idx = int(total * train_frac)
+        # small overlap so the test segment still has 300 candles of prior
+        # history available for indicators at its own start
+        train = {k: all_klines[k][:split_idx] for k in all_klines}
+        test = {k: all_klines[k][max(0, split_idx - 300):] for k in all_klines}
+
+        print(f"Train: {len(train['closes'])} candles (~{len(train['closes'])/1440:.1f}d) | "
+              f"Test: {len(test['closes'])-300} candles (~{(len(test['closes'])-300)/1440:.1f}d)")
+
+        # FIX: this used to call analyze_market() fresh for every candle,
+        # once per parameter combo (64x redundant work - the indicators
+        # don't depend on stop/target/threshold). Precompute once per
+        # split instead; the 64-combo sweep below then only does cheap
+        # threshold/exit-price comparisons.
+        print("Precomputing indicators for train split (one-time cost)...")
+        train_analyses = self._precompute_analyses(train, label="train")
+        print("Precomputing indicators for test split (one-time cost)...")
+        test_analyses = self._precompute_analyses(test, label="test")
+
+        condition_options = [4, 5, 6, 7]
+        stop_options = [0.006, 0.008, 0.010, 0.012]
+        target_options = [0.008, 0.010, 0.012, 0.015]
+
+        results = []
+        combo_count = 0
+        print(f"Sweeping {len(condition_options)*len(stop_options)*len(target_options)} combinations "
+              f"against precomputed indicators...")
+        for min_cond in condition_options:
+            for stop_pct in stop_options:
+                for target_pct in target_options:
+                    combo_count += 1
+                    train_trades = self._simulate_trades_from_analyses(
+                        train_analyses, train, min_cond, stop_pct, target_pct)
+                    if len(train_trades) < min_trades_per_split:
+                        continue
+                    train_summary = self._summarize_trades(train_trades)
+                    if train_summary["expectancy_pct"] <= 0:
+                        continue  # no point testing something that failed in-sample
+
+                    test_trades = self._simulate_trades_from_analyses(
+                        test_analyses, test, min_cond, stop_pct, target_pct)
+                    if len(test_trades) < min_trades_per_split:
+                        continue
+                    test_summary = self._summarize_trades(test_trades)
+
+                    results.append({
+                        "min_passing_conditions": min_cond, "stop_loss_pct": stop_pct,
+                        "target_profit_pct": target_pct,
+                        "train_expectancy_pct": train_summary["expectancy_pct"],
+                        "train_trades": train_summary["trades"],
+                        "test_expectancy_pct": test_summary["expectancy_pct"],
+                        "test_trades": test_summary["trades"],
+                        "test_win_rate": test_summary["win_rate"],
+                        "holds_out_of_sample": test_summary["expectancy_pct"] > 0,
+                    })
+
+        print(f"\nSwept {combo_count} parameter combinations.")
+        candidates = [r for r in results if r["holds_out_of_sample"]]
+        candidates.sort(key=lambda r: r["test_expectancy_pct"], reverse=True)
+
+        print("="*70)
+        if not candidates:
+            print("RESULT: No parameter combination was positive on BOTH the training")
+            print("and the held-out test segment. That means, on this data, this")
+            print("feature set does not show a real edge for BTCUSDT 1m scalping -")
+            print("not that a threshold somewhere is 'wrong' and needs pushing until")
+            print("a number turns green.")
+            print("="*70)
+            return []
+
+        print(f"RESULT: {len(candidates)} combination(s) positive in-sample AND out-of-sample:")
+        print("-"*70)
+        for r in candidates[:10]:
+            print(f"  conditions>={r['min_passing_conditions']} stop={r['stop_loss_pct']*100:.1f}% "
+                  f"target={r['target_profit_pct']*100:.1f}%  |  "
+                  f"train exp/trade={r['train_expectancy_pct']*100:.3f}% ({r['train_trades']} trades)  "
+                  f"test exp/trade={r['test_expectancy_pct']*100:.3f}% ({r['test_trades']} trades, "
+                  f"{r['test_win_rate']*100:.1f}% win rate)")
+        print("-"*70)
+        print("Even these passed one train/test split on historical data with no")
+        print("slippage, latency, or partial-fill modeling. Treat this as a short")
+        print("list to investigate further (e.g. re-test on a different date range),")
+        print("not as a validated live-ready strategy.")
+        print("="*70)
+        return candidates
+
+    def run_robust_validation(self, days_back: int = 30, n_folds: int = 5,
+                               alpha: float = 0.05, min_trades_per_fold: int = 10) -> List[Dict]:
+        """
+        Stronger validation than a single train/test split. Splits history
+        into N chronological, NON-OVERLAPPING blocks. For every parameter
+        combination, evaluates it independently on each block, then:
+
+          1. Requires the combination to be profitable in a strong majority
+             of blocks (not just "on average") - a real edge should show up
+             fairly consistently across different weeks, not just in one.
+          2. Pools all trades across all blocks and runs a z-test of mean
+             return per trade against zero (using statistics.NormalDist,
+             a normal approximation - reasonable for this many trades but
+             not as exact as a proper t-test with autocorrelation
+             correction, which would need scipy/pandas).
+          3. Applies a Bonferroni correction: since 64 combinations are
+             being tested, the significance bar is tightened to alpha/64
+             instead of alpha. This is the standard fix for the "test
+             enough things and one looks significant by chance" problem -
+             without it, you'd expect ~3 of 64 combos to look "significant
+             at p<0.05" from pure noise alone.
+
+        A combination only gets reported if it clears ALL three bars. This
+        can still return an empty list - on efficient, heavily-traded
+        instruments like BTCUSDT, that is a plausible and legitimate
+        outcome, not evidence the test is broken.
+        """
+        all_klines = self._fetch_historical_klines(days_back)
+        total = len(all_klines["closes"])
+        if total < 300 * (n_folds + 1):
+            print(f"Not enough historical data for {n_folds} blocks with proper lookback.")
+            return []
+
+        block_size = total // n_folds
+        blocks = []
+        for f in range(n_folds):
+            start = f * block_size
+            end = total if f == n_folds - 1 else (f + 1) * block_size
+            # give every block after the first a 300-candle lookback prefix
+            # borrowed from the end of the previous block, so indicators
+            # are valid from the start of the block's OWN data
+            lookback_start = max(0, start - 300)
+            block = {k: all_klines[k][lookback_start:end] for k in all_klines}
+            usable_start_offset = start - lookback_start  # index where this block's "real" data begins
+            blocks.append((block, usable_start_offset))
+
+        print(f"Split {total} candles into {n_folds} blocks of ~{block_size/1440:.1f} days each.")
+
+        condition_options = [4, 5, 6, 7]
+        stop_options = [0.006, 0.008, 0.010, 0.012]
+        target_options = [0.008, 0.010, 0.012, 0.015]
+        n_combos = len(condition_options) * len(stop_options) * len(target_options)
+        bonferroni_alpha = alpha / n_combos
+        print(f"Testing {n_combos} combinations. Bonferroni-corrected significance bar: "
+              f"p < {bonferroni_alpha:.5f} (uncorrected alpha={alpha})")
+
+        print("Precomputing indicators for each block (one-time cost per block)...")
+        block_analyses = []
+        for idx, (block, offset) in enumerate(blocks):
+            analyses = self._precompute_analyses(block, label=f"block {idx+1}/{n_folds}")
+            block_analyses.append(analyses)
+
+        normal = statistics.NormalDist()
+        results = []
+
+        for min_cond in condition_options:
+            for stop_pct in stop_options:
+                for target_pct in target_options:
+                    pooled_trades = []
+                    blocks_positive = 0
+                    blocks_tested = 0
+
+                    for (block, offset), analyses in zip(blocks, block_analyses):
+                        trades = self._simulate_trades_from_analyses(
+                            analyses, block, min_cond, stop_pct, target_pct)
+                        # only count trades that entered after this block's own
+                        # (non-borrowed) data actually starts
+                        trades = trades  # entries before offset already excluded
+                        # since _simulate_trades_from_analyses starts at i=300
+                        # regardless of offset, trades from the borrowed prefix
+                        # can appear for early blocks; acceptable minor overlap,
+                        # noted rather than hidden
+                        if len(trades) < min_trades_per_fold:
+                            continue
+                        blocks_tested += 1
+                        block_summary = self._summarize_trades(trades)
+                        if block_summary["expectancy_pct"] > 0:
+                            blocks_positive += 1
+                        pooled_trades.extend(trades)
+
+                    if blocks_tested < n_folds - 1 or len(pooled_trades) < min_trades_per_fold * 2:
+                        continue  # not enough data to say anything meaningful
+
+                    consistency_ok = blocks_positive >= max(3, int(0.8 * blocks_tested))
+
+                    mean_ret = sum(pooled_trades) / len(pooled_trades)
+                    if len(pooled_trades) > 1:
+                        stdev_ret = statistics.stdev(pooled_trades)
+                    else:
+                        stdev_ret = 0
+                    if stdev_ret == 0:
+                        continue
+                    se = stdev_ret / (len(pooled_trades) ** 0.5)
+                    z = mean_ret / se
+                    p_value = 2 * (1 - normal.cdf(abs(z)))
+
+                    significant = (mean_ret > 0) and (p_value < bonferroni_alpha)
+
+                    if consistency_ok and significant:
+                        results.append({
+                            "min_passing_conditions": min_cond, "stop_loss_pct": stop_pct,
+                            "target_profit_pct": target_pct, "blocks_positive": blocks_positive,
+                            "blocks_tested": blocks_tested, "pooled_trades": len(pooled_trades),
+                            "mean_return_pct": mean_ret, "p_value": p_value,
+                        })
+
+        print("\n" + "="*70)
+        if not results:
+            print("RESULT: No parameter combination was BOTH consistently profitable")
+            print("across the blocks AND statistically significant after correcting")
+            print(f"for testing {n_combos} combinations at once.")
+            print()
+            print("This is a legitimate, informative negative result. It means: on")
+            print("this data, with this indicator set, at the 1-minute BTCUSDT")
+            print("timeframe, there is no edge here that survives honest scrutiny -")
+            print("not that a parameter needs to be pushed further to find one.")
+            print()
+            print("The responsible next steps from here are NOT 'test more combos':")
+            print("  - A longer holding period reduces fee drag relative to any real")
+            print("    signal, and is worth exploring separately from scalping.")
+            print("  - Public 1-minute technical indicators on BTCUSDT specifically")
+            print("    compete against firms with faster data and lower costs than")
+            print("    this bot has; that structural disadvantage doesn't go away")
+            print("    with more parameter tuning.")
+            print("="*70)
+            return []
+
+        results.sort(key=lambda r: r["p_value"])
+        print(f"RESULT: {len(results)} combination(s) passed consistency AND significance:")
+        print("-"*70)
+        for r in results[:10]:
+            print(f"  conditions>={r['min_passing_conditions']} stop={r['stop_loss_pct']*100:.1f}% "
+                  f"target={r['target_profit_pct']*100:.1f}%  |  "
+                  f"positive in {r['blocks_positive']}/{r['blocks_tested']} blocks  |  "
+                  f"{r['pooled_trades']} pooled trades  |  "
+                  f"mean return/trade={r['mean_return_pct']*100:.4f}%  |  p={r['p_value']:.6f}")
+        print("-"*70)
+        print("Even a statistically significant backtest result is not a live")
+        print("performance guarantee: it doesn't model slippage, partial fills,")
+        print("latency, or the possibility this edge decays once acted on. Treat")
+        print("this as justification to paper-trade the top candidate next, not")
+        print("as a green light to trade it with real money immediately.")
+        print("="*70)
+        return results
 
 # ========================================================================
-# 🚀 MAIN EXECUTION
+# MAIN
 # ========================================================================
 
 if __name__ == "__main__":
-    import os
     import sys
-    
+
     API_KEY = "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn"
     API_SECRET = "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0"
+
     if not API_KEY or not API_SECRET:
-        print("="*70)
-        print("❌ API KEYS NOT FOUND!")
-        print("="*70)
-        print("\nCreate a .env file with:")
-        print("BINANCE_API_KEY=your_api_key")
-        print("BINANCE_API_SECRET=your_api_secret")
-        print("="*70)
-        sys.exit(1)
-    
-    print("="*70)
-    print("🧠 EINSTEIN EDGE v9.4 - 5 CONDITIONS OPTIMIZED")
-    print("="*70)
-    print("\nMAXIMUM TRADING FREQUENCY:")
-    print("1. ✅ Only 5/9 conditions needed (was 6)")
-    print("2. ✅ 3-5x MORE TRADES than 6 conditions")
-    print("3. ✅ 58-62% win rate (still profitable)")
-    print("4. ✅ Risk:Reward = 1:3")
-    print("5. ✅ Perfect for small accounts")
-    print("\nEXPECTED RESULTS:")
-    print("   - Trades/Day: 15-25 (was 8-12)")
-    print("   - Win Rate: 58-62%")
-    print("   - Daily Profit: 2-3x higher than 6 conditions")
-    print("   - Risk of Ruin: <2%")
-    print("="*70)
-    
-    print("\n🤖 Starting 5 CONDITIONS in 3 seconds...")
-    time.sleep(3)
-    
-    bot = ScalperBotV94(
+        print("API KEYS NOT FOUND"); sys.exit(1)
+
+    bot = ScalperBotV12(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
         exchange_region="us",
-        log_level="INFO"
+        log_level="INFO",
     )
 
-    bot.run_forever(delay_between_cycles=8)
+    # Default entrypoint runs the rigorous multi-period validation: splits
+    # ~30 days into 5 non-overlapping blocks, requires a candidate to be
+    # profitable across most blocks AND statistically significant after a
+    # Bonferroni correction for testing 64 combinations. This is stronger
+    # evidence than the single train/test split (run_walk_forward_search)
+    # or a single backtest (run_backtest), and it can honestly return
+    # nothing - that's a real answer, not a bug.
+    #
+    # Weaker/faster alternatives, if you want them instead:
+    #   bot.run_backtest(days_back=3, verbose=False)
+    #   bot.run_walk_forward_search(days_back=14, train_frac=0.7)
+    candidates = bot.run_robust_validation(days_back=30, n_folds=5)
+
+    # Only if run_robust_validation() returned candidates, and only after
+    # you've reviewed them (and ideally paper-traded the top one for a
+    # while), would you manually set bot.min_passing_conditions /
+    # bot.stop_loss_pct / bot.target_profit_pct to one of the printed
+    # combinations and call:
+    # bot.run_forever(delay_between_cycles=10)
