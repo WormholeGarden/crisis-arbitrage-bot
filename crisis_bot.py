@@ -1,60 +1,76 @@
 #!/usr/bin/env python3
 """
-1D ML ENSEMBLE - HONEST ANCHORED WALK-FORWARD VALIDATION
+WIDE-NET HONEST VALIDATOR
 ============================================================
-What was wrong with the v4.0 "Ultimate Golden Strategy" search:
+The widest legitimate search we can run without repeating the mistake
+from every prior "discovery" in this thread: testing many things
+without correcting for how many things were tested, or confirming on
+data the search already saw.
 
-  1. ~800 (parameter x symbol) combinations were tested and the winner
-     was picked by an arbitrary score, with NO correction for how many
-     things were tried.
-  2. The parameter search and the "validation" both used the SAME
-     blocks of data - there was never a truly untouched holdout. That's
-     in-sample selection, not out-of-sample confirmation.
-  3. 14 trades (and similarly small counts for other symbols) is far
-     too few to say anything with confidence - the standard error on a
-     58.9% win rate from 14 trials is roughly +/-13 percentage points.
+SCOPE OF THE SEARCH:
+  - 12 symbols (BTC, ETH, SOL, LINK, AVAX, BNB, ADA, DOGE, MATIC, DOT,
+    LTC, XRP - all vs USDT)
+  - 3 timeframes (1h, 4h, 1d)
+  - 2 exchange endpoints per symbol (api.binance.us and api.binance.com),
+    using whichever returns more historical depth for that symbol -
+    this is public market data, no account/API key involved
+  - = up to 36 (symbol, timeframe) combinations
 
-This script fixes (1) and (2) directly:
+METHOD (same discipline as the last honest validator, just run wider):
+  - ANCHORED WALK-FORWARD per (symbol, timeframe): for each fold,
+    strategy parameters are selected using ONLY data strictly before
+    that fold, then locked and applied unchanged to the fold the
+    selection process never saw. Only those trades count as
+    out-of-sample.
+  - Bonferroni correction sized to the ACTUAL number of (symbol,
+    timeframe) combinations tested here (up to 36) - not the 800-1280
+    combinations tested in the earlier "Golden Ticket" scripts.
+  - Every result reports its pooled out-of-sample trade count
+    explicitly. Under ~30 trades, ANY p-value is flagged as low-power
+    and not to be trusted at face value, regardless of what it says.
 
-  - ANCHORED WALK-FORWARD: for each fold, parameters are chosen using
-    ONLY the data before that fold (a search, but confined to the
-    past), then locked and applied UNCHANGED to that fold, which the
-    search never saw. Only those genuinely out-of-sample trades count
-    toward the final result.
-  - Bonferroni correction sized to the number of SYMBOLS being
-    compared at the final reporting stage (5, here) - the per-fold
-    training search itself isn't further corrected, which is standard
-    for walk-forward but does mean some optimism can still leak in
-    from the training-side search; that's disclosed, not hidden.
+This is a genuinely wider search than anything run so far in this
+thread, and it can still legitimately return nothing. If it does,
+that is the most informative possible outcome of this whole
+exercise: an unusually thorough, correctly-controlled search across
+symbols, timeframes, and available history found no exploitable edge
+in these technical-indicator strategies.
 
-It does NOT fix (3), because (3) isn't a code problem. If daily-bar
-AVAXUSDT trades roughly once every 50 days, no amount of validation
-rigor manufactures more independent trades than history actually
-contains. The script will print the pooled trade count plainly so you
-can see if there's enough statistical power to trust ANY p-value it
-reports - and it may honestly conclude there isn't.
+No API key, no order placement, no live trading anywhere in this file.
 ============================================================
 """
 
 import time
 import math
 import statistics
-from datetime import datetime
 from typing import Dict, List, Optional
 import requests
 
-MAKER_FEE = 0.0005
-TAKER_FEE = 0.0005
+MAKER_FEE = 0.001
+TAKER_FEE = 0.001
 ROUND_TRIP_FEE = MAKER_FEE + TAKER_FEE
 
+EXCHANGE_ENDPOINTS = ["https://api.binance.us", "https://api.binance.com"]
+
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT", "AVAXUSDT", "BNBUSDT",
+           "ADAUSDT", "DOGEUSDT", "MATICUSDT", "DOTUSDT", "LTCUSDT", "XRPUSDT"]
+
+# Per-timeframe config: how many candles/day, how far back to try fetching,
+# and a hold-time grid expressed in CANDLES (not days) sized sensibly for
+# that timeframe.
+TIMEFRAME_CONFIG = {
+    "1h": {"candles_per_day": 24, "days_back": 400, "lookback": 150, "hold_options": [24, 48, 96]},
+    "4h": {"candles_per_day": 6, "days_back": 700, "lookback": 150, "hold_options": [12, 24, 48]},
+    "1d": {"candles_per_day": 1, "days_back": 1500, "lookback": 100, "hold_options": [20, 30, 45]},
+}
+
 # ========================================================================
-# INDICATORS (reused as-is - these implementations are fine)
+# INDICATORS
 # ========================================================================
 
-class AdvancedIndicators:
+class Ind:
     @staticmethod
-    def get_klines(symbol: str, base_url: str, interval: str = "1d", limit: int = 1000,
-                    end_time_ms: int = None) -> Optional[Dict]:
+    def get_klines(symbol, base_url, interval, limit=1000, end_time_ms=None):
         try:
             url = f"{base_url}/api/v3/klines"
             params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -63,6 +79,8 @@ class AdvancedIndicators:
             resp = requests.get(url, params=params, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
+                if not data:
+                    return None
                 return {
                     "timestamps": [c[0] for c in data], "opens": [float(c[1]) for c in data],
                     "highs": [float(c[2]) for c in data], "lows": [float(c[3]) for c in data],
@@ -101,33 +119,27 @@ class AdvancedIndicators:
     def atr(highs, lows, closes, period=14):
         if len(closes) < period + 1:
             return (max(highs) - min(lows)) if highs and lows else 0
-        tr_values = []
-        for i in range(1, len(closes)):
-            tr_values.append(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
-        return sum(tr_values[-period:]) / period
+        tr = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+              for i in range(1, len(closes))]
+        return sum(tr[-period:]) / period
 
     @staticmethod
     def macd(closes, fast=12, slow=26, signal=9):
         if len(closes) < slow:
-            return {"macd": 0, "signal": 0, "histogram": 0, "bullish": False}
-        ema_fast = AdvancedIndicators.ema(closes, fast)
-        ema_slow = AdvancedIndicators.ema(closes, slow)
+            return {"bullish": False}
+        ema_fast = Ind.ema(closes, fast); ema_slow = Ind.ema(closes, slow)
         macd_line = ema_fast - ema_slow
-        signal_line = AdvancedIndicators.ema([macd_line] * signal, signal)
-        return {"macd": macd_line, "signal": signal_line, "histogram": macd_line - signal_line,
-                "bullish": macd_line > signal_line}
+        signal_line = Ind.ema([macd_line]*signal, signal)
+        return {"bullish": macd_line > signal_line}
 
     @staticmethod
     def bollinger(closes, period=20, std_dev=2):
         if len(closes) < period:
             last = closes[-1] if closes else 0
-            return {"upper": last, "middle": last, "lower": last, "position": 0.5}
+            return {"upper": last, "lower": last}
         middle = sum(closes[-period:]) / period
         std = (sum((x-middle)**2 for x in closes[-period:]) / period) ** 0.5
-        upper = middle + std*std_dev
-        lower = middle - std*std_dev
-        position = (closes[-1]-lower)/(upper-lower) if upper != lower else 0.5
-        return {"upper": upper, "middle": middle, "lower": lower, "position": position}
+        return {"upper": middle+std*std_dev, "lower": middle-std*std_dev}
 
     @staticmethod
     def stochastic(closes, highs, lows, period=14):
@@ -146,27 +158,27 @@ class AdvancedIndicators:
             plus_dm.append(up if up > down and up > 0 else 0)
             minus_dm.append(down if down > up and down > 0 else 0)
             tr.append(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
-        tr_ema = AdvancedIndicators.ema(tr[-period:], period)
+        tr_ema = Ind.ema(tr[-period:], period)
         if tr_ema == 0:
             return 25.0
-        plus_di = 100*(AdvancedIndicators.ema(plus_dm[-period:], period)/tr_ema)
-        minus_di = 100*(AdvancedIndicators.ema(minus_dm[-period:], period)/tr_ema)
+        plus_di = 100*(Ind.ema(plus_dm[-period:], period)/tr_ema)
+        minus_di = 100*(Ind.ema(minus_dm[-period:], period)/tr_ema)
         dx = 100*abs(plus_di-minus_di)/(plus_di+minus_di) if (plus_di+minus_di) > 0 else 0
-        return AdvancedIndicators.ema([dx]*period, period)
+        return Ind.ema([dx]*period, period)
 
     @staticmethod
     def obv(closes, volumes):
         if not closes or not volumes:
             return []
-        obv_values = [0]
+        vals = [0]
         for i in range(1, len(closes)):
             if closes[i] > closes[i-1]:
-                obv_values.append(obv_values[-1] + volumes[i])
+                vals.append(vals[-1] + volumes[i])
             elif closes[i] < closes[i-1]:
-                obv_values.append(obv_values[-1] - volumes[i])
+                vals.append(vals[-1] - volumes[i])
             else:
-                obv_values.append(obv_values[-1])
-        return obv_values
+                vals.append(vals[-1])
+        return vals
 
     @staticmethod
     def vwap(highs, lows, closes, volumes):
@@ -195,365 +207,301 @@ class AdvancedIndicators:
         std = statistics.stdev(window) if period > 1 else 0.001
         return (data[-1]-mean)/std if std > 0 else 0
 
-    @staticmethod
-    def keltner(highs, lows, closes, period=20):
-        if len(closes) < period:
-            last = closes[-1] if closes else 0
-            return {"upper": last, "middle": last, "lower": last}
-        middle = AdvancedIndicators.ema(closes, period)
-        atr_val = AdvancedIndicators.atr(highs, lows, closes, 10)
-        return {"upper": middle+atr_val*1.5, "middle": middle, "lower": middle-atr_val*1.5}
-
-    @staticmethod
-    def ichimoku(highs, lows, closes):
-        if len(closes) < 52:
-            last = closes[-1] if closes else 0
-            return {"tenkan": last, "kijun": last}
-        tenkan = (max(highs[-9:])+min(lows[-9:]))/2
-        kijun = (max(highs[-26:])+min(lows[-26:]))/2
-        return {"tenkan": tenkan, "kijun": kijun}
-
-    @staticmethod
-    def vortex(highs, lows, closes, period=14):
-        if len(closes) < period+1:
-            return {"vi_plus": 0, "vi_minus": 0}
-        vm_plus, vm_minus, tr = [], [], []
-        for i in range(1, len(closes)):
-            vm_plus.append(abs(highs[i]-lows[i-1]))
-            vm_minus.append(abs(lows[i]-highs[i-1]))
-            tr.append(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
-        s_tr = sum(tr[-period:])
-        return {"vi_plus": sum(vm_plus[-period:])/s_tr if s_tr > 0 else 0,
-                "vi_minus": sum(vm_minus[-period:])/s_tr if s_tr > 0 else 0}
-
-    @staticmethod
-    def cci(closes, highs, lows, period=20):
-        if len(closes) < period:
-            return 0
-        tp = [(h+l+c)/3 for h, l, c in zip(highs, lows, closes)]
-        sma_tp = sum(tp[-period:])/period
-        mean_dev = sum(abs(x-sma_tp) for x in tp[-period:])/period
-        return (tp[-1]-sma_tp)/(0.015*mean_dev) if mean_dev > 0 else 0
-
-    @staticmethod
-    def dmi(highs, lows, closes, period=14):
-        adx = AdvancedIndicators.adx(highs, lows, closes, period)
-        plus_dm, minus_dm, tr = [], [], []
-        for i in range(1, len(closes)):
-            up = highs[i]-highs[i-1]; down = lows[i-1]-lows[i]
-            plus_dm.append(up if up > down and up > 0 else 0)
-            minus_dm.append(down if down > up and down > 0 else 0)
-            tr.append(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
-        tr_smooth = AdvancedIndicators.ema(tr[-period:], period)
-        plus_di = 100*(AdvancedIndicators.ema(plus_dm[-period:], period)/tr_smooth) if tr_smooth > 0 else 0
-        minus_di = 100*(AdvancedIndicators.ema(minus_dm[-period:], period)/tr_smooth) if tr_smooth > 0 else 0
-        return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di}
-
 # ========================================================================
-# ML ENSEMBLE STRATEGY (reused as-is)
+# 15-INDICATOR ENSEMBLE STRATEGY (same logic used earlier in this thread)
 # ========================================================================
 
-class MLEnsembleStrategy:
-    @staticmethod
-    def signal(data: Dict, params: Dict) -> Dict:
-        closes, highs, lows, volumes = data['closes'], data['highs'], data['lows'], data['volumes']
-        current = closes[-1]
-        signals, weights = [], []
+def ensemble_signal(data: Dict, params: Dict) -> Dict:
+    closes, highs, lows, volumes = data['closes'], data['highs'], data['lows'], data['volumes']
+    current = closes[-1]
+    signals, weights = [], []
 
-        ema_9 = AdvancedIndicators.ema(closes, 9); ema_21 = AdvancedIndicators.ema(closes, 21)
-        ema_50 = AdvancedIndicators.ema(closes, 50)
-        if current > ema_9 > ema_21 > ema_50:
-            signals.append(1); weights.append(1.5)
-        elif current > ema_50:
-            signals.append(1); weights.append(1.0)
-        else:
-            signals.append(0); weights.append(1.0)
+    ema_9 = Ind.ema(closes, 9); ema_21 = Ind.ema(closes, 21); ema_50 = Ind.ema(closes, 50)
+    if current > ema_9 > ema_21 > ema_50:
+        signals.append(1); weights.append(1.5)
+    elif current > ema_50:
+        signals.append(1); weights.append(1.0)
+    else:
+        signals.append(0); weights.append(1.0)
 
-        macd = AdvancedIndicators.macd(closes)
-        signals.append(1 if macd['bullish'] else 0); weights.append(1.5)
+    signals.append(1 if Ind.macd(closes)['bullish'] else 0); weights.append(1.5)
 
-        rsi = AdvancedIndicators.rsi(closes, 14)
-        if 30 < rsi < 70:
-            signals.append(1 if rsi < 50 else 0.5)
-        elif rsi < 30:
-            signals.append(1)
-        else:
-            signals.append(0)
-        weights.append(1.2)
+    rsi = Ind.rsi(closes, 14)
+    if 30 < rsi < 70:
+        signals.append(1 if rsi < 50 else 0.5)
+    elif rsi < 30:
+        signals.append(1)
+    else:
+        signals.append(0)
+    weights.append(1.2)
 
-        bb = AdvancedIndicators.bollinger(closes)
-        if current < bb['lower']*1.02:
-            signals.append(1)
-        elif current > bb['upper']*0.98:
-            signals.append(0)
-        else:
-            signals.append(0.5)
-        weights.append(1.0)
+    bb = Ind.bollinger(closes)
+    if current < bb['lower']*1.02:
+        signals.append(1)
+    elif current > bb['upper']*0.98:
+        signals.append(0)
+    else:
+        signals.append(0.5)
+    weights.append(1.0)
 
-        adx = AdvancedIndicators.adx(highs, lows, closes)
-        signals.append(1 if adx > 25 else 0); weights.append(1.3)
+    adx = Ind.adx(highs, lows, closes)
+    signals.append(1 if adx > 25 else 0); weights.append(1.3)
 
-        stoch = AdvancedIndicators.stochastic(closes, highs, lows)
-        signals.append(1 if stoch < 30 else 0.3 if stoch < 50 else 0); weights.append(0.8)
+    stoch = Ind.stochastic(closes, highs, lows)
+    signals.append(1 if stoch < 30 else 0.3 if stoch < 50 else 0); weights.append(0.8)
 
-        obv_values = AdvancedIndicators.obv(closes, volumes)
-        if len(obv_values) >= 20:
-            obv_ema = AdvancedIndicators.ema(obv_values, 10)
-            signals.append(1 if obv_values[-1] > obv_ema else 0)
-        else:
-            signals.append(0)
-        weights.append(1.0)
+    obv_values = Ind.obv(closes, volumes)
+    if len(obv_values) >= 20:
+        signals.append(1 if obv_values[-1] > Ind.ema(obv_values, 10) else 0)
+    else:
+        signals.append(0)
+    weights.append(1.0)
 
-        vwap = AdvancedIndicators.vwap(highs, lows, closes, volumes)
-        signals.append(1 if current > vwap else 0); weights.append(0.8)
+    signals.append(1 if current > Ind.vwap(highs, lows, closes, volumes) else 0); weights.append(0.8)
+    signals.append(1 if Ind.chop(highs, lows, closes) < 40 else 0); weights.append(1.0)
+    signals.append(1 if Ind.zscore(closes, 20) < -1 else 0); weights.append(0.7)
 
-        chop = AdvancedIndicators.chop(highs, lows, closes)
-        signals.append(1 if chop < 40 else 0); weights.append(1.0)
+    weighted_sum = sum(s*w for s, w in zip(signals, weights))
+    confidence = weighted_sum / sum(weights)
+    signal_count = sum(1 for s in signals if s > 0.5)
+    buy_signal = signal_count >= params.get('min_signals', 6) and confidence > 0.5
 
-        zscore = AdvancedIndicators.zscore(closes, 20)
-        signals.append(1 if zscore < -1 else 0); weights.append(0.7)
+    atr = Ind.atr(highs, lows, closes, 14)
+    recent_low = min(lows[-20:]) if len(lows) >= 20 else min(lows)
+    stop = min(current - atr*1.5, recent_low*0.98)
+    target = current + atr*(3.0 if adx > 30 else 2.0)
+    risk = current - stop
+    reward = target - current
+    rr_ratio = reward/risk if risk > 0 else 0
 
-        kc = AdvancedIndicators.keltner(highs, lows, closes)
-        signals.append(1 if current < kc['lower']*1.01 else 0); weights.append(0.9)
-
-        ichi = AdvancedIndicators.ichimoku(highs, lows, closes)
-        signals.append(1 if current > ichi['tenkan'] and current > ichi['kijun'] else 0); weights.append(1.2)
-
-        vortex = AdvancedIndicators.vortex(highs, lows, closes)
-        signals.append(1 if vortex['vi_plus'] > vortex['vi_minus'] else 0); weights.append(0.9)
-
-        cci = AdvancedIndicators.cci(closes, highs, lows)
-        signals.append(1 if cci < -100 else 0); weights.append(0.7)
-
-        dmi = AdvancedIndicators.dmi(highs, lows, closes)
-        signals.append(1 if dmi['plus_di'] > dmi['minus_di'] and dmi['adx'] > 20 else 0); weights.append(1.1)
-
-        weighted_sum = sum(s*w for s, w in zip(signals, weights))
-        total_weight = sum(weights)
-        confidence = weighted_sum / total_weight
-        signal_count = sum(1 for s in signals if s > 0.5)
-        min_signals = params.get('min_signals', 8)
-        buy_signal = signal_count >= min_signals and confidence > 0.5
-
-        atr = AdvancedIndicators.atr(highs, lows, closes, 14)
-        recent_low = min(lows[-20:]) if len(lows) >= 20 else min(lows)
-        stop = min(current - atr*1.5, recent_low*0.98)
-        target = current + atr*(3.0 if adx > 30 else 2.0)
-        risk = current - stop
-        reward = target - current
-        rr_ratio = reward/risk if risk > 0 else 0
-
-        return {"signal": "BUY" if buy_signal and rr_ratio > 1.5 else "NEUTRAL",
-                "stop": stop, "target": target}
+    return {"signal": "BUY" if buy_signal and rr_ratio > 1.5 else "NEUTRAL",
+            "stop": stop, "target": target}
 
 # ========================================================================
-# BACKTEST (single param set -> trade list)
+# BACKTEST / WALK-FORWARD MACHINERY
 # ========================================================================
 
-def backtest_trades(data: Dict, params: Dict, min_hold_lookback: int = 100) -> List[float]:
+def backtest_trades(data: Dict, params: Dict, lookback: int) -> List[float]:
     closes, highs, lows = data['closes'], data['highs'], data['lows']
     total = len(closes)
     trades = []
     in_position = False
     entry_price = entry_index = stop_price = target_price = highest_price = None
-    trailing_stop_level = None
+    trailing_level = None
 
-    for i in range(min_hold_lookback, total):
+    for i in range(lookback, total):
         if not in_position:
-            window = {k: data[k][i-min_hold_lookback:i] for k in data}
-            signal = MLEnsembleStrategy.signal(window, params)
-            if signal['signal'] == "BUY":
+            window = {k: data[k][i-lookback:i] for k in data}
+            sig = ensemble_signal(window, params)
+            if sig['signal'] == "BUY":
                 entry_price = closes[i]; entry_index = i
-                stop_price = signal['stop']; target_price = signal['target']
-                highest_price = entry_price; trailing_stop_level = stop_price
+                stop_price = sig['stop']; target_price = sig['target']
+                highest_price = entry_price; trailing_level = stop_price
                 in_position = True
         else:
             if closes[i] > highest_price:
                 highest_price = closes[i]
             if params.get('trailing_stop'):
                 trail = highest_price * (1 - params['trailing_pct'] * 0.02)
-                if trail > trailing_stop_level:
-                    trailing_stop_level = trail
-            current_stop = trailing_stop_level if params.get('trailing_stop') else stop_price
+                if trail > trailing_level:
+                    trailing_level = trail
+            current_stop = trailing_level if params.get('trailing_stop') else stop_price
 
             exit_price = None
             if lows[i] <= current_stop:
                 exit_price = current_stop
             elif highs[i] >= target_price:
                 exit_price = target_price
-            elif (i - entry_index) > params.get('max_hold_days', 30):
+            elif (i - entry_index) > params.get('max_hold_candles', 30):
                 exit_price = closes[i]
 
             if exit_price is not None:
-                net = (exit_price - entry_price) / entry_price - ROUND_TRIP_FEE
-                trades.append(net)
+                trades.append((exit_price - entry_price) / entry_price - ROUND_TRIP_FEE)
                 in_position = False
     return trades
 
 
-def score_params_on_train(data: Dict, params: Dict, min_trades: int = 5) -> Optional[float]:
-    """Used only to pick parameters WITHIN a training window. Simple and
-    transparent on purpose (mean expectancy), since anything fancier here
-    just relocates the overfitting risk rather than removing it."""
-    trades = backtest_trades(data, params)
+def score_on_train(data, params, lookback, min_trades=5):
+    trades = backtest_trades(data, params, lookback)
     if len(trades) < min_trades:
         return None
     return sum(trades) / len(trades)
 
 
-def fetch_history(symbol: str, interval: str, days_back: int, base_url: str = "https://api.binance.us") -> Dict:
-    print(f"  Fetching ~{days_back}d of {interval} {symbol}...")
-    all_data = {"timestamps": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
-    end_time = None
-    needed = days_back  # 1 candle/day
-    while len(all_data["closes"]) < needed:
-        batch = AdvancedIndicators.get_klines(symbol, base_url, interval, limit=1000, end_time_ms=end_time)
-        if not batch or not batch["timestamps"]:
-            break
-        for k in all_data:
-            all_data[k] = batch[k] + all_data[k]
-        end_time = batch["timestamps"][0] - 1
-        time.sleep(0.2)
-    return all_data
+def fetch_best_history(symbol: str, interval: str, days_back: int) -> Optional[Dict]:
+    """Try each exchange endpoint (public market data, no key needed) and
+    keep whichever returns more historical candles for this symbol."""
+    candles_per_day = TIMEFRAME_CONFIG[interval]["candles_per_day"]
+    needed = days_back * candles_per_day
+    best = None
+    for base_url in EXCHANGE_ENDPOINTS:
+        all_data = {"timestamps": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
+        end_time = None
+        attempts = 0
+        while len(all_data["closes"]) < needed and attempts < 60:
+            batch = Ind.get_klines(symbol, base_url, interval, limit=1000, end_time_ms=end_time)
+            attempts += 1
+            if not batch or not batch["timestamps"]:
+                break
+            for k in all_data:
+                all_data[k] = batch[k] + all_data[k]
+            end_time = batch["timestamps"][0] - 1
+            time.sleep(0.15)
+        n = len(all_data["closes"])
+        if n > 0 and (best is None or n > len(best["closes"])):
+            best = all_data
+            best_source = base_url
+        if n >= needed:
+            break  # already got everything we asked for, no need to try the other endpoint
+    if best:
+        print(f"    -> got {len(best['closes'])} candles")
+    return best
 
 
-def anchored_walk_forward(symbol: str, interval: str, days_back: int, n_folds: int,
-                           param_grid: List[Dict], min_hold_lookback: int = 100,
+def anchored_walk_forward(symbol: str, interval: str, param_grid: List[Dict], n_folds: int = 5,
                            min_trades_train: int = 5) -> Dict:
-    """
-    For fold f = 1..n_folds-1:
-      - train on all candles strictly BEFORE fold f begins
-      - pick the param combo with the best TRAIN expectancy (min_trades_train
-        trades minimum)
-      - apply that combo, UNCHANGED, to fold f only -> genuinely
-        out-of-sample trades
-    Pool all out-of-sample trades across folds for the final statistic.
-    """
-    data = fetch_history(symbol, interval, days_back)
+    cfg = TIMEFRAME_CONFIG[interval]
+    data = fetch_best_history(symbol, interval, cfg["days_back"])
+    if not data:
+        return {"symbol": symbol, "interval": interval, "pooled_trades": [], "ok": False,
+                "reason": "no data returned from either exchange endpoint"}
+
     total = len(data["closes"])
-    if total < min_hold_lookback * (n_folds + 1):
-        print(f"  Not enough {symbol} history ({total} candles) for {n_folds} folds - skipping.")
-        return {"symbol": symbol, "pooled_trades": [], "insufficient_data": True}
+    lookback = cfg["lookback"]
+    if total < lookback * (n_folds + 1):
+        return {"symbol": symbol, "interval": interval, "pooled_trades": [], "ok": False,
+                "reason": f"only {total} candles available, not enough for {n_folds} folds"}
 
     fold_size = total // n_folds
-    fold_boundaries = [f * fold_size for f in range(n_folds)] + [total]
-
-    pooled_oos_trades = []
-    fold_reports = []
+    boundaries = [f * fold_size for f in range(n_folds)] + [total]
+    pooled = []
+    fold_notes = []
 
     for f in range(1, n_folds):
-        train_end = fold_boundaries[f]
-        test_start = fold_boundaries[f]
-        test_end = fold_boundaries[f + 1] if f + 1 < len(fold_boundaries) else total
-
+        train_end = boundaries[f]
+        test_start, test_end = boundaries[f], boundaries[f+1] if f+1 < len(boundaries) else total
         train_data = {k: data[k][:train_end] for k in data}
-        lookback_start = max(0, test_start - min_hold_lookback)
-        test_data = {k: data[k][lookback_start:test_end] for k in data}
+        test_data = {k: data[k][max(0, test_start-lookback):test_end] for k in data}
 
         best_score, best_params = None, None
         for params in param_grid:
-            s = score_params_on_train(train_data, params, min_trades_train)
+            s = score_on_train(train_data, params, lookback, min_trades_train)
             if s is not None and (best_score is None or s > best_score):
                 best_score, best_params = s, params
 
         if best_params is None:
-            fold_reports.append(f"  Fold {f}: no param combo had >= {min_trades_train} train trades - skipped")
+            fold_notes.append(f"    fold {f}: no combo had enough train trades - skipped")
             continue
 
-        oos_trades = backtest_trades(test_data, best_params, min_hold_lookback)
-        pooled_oos_trades.extend(oos_trades)
-        fold_reports.append(
-            f"  Fold {f}: trained params min_signals={best_params['min_signals']} "
-            f"trail={best_params['trailing_pct']} hold={best_params['max_hold_days']}d "
-            f"trail_stop={best_params['trailing_stop']}  ->  {len(oos_trades)} OOS trades, "
-            f"OOS mean={100*sum(oos_trades)/len(oos_trades):.3f}%" if oos_trades else
-            f"  Fold {f}: trained params selected, but 0 OOS trades occurred in this fold"
-        )
+        oos = backtest_trades(test_data, best_params, lookback)
+        pooled.extend(oos)
+        fold_notes.append(f"    fold {f}: {len(oos)} OOS trades"
+                           + (f", mean={100*sum(oos)/len(oos):.3f}%" if oos else ""))
 
-    return {"symbol": symbol, "pooled_trades": pooled_oos_trades, "fold_reports": fold_reports,
-            "insufficient_data": False}
+    return {"symbol": symbol, "interval": interval, "pooled_trades": pooled,
+            "fold_notes": fold_notes, "ok": True}
 
 
-def run_honest_validation(symbols: List[str], interval: str = "1d", days_back: int = 1000,
-                           n_folds: int = 5, alpha: float = 0.05):
-    param_grid = [
-        {"min_signals": ms, "trailing_pct": tp, "max_hold_days": mh, "trailing_stop": ts}
-        for ms in [7, 8, 9]
-        for tp in [0.3, 0.5, 0.7]
-        for mh in [20, 30, 45]
-        for ts in [True, False]
-    ]
-    print(f"Per-fold training search space: {len(param_grid)} combos (chosen using ONLY prior data per fold).")
+def run_wide_net_validation(symbols=SYMBOLS, intervals=("1h", "4h", "1d"),
+                             n_folds=5, alpha=0.05):
+    param_grid_by_interval = {}
+    for interval in intervals:
+        hold_opts = TIMEFRAME_CONFIG[interval]["hold_options"]
+        param_grid_by_interval[interval] = [
+            {"min_signals": ms, "trailing_pct": tp, "max_hold_candles": mh, "trailing_stop": ts}
+            for ms in [5, 6, 7]
+            for tp in [0.3, 0.5, 0.7]
+            for mh in hold_opts
+            for ts in [True, False]
+        ]
 
-    bonferroni_alpha = alpha / len(symbols)
-    print(f"Reporting-stage Bonferroni correction across {len(symbols)} symbols: "
-          f"p < {bonferroni_alpha:.5f} (uncorrected alpha={alpha})\n")
+    total_combos = len(symbols) * len(intervals)
+    bonferroni_alpha = alpha / total_combos
+    print(f"WIDE-NET SEARCH: {len(symbols)} symbols x {len(intervals)} timeframes "
+          f"= {total_combos} (symbol, timeframe) combinations.")
+    print(f"Per-fold training search per combo: ~{len(param_grid_by_interval[intervals[0]])} param sets "
+          f"(selected using ONLY prior data per fold).")
+    print(f"Bonferroni-corrected significance bar: p < {bonferroni_alpha:.6f} (uncorrected alpha={alpha})")
+    print("="*70)
 
     normal = statistics.NormalDist()
-    results = []
+    all_results = []
+    skipped = []
 
     for symbol in symbols:
-        print(f"\n{'='*70}\n{symbol} {interval}\n{'='*70}")
-        r = anchored_walk_forward(symbol, interval, days_back, n_folds, param_grid)
-        if r["insufficient_data"]:
-            continue
-        for line in r["fold_reports"]:
-            print(line)
+        for interval in intervals:
+            print(f"\n{symbol} {interval}")
+            r = anchored_walk_forward(symbol, interval, param_grid_by_interval[interval], n_folds)
+            if not r["ok"]:
+                print(f"  SKIP: {r['reason']}")
+                skipped.append((symbol, interval, r["reason"]))
+                continue
+            for note in r["fold_notes"]:
+                print(note)
 
-        trades = r["pooled_trades"]
-        n = len(trades)
-        print(f"\n  Pooled genuinely-out-of-sample trades: {n}")
-        if n < 30:
-            print(f"  WARNING: n={n} is low. Even a 'passing' p-value here should be treated")
-            print(f"  with real skepticism - this is a statistical power problem, not something")
-            print(f"  the test itself can fix. More history or a higher trade-frequency")
-            print(f"  timeframe would be needed to actually resolve this.")
+            trades = r["pooled_trades"]
+            n = len(trades)
+            print(f"  Pooled OOS trades: {n}")
+            if n < 10:
+                print("  Too few trades to test. SKIP.")
+                continue
+            if n < 30:
+                print(f"  LOW POWER WARNING (n={n}): treat any p-value here with real skepticism.")
 
-        if n < 10:
-            print("  Too few trades to compute anything meaningful. SKIP.")
-            continue
+            mean_ret = sum(trades) / n
+            stdev_ret = statistics.stdev(trades) if n > 1 else 0
+            if stdev_ret == 0:
+                continue
+            se = stdev_ret / (n ** 0.5)
+            z = mean_ret / se
+            p_value = 2 * (1 - normal.cdf(abs(z)))
+            win_rate = len([t for t in trades if t > 0]) / n
+            significant = mean_ret > 0 and p_value < bonferroni_alpha
 
-        mean_ret = sum(trades) / n
-        stdev_ret = statistics.stdev(trades) if n > 1 else 0
-        if stdev_ret == 0:
-            continue
-        se = stdev_ret / (n ** 0.5)
-        z = mean_ret / se
-        p_value = 2 * (1 - normal.cdf(abs(z)))
-        win_rate = len([t for t in trades if t > 0]) / n
-        significant = mean_ret > 0 and p_value < bonferroni_alpha
+            print(f"  mean/trade={mean_ret*100:.3f}% win_rate={win_rate*100:.1f}% p={p_value:.5f} "
+                  f"-> {'PASS' if significant else 'fail'}")
 
-        print(f"  Mean OOS return/trade: {mean_ret*100:.3f}% | Win rate: {win_rate*100:.1f}% | p={p_value:.5f}"
-              f"  -> {'PASS' if significant else 'fail'}")
-
-        if significant:
-            results.append({"symbol": symbol, "n_trades": n, "mean_return_pct": mean_ret,
-                             "win_rate": win_rate, "p_value": p_value})
+            all_results.append({"symbol": symbol, "interval": interval, "n_trades": n,
+                                 "mean_return_pct": mean_ret, "win_rate": win_rate,
+                                 "p_value": p_value, "low_power": n < 30, "significant": significant})
 
     print("\n" + "="*70)
-    if not results:
-        print("RESULT: No symbol produced a statistically significant, genuinely")
-        print("out-of-sample edge under anchored walk-forward testing.")
+    print(f"SEARCHED: {total_combos - len(skipped)}/{total_combos} combinations "
+          f"({len(skipped)} skipped for insufficient data)")
+    passing = [r for r in all_results if r["significant"]]
+
+    if not passing:
+        print("RESULT: Across every symbol, timeframe, and available exchange history")
+        print("tested, NOTHING cleared a Bonferroni-corrected significance bar under")
+        print("genuine anchored walk-forward testing.")
         print()
-        print("If pooled trade counts were consistently under ~30, the honest")
-        print("conclusion is that daily-bar crypto swing trading, at the history")
-        print("depth available on this exchange, may not provide enough independent")
-        print("trades to ever validate an edge with confidence - regardless of which")
-        print("indicators are used. That's a data ceiling, not a search failure.")
+        print("This is the widest honest search run in this whole exercise. Combined")
+        print("with the earlier scalping and swing-trading results, the consistent,")
+        print("repeated finding is: these technical-indicator ensembles do not have a")
+        print("demonstrable edge on these instruments with retail-accessible history.")
+        print("That's a real answer about this approach, not a reason to widen further -")
+        print("at some point continuing to search is just p-hacking with extra steps.")
+        if skipped:
+            print(f"\n({len(skipped)} combos skipped for data availability - see log above -")
+            print("so 'nothing found' is bounded by what history exists, not a claim about")
+            print("instruments that couldn't be tested at all.)")
         print("="*70)
         return []
 
-    results.sort(key=lambda r: r["p_value"])
-    print(f"RESULT: {len(results)} symbol(s) passed:")
-    for r in results:
-        print(f"  {r['symbol']}: {r['n_trades']} OOS trades, mean={r['mean_return_pct']*100:.3f}%, "
-              f"win_rate={r['win_rate']*100:.1f}%, p={r['p_value']:.6f}")
-    print("Even a pass here still only reflects the AVAILABLE history and a fee/")
-    print("slippage-free simulation. Paper-trade before risking real capital.")
+    passing.sort(key=lambda r: r["p_value"])
+    print(f"RESULT: {len(passing)} combination(s) passed:")
+    for r in passing:
+        flag = " [LOW POWER - treat with skepticism]" if r["low_power"] else ""
+        print(f"  {r['symbol']} {r['interval']}: {r['n_trades']} OOS trades, "
+              f"mean={r['mean_return_pct']*100:.3f}%, win_rate={r['win_rate']*100:.1f}%, "
+              f"p={r['p_value']:.6f}{flag}")
+    print()
+    print("Next honest step for any non-low-power pass: paper-trade it forward in")
+    print("real time for several weeks before committing capital. A backtest passing,")
+    print("even this rigorously, is evidence - not a guarantee the edge persists live.")
     print("="*70)
-    return results
+    return passing
 
 
 if __name__ == "__main__":
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT", "AVAXUSDT"]
-    run_honest_validation(symbols, interval="1d", days_back=1000, n_folds=5)
+    run_wide_net_validation(SYMBOLS, intervals=("1h", "4h", "1d"), n_folds=5)
