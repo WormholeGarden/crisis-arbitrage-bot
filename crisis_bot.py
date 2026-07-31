@@ -769,14 +769,15 @@ class QuantumNeuralEvolutionBot:
         return mid
 
     def get_account_balance(self) -> Dict[str, float]:
-        return self._send_signed_request("GET", "/api/v3/account")
+        resp = self._send_signed_request("GET", "/api/v3/account")
         if "balances" in resp and not resp.get("error"):
             balances = {}
             for balance in resp["balances"]:
                 free = float(balance["free"])
                 locked = float(balance["locked"])
                 if free > 0 or locked > 0:
-                    balances[balance["asset"]] = free            return balances
+                    balances[balance["asset"]] = free
+            return balances
         return {"USDT": 0.0}
 
     def get_order_fill_price(self, order_id: str) -> Optional[float]:
@@ -792,7 +793,7 @@ class QuantumNeuralEvolutionBot:
         return None
 
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
-        """Place REAL market order - FIXED: PREPARE params BEFORE signing"""
+        """Place REAL market order"""
         ticker = self.get_order_book_ticker()
         if not ticker:
             return {"error": "Failed to get market price"}
@@ -840,7 +841,6 @@ class QuantumNeuralEvolutionBot:
         
         self.logger.info(f"💰 REAL {side} MARKET: {qty_str} (${trade_value:.2f})")
 
-        # Prepare FINAL params for signature
         order_params = {
             "symbol": self.symbol,
             "side": side.upper(),
@@ -848,7 +848,6 @@ class QuantumNeuralEvolutionBot:
             "quantity": qty_str,
         }
         
-        # Send with proper signature
         response = self._send_signed_request("POST", "/api/v3/order", order_params)
         
         if "error" in response:
@@ -1139,7 +1138,7 @@ class QuantumNeuralEvolutionBot:
         self.logger.info(f"💰 REAL CYCLE {cycle_number}")
         self.logger.info(f"   Balance: ${self.real_balance:.2f}")
         self.logger.info(f"   Position Size: ${self.position_size_usdt:.2f}")
-        self.logger.info(f"   Best Fitness: {self.strategy_population.best_fitness:.4f}")
+        self.logger.info(f"   Best Fitness: ${self.strategy_population.best_fitness:.4f}")
         self.logger.info(f"{'='*60}")
         
         self._update_balance()
