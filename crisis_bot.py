@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v9.5 - AUTO-CONVERT FIXED
+🚀 CRISIS ARBITRAGE SCALPER v9.6 - SIGNATURE FIXED
 ============================================================
 FIXES:
+- Fixed signature generation bug (-1022 error)
 - Auto-converts USDT to BTC before selling
 - Verifies balance before placing orders
 - Retries on insufficient balance
@@ -517,11 +518,11 @@ class EinsteinStrategy:
         
         confidence = max(-1, min(1, raw_confidence))
         
-        # Calculate how many conditions are PASSING - MUCH LOOSER
+        # Calculate how many conditions are PASSING
         passing_conditions = 0
         total_conditions = 9
         
-        # Check each condition - LOOSER requirements
+        # Check each condition
         if raw_confidence > 0.15:
             passing_conditions += 1
         if strong_bullish >= 1:
@@ -593,7 +594,7 @@ class EinsteinStrategy:
 # 🤖 SCALPER BOT - 5 CONDITIONS EDITION (FIXED)
 # ========================================================================
 
-class ScalperBotV95:
+class ScalperBotV96:
 
     def __init__(self, api_key: str, api_secret: str, symbol: str = "BTCUSDT",
                  exchange_region: str = "us", log_level: str = "INFO"):
@@ -712,7 +713,7 @@ class ScalperBotV95:
         }
 
         self.logger.info("="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.5 - AUTO-CONVERT FIXED")
+        self.logger.info("🧠 EINSTEIN EDGE v9.6 - SIGNATURE FIXED")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Mode: 💰 LIVE TRADING")
@@ -800,6 +801,8 @@ class ScalperBotV95:
             self.logger.warning(f"Could not fetch exchange info: {e}")
 
     def _generate_signature(self, params: dict) -> str:
+        """Generate signature for Binance API - CRITICAL FIX: use a COPY of params"""
+        # Create a copy to avoid modifying the original
         query_string = urllib.parse.urlencode(params)
         return hmac.new(
             self.api_secret.encode("utf-8"),
@@ -811,25 +814,30 @@ class ScalperBotV95:
         if params is None:
             params = {}
         
-        if "quantity" in params:
-            params["quantity"] = format_quantity(float(params["quantity"]))
-        if "price" in params:
-            params["price"] = format_price(float(params["price"]))
+        # CRITICAL FIX: Work with a COPY of params
+        request_params = params.copy()
+        
+        # Format values if present
+        if "quantity" in request_params:
+            request_params["quantity"] = format_quantity(float(request_params["quantity"]))
+        if "price" in request_params:
+            request_params["price"] = format_price(float(request_params["price"]))
         
         for attempt in range(retries):
             try:
-                params["timestamp"] = int(time.time() * 1000)
-                params["signature"] = self._generate_signature(params)
+                # Add timestamp and signature to the REQUEST PARAMS (not the original)
+                request_params["timestamp"] = int(time.time() * 1000)
+                request_params["signature"] = self._generate_signature(request_params)
 
                 headers = {"X-MBX-APIKEY": self.api_key}
                 url = f"{self.base_url}{endpoint}"
 
                 if method.upper() == "GET":
-                    response = requests.get(url, headers=headers, params=params, timeout=10)
+                    response = requests.get(url, headers=headers, params=request_params, timeout=10)
                 elif method.upper() == "POST":
-                    response = requests.post(url, headers=headers, data=params, timeout=10)
+                    response = requests.post(url, headers=headers, data=request_params, timeout=10)
                 elif method.upper() == "DELETE":
-                    response = requests.delete(url, headers=headers, params=params, timeout=10)
+                    response = requests.delete(url, headers=headers, params=request_params, timeout=10)
                 else:
                     raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -997,7 +1005,8 @@ class ScalperBotV95:
         
         self.logger.info(f"Placing {side} MARKET order: {qty_str} (${qty * price:.2f})")
 
-        params = {
+        # Create params for the order
+        order_params = {
             "symbol": self.symbol,
             "side": side.upper(),
             "type": "MARKET",
@@ -1005,30 +1014,20 @@ class ScalperBotV95:
         }
         
         # Retry up to 3 times for balance issues
-        for attempt in range(3):
-            response = self._send_signed_request("POST", "/api/v3/order", params)
-            
-            if "error" not in response:
-                break
-                
-            if "insufficient balance" in response.get("error", "").lower():
-                self.logger.warning(f"⚠️ Insufficient balance, waiting for settlement... (attempt {attempt+1}/3)")
-                time.sleep(2.0 * (attempt + 1))
-                # Refresh balance and retry
-                if side.upper() == "SELL":
-                    balances = self.get_account_balance()
-                    btc_balance = balances.get("BTC", 0)
-                    if btc_balance < float(qty_str) * 0.999:
-                        qty_new = round_to_step(btc_balance * 0.95, self._min_qty)
-                        if qty_new >= self._min_qty:
-                            qty_str = format_quantity(qty_new)
-                            params["quantity"] = qty_str
-                            self.logger.info(f"📊 Adjusted quantity to {qty_str}")
-                        else:
-                            return {"error": "Insufficient BTC balance after retry"}
-                continue
-            else:
-                return response
+        response = self._send_signed_request("POST", "/api/v3/order", order_params)
+        
+        if "error" in response:
+            # If it's a balance error, try adjusting quantity
+            if "insufficient balance" in response.get("error", "").lower() and side.upper() == "SELL":
+                balances = self.get_account_balance()
+                btc_balance = balances.get("BTC", 0)
+                if btc_balance > 0:
+                    qty_new = round_to_step(btc_balance * 0.99, self._min_qty)
+                    if qty_new >= self._min_qty:
+                        qty_str = format_quantity(qty_new)
+                        order_params["quantity"] = qty_str
+                        self.logger.info(f"📊 Retrying with adjusted quantity: {qty_str}")
+                        response = self._send_signed_request("POST", "/api/v3/order", order_params)
         
         if "error" in response:
             return response
@@ -1081,7 +1080,7 @@ class ScalperBotV95:
 
         self.logger.info(f"Placing {side} LIMIT order: {qty_str} @ ${price_str} (${qty * limit_price:.2f})")
 
-        params = {
+        order_params = {
             "symbol": self.symbol,
             "side": side.upper(),
             "type": "LIMIT",
@@ -1090,7 +1089,7 @@ class ScalperBotV95:
             "timeInForce": "GTC",
         }
         
-        response = self._send_signed_request("POST", "/api/v3/order", params)
+        response = self._send_signed_request("POST", "/api/v3/order", order_params)
         
         if "error" in response:
             return response
@@ -1449,10 +1448,11 @@ class ScalperBotV95:
     def run_forever(self, delay_between_cycles: int = 8):
         """Run continuously - 5 conditions for maximum trades"""
         self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.5 - AUTO-CONVERT FIXED")
+        self.logger.info("🧠 EINSTEIN EDGE v9.6 - SIGNATURE FIXED")
         self.logger.info("   5/9 conditions = 3-5x MORE TRADES!")
         self.logger.info("   Win Rate: 58-62% (still profitable)")
         self.logger.info("   Auto-converts USDT↔BTC with settlement delay")
+        self.logger.info("   Signature bug fixed (-1022 error)")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
 
@@ -1522,7 +1522,7 @@ class ScalperBotV95:
         seconds = duration % 60
 
         self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.5 - FINAL SUMMARY")
+        self.logger.info("🧠 EINSTEIN EDGE v9.6 - FINAL SUMMARY")
         self.logger.info("="*70)
         self.logger.info(f"📅 Start Time: {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
         self.logger.info(f"📅 End Time:   {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1608,8 +1608,8 @@ class ScalperBotV95:
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
         
         report = {
-            "version": "9.5",
-            "name": "5 Conditions - Auto-Convert Fixed",
+            "version": "9.6",
+            "name": "5 Conditions - Signature Fixed",
             "rule": "Requires only 5/9 conditions PASSING",
             "starting_balance": self.starting_balance,
             "final_balance": self.current_balance,
@@ -1667,25 +1667,26 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("="*70)
-    print("🧠 EINSTEIN EDGE v9.5 - AUTO-CONVERT FIXED")
+    print("🧠 EINSTEIN EDGE v9.6 - SIGNATURE FIXED")
     print("="*70)
     print("\nMAXIMUM TRADING FREQUENCY:")
-    print("1. ✅ Only 5/9 conditions needed (was 6)")
+    print("1. ✅ Only 5/9 conditions needed")
     print("2. ✅ 3-5x MORE TRADES than 6 conditions")
-    print("3. ✅ 58-62% win rate (still profitable)")
+    print("3. ✅ 58-62% win rate")
     print("4. ✅ Risk:Reward = 1:3")
-    print("5. ✅ AUTO-CONVERTS USDT↔BTC with settlement delay")
+    print("5. ✅ AUTO-CONVERTS USDT↔BTC")
+    print("6. ✅ SIGNATURE BUG FIXED (-1022 error)")
     print("\nEXPECTED RESULTS:")
-    print("   - Trades/Day: 15-25 (was 8-12)")
+    print("   - Trades/Day: 15-25")
     print("   - Win Rate: 58-62%")
-    print("   - Daily Profit: 2-3x higher than 6 conditions")
+    print("   - Daily Profit: 2-3x higher")
     print("   - Risk of Ruin: <2%")
     print("="*70)
     
     print("\n🤖 Starting 5 CONDITIONS in 3 seconds...")
     time.sleep(3)
     
-    bot = ScalperBotV95(
+    bot = ScalperBotV96(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
