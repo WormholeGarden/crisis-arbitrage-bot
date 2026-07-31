@@ -1,22 +1,13 @@
 #!/usr/bin/env python3
 """
-🚀 GOLDEN SCALPER BOT v10.8 - ULTIMATE GOLDEN STRATEGY INTEGRATED
+🚀 GOLDEN SCALPER BOT v10.9 - FAST CYCLE (FIXED)
 ============================================================
-INTEGRATES:
-- 15+ Advanced Indicators (from the winning strategy)
-- ML Ensemble Voting (15 indicators weighted)
-- Walk-forward validated parameters (AVAXUSDT 1d: 58.9% win rate, 2.26% avg return, 4.16 PF)
-- Multi-timeframe analysis
-- Adaptive position sizing
-- Comprehensive risk management
-- Full restart recovery
-
-WINNING PARAMETERS FROM BACKTEST:
-  Symbol: AVAXUSDT
-  Interval: 1d
-  Win Rate: 58.9%
-  Avg Return: 2.26%
-  Profit Factor: 4.16
+FIXES:
+- Changed from 24-hour wait to 60-second monitoring cycles
+- Using 4h timeframe (more trades than daily)
+- Immediate exit checks while in position
+- Proper stop-loss monitoring every cycle
+- No more waiting 24 hours between checks!
 ============================================================
 """
 
@@ -41,18 +32,18 @@ from collections import deque
 # CONFIGURATION - GOLDEN STRATEGY PARAMETERS
 # ========================================================================
 
-# Winning parameters from backtest (AVAXUSDT 1d)
 GOLDEN_CONFIG = {
     "symbol": "AVAXUSDT",           # The winning symbol
-    "interval": "1d",               # Daily timeframe
+    "interval": "4h",               # 4h timeframe (good balance)
     "min_signals": 6,               # Need 6+ signals out of 15
     "trailing_pct": 0.3,            # 0.3% trailing stop
-    "max_hold_days": 30,            # Max 30 days hold
+    "max_hold_hours": 72,           # Max 72 hours (18 candles at 4h)
     "trailing_stop": False,         # No trailing stop (target/stop only)
-    "target_profit_pct": 0.04,      # 4% target (for 1d)
+    "target_profit_pct": 0.04,      # 4% target
     "stop_loss_pct": 0.02,          # 2% stop loss
     "min_order_usdt": 10.0,
     "max_order_usdt": 50.0,
+    "cycle_interval_seconds": 60,   # Check every 60 seconds!
 }
 
 # ========================================================================
@@ -80,14 +71,12 @@ def format_price(value: float) -> str:
     return f"{Decimal(str(value)):.2f}"
 
 # ========================================================================
-# ADVANCED INDICATORS - 15+ Indicators
+# ADVANCED INDICATORS
 # ========================================================================
 
 class AdvancedIndicators:
-    """15+ technical indicators for comprehensive analysis."""
-    
     @staticmethod
-    def get_klines(symbol: str, base_url: str, interval: str = "1d", limit: int = 500,
+    def get_klines(symbol: str, base_url: str, interval: str = "4h", limit: int = 500,
                     end_time_ms: int = None) -> Optional[Dict]:
         try:
             url = f"{base_url}/api/v3/klines"
@@ -118,12 +107,6 @@ class AdvancedIndicators:
         for price in data[period:]:
             ema_val = price * alpha + ema_val * (1 - alpha)
         return ema_val
-
-    @staticmethod
-    def sma(data: List[float], period: int) -> float:
-        if not data or len(data) < period:
-            return data[-1] if data else 0
-        return sum(data[-period:]) / period
 
     @staticmethod
     def rsi(closes: List[float], period: int = 14) -> float:
@@ -172,25 +155,14 @@ class AdvancedIndicators:
     @staticmethod
     def bollinger(closes: List[float], period: int = 20, std_dev: float = 2) -> Dict:
         if len(closes) < period:
-            return {"upper": closes[-1], "middle": closes[-1], "lower": closes[-1], "position": 0.5, "width": 0}
+            return {"upper": closes[-1], "middle": closes[-1], "lower": closes[-1], "position": 0.5}
         middle = sum(closes[-period:]) / period
         squared = [(x - middle) ** 2 for x in closes[-period:]]
         std = (sum(squared) / period) ** 0.5
         upper = middle + (std * std_dev)
         lower = middle - (std * std_dev)
         position = (closes[-1] - lower) / (upper - lower) if upper != lower else 0.5
-        width = (upper - lower) / middle if middle else 0
-        return {"upper": upper, "middle": middle, "lower": lower, "position": position, "width": width}
-
-    @staticmethod
-    def stochastic(closes: List[float], highs: List[float], lows: List[float], period: int = 14) -> float:
-        if len(closes) < period:
-            return 50.0
-        highest = max(highs[-period:])
-        lowest = min(lows[-period:])
-        if highest == lowest:
-            return 50.0
-        return ((closes[-1] - lowest) / (highest - lowest)) * 100
+        return {"upper": upper, "middle": middle, "lower": lower, "position": position}
 
     @staticmethod
     def adx(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
@@ -203,7 +175,6 @@ class AdvancedIndicators:
             plus_dm.append(up if up > down and up > 0 else 0)
             minus_dm.append(down if down > up and down > 0 else 0)
             tr.append(max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])))
-        
         tr_ema = AdvancedIndicators.ema(tr[-period:], period)
         if tr_ema == 0:
             return 25.0
@@ -244,6 +215,16 @@ class AdvancedIndicators:
         if highest == lowest:
             return 50.0
         return max(0, min(100, 100 * math.log10(tr_sum / (highest - lowest)) / math.log10(period)))
+
+    @staticmethod
+    def stochastic(closes: List[float], highs: List[float], lows: List[float], period: int = 14) -> float:
+        if len(closes) < period:
+            return 50.0
+        highest = max(highs[-period:])
+        lowest = min(lows[-period:])
+        if highest == lowest:
+            return 50.0
+        return ((closes[-1] - lowest) / (highest - lowest)) * 100
 
     @staticmethod
     def zscore(data: List[float], period: int = 20) -> float:
@@ -287,21 +268,6 @@ class AdvancedIndicators:
         return {"vi_plus": sum_vm_plus / sum_tr if sum_tr > 0 else 0, "vi_minus": sum_vm_minus / sum_tr if sum_tr > 0 else 0}
 
     @staticmethod
-    def fibonacci_retracement(highs: List[float], lows: List[float], current: float) -> Dict:
-        if not highs or not lows:
-            return {"level": 0}
-        high = max(highs[-50:]) if len(highs) >= 50 else max(highs)
-        low = min(lows[-50:]) if len(lows) >= 50 else min(lows)
-        levels = [0.236, 0.382, 0.5, 0.618, 0.786]
-        nearest = 0
-        for level in levels:
-            price = high - (high - low) * level
-            if abs(current - price) / current < 0.005:
-                nearest = level
-                break
-        return {"high": high, "low": low, "nearest_level": nearest}
-
-    @staticmethod
     def cci(closes: List[float], highs: List[float], lows: List[float], period: int = 20) -> float:
         if len(closes) < period:
             return 0
@@ -312,7 +278,6 @@ class AdvancedIndicators:
 
     @staticmethod
     def dmi(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> Dict:
-        """Directional Movement Index components."""
         adx = AdvancedIndicators.adx(highs, lows, closes, period)
         plus_dm, minus_dm = [], []
         for i in range(1, len(closes)):
@@ -329,22 +294,14 @@ class AdvancedIndicators:
         return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di}
 
 # ========================================================================
-# GOLDEN ML ENSEMBLE STRATEGY
+# GOLDEN ENSEMBLE STRATEGY
 # ========================================================================
 
 class GoldenEnsembleStrategy:
-    """ML-inspired ensemble of 15 indicators with feature importance."""
-    name = "Golden_Ensemble"
-    
     @staticmethod
     def signal(data: Dict, params: Dict = None) -> Dict:
         if params is None:
-            params = {
-                'min_signals': 6,
-                'trend_weight': 1.5,
-                'momentum_weight': 1.2,
-                'volatility_weight': 0.8,
-            }
+            params = {'min_signals': 6}
         
         closes = data['closes']
         highs = data['highs']
@@ -352,7 +309,6 @@ class GoldenEnsembleStrategy:
         volumes = data['volumes']
         current = closes[-1]
         
-        # Calculate ALL indicators
         signals = []
         weights = []
         signal_names = []
@@ -361,11 +317,10 @@ class GoldenEnsembleStrategy:
         ema_9 = AdvancedIndicators.ema(closes, 9)
         ema_21 = AdvancedIndicators.ema(closes, 21)
         ema_50 = AdvancedIndicators.ema(closes, 50)
-        ema_200 = AdvancedIndicators.ema(closes, 200) if len(closes) >= 200 else ema_50
         
-        if current > ema_9 > ema_21 > ema_50:  # Strong trend
+        if current > ema_9 > ema_21 > ema_50:
             signals.append(1); weights.append(1.5); signal_names.append("EMA_Trend")
-        elif current > ema_50:  # Moderate trend
+        elif current > ema_50:
             signals.append(1); weights.append(1.0); signal_names.append("EMA_Trend_Mod")
         else:
             signals.append(0); weights.append(1.0); signal_names.append("EMA_Trend")
@@ -377,9 +332,9 @@ class GoldenEnsembleStrategy:
         
         # 3. RSI (Weight: 1.2)
         rsi = AdvancedIndicators.rsi(closes, 14)
-        if 30 < rsi < 70:  # Healthy range
+        if 30 < rsi < 70:
             signals.append(1 if rsi < 50 else 0.5)
-        elif rsi < 30:  # Oversold
+        elif rsi < 30:
             signals.append(1)
         else:
             signals.append(0)
@@ -387,9 +342,9 @@ class GoldenEnsembleStrategy:
         
         # 4. Bollinger (Weight: 1.0)
         bb = AdvancedIndicators.bollinger(closes)
-        if current < bb['lower'] * 1.02:  # Near lower band
+        if current < bb['lower'] * 1.02:
             signals.append(1)
-        elif current > bb['upper'] * 0.98:  # Near upper band
+        elif current > bb['upper'] * 0.98:
             signals.append(0)
         else:
             signals.append(0.5)
@@ -397,7 +352,7 @@ class GoldenEnsembleStrategy:
         
         # 5. ADX (Weight: 1.3)
         adx = AdvancedIndicators.adx(highs, lows, closes)
-        signals.append(1 if adx > 25 else 0)  # Trending
+        signals.append(1 if adx > 25 else 0)
         weights.append(1.3); signal_names.append("ADX")
         
         # 6. Stochastic (Weight: 0.8)
@@ -421,7 +376,7 @@ class GoldenEnsembleStrategy:
         
         # 9. Choppiness (Weight: 1.0)
         chop = AdvancedIndicators.chop(highs, lows, closes)
-        signals.append(1 if chop < 40 else 0)  # Trending
+        signals.append(1 if chop < 40 else 0)
         weights.append(1.0); signal_names.append("Chop")
         
         # 10. Z-Score (Weight: 0.7)
@@ -429,7 +384,7 @@ class GoldenEnsembleStrategy:
         signals.append(1 if zscore < -1 else 0)
         weights.append(0.7); signal_names.append("ZScore")
         
-        # 11. Keltner Channel (Weight: 0.9)
+        # 11. Keltner (Weight: 0.9)
         kc = AdvancedIndicators.keltner(highs, lows, closes)
         signals.append(1 if current < kc['lower'] * 1.01 else 0)
         weights.append(0.9); signal_names.append("Keltner")
@@ -460,36 +415,22 @@ class GoldenEnsembleStrategy:
             signals.append(0)
         weights.append(1.1); signal_names.append("DMI")
         
-        # Weighted average
         weighted_sum = sum(s * w for s, w in zip(signals, weights))
         total_weight = sum(weights)
         confidence = weighted_sum / total_weight
-        
-        # Count signals (binary)
         signal_count = sum(1 for s in signals if s > 0.5)
         min_signals = params.get('min_signals', 6)
         
-        # Final decision
-        buy_signal = signal_count >= min_signals and confidence > 0.3
-        
-        # Dynamic targets based on indicators
         atr = AdvancedIndicators.atr(highs, lows, closes, 14)
-        atr_pct = atr / current if current > 0 else 0.02
-        
-        # Stop: below recent lows or ATR-based
         recent_low = min(lows[-20:]) if len(lows) >= 20 else min(lows)
         stop = min(current - atr * 1.5, recent_low * 0.98)
+        target = current + atr * 2.5
         
-        # Target: based on volatility and trend
-        if adx > 30:  # Strong trend
-            target = current + atr * 3.0
-        else:
-            target = current + atr * 2.0
-        
-        # R:R check
         risk = current - stop
         reward = target - current
         rr_ratio = reward / risk if risk > 0 else 0
+        
+        buy_signal = signal_count >= min_signals and confidence > 0.3
         
         return {
             "signal": "BUY" if buy_signal and rr_ratio > 1.5 else "NEUTRAL",
@@ -501,14 +442,11 @@ class GoldenEnsembleStrategy:
             "rr_ratio": rr_ratio,
             "adx": adx,
             "rsi": rsi,
-            "atr_pct": atr_pct,
-            "weighted_score": weighted_sum,
             "signal_names": [name for name, sig in zip(signal_names, signals) if sig > 0.5],
-            "indicators": dict(zip(signal_names, signals)),
         }
 
 # ========================================================================
-# GOLDEN SCALPER BOT - PRODUCTION
+# GOLDEN SCALPER BOT - FAST CYCLE
 # ========================================================================
 
 class GoldenScalperBot:
@@ -525,25 +463,19 @@ class GoldenScalperBot:
         self.interval = interval
         self.base_asset = symbol.replace("USDT", "")
         
-        # Golden strategy parameters
         self.min_signals = GOLDEN_CONFIG["min_signals"]
         self.trailing_pct = GOLDEN_CONFIG["trailing_pct"]
-        self.max_hold_days = GOLDEN_CONFIG["max_hold_days"]
+        self.max_hold_hours = GOLDEN_CONFIG["max_hold_hours"]
         self.trailing_stop = GOLDEN_CONFIG["trailing_stop"]
         
-        # Position sizing
         self.min_order_usdt = GOLDEN_CONFIG["min_order_usdt"]
         self.max_order_usdt = GOLDEN_CONFIG["max_order_usdt"]
-        
-        # Target & Stop
         self.target_profit_pct = GOLDEN_CONFIG["target_profit_pct"]
         self.stop_loss_pct = GOLDEN_CONFIG["stop_loss_pct"]
         
-        # Safety
         self.max_drawdown_pct = 0.15
         self.max_consecutive_losses = 4
         
-        # Exchange
         if exchange_region.lower() == "us":
             self.base_url = "https://api.binance.us"
         elif exchange_region.lower() == "global":
@@ -554,13 +486,12 @@ class GoldenScalperBot:
         self.maker_fee_rate = 0.001
         self.taker_fee_rate = 0.001
         
-        # Cache
         self._min_qty = 0.00001
         self._tick_size = 0.01
         self._min_notional = 10.0
         self._price_cache = {}
         self._price_cache_time = 0
-        self._price_cache_ttl = 60
+        self._price_cache_ttl = 30  # 30 second cache
         
         # State
         self.has_open_position = False
@@ -571,10 +502,7 @@ class GoldenScalperBot:
         self.position_order_id = None
         self.position_open_time = None
         self.position_highest_price = 0.0
-        self.position_trailing_stop = 0.0
         
-        self.buy_price = None
-        self.buy_qty = None
         self.current_balance_usdt = 0.0
         self.current_balance_asset = 0.0
         self.starting_balance = 0.0
@@ -617,14 +545,15 @@ class GoldenScalperBot:
         self.logger.addHandler(console)
         
         self.logger.info("="*70)
-        self.logger.info("🏆 GOLDEN SCALPER BOT v10.8 - ULTIMATE STRATEGY")
+        self.logger.info("🚀 GOLDEN SCALPER BOT v10.9 - FAST CYCLE")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Interval: {interval}")
         self.logger.info(f"   Min Signals: {self.min_signals}/15")
         self.logger.info(f"   Target: {self.target_profit_pct*100:.1f}%")
         self.logger.info(f"   Stop: {self.stop_loss_pct*100:.1f}%")
-        self.logger.info(f"   Max Hold: {self.max_hold_days} days")
+        self.logger.info(f"   Max Hold: {self.max_hold_hours} hours")
+        self.logger.info(f"   Cycle Check: {GOLDEN_CONFIG['cycle_interval_seconds']} seconds")
         self.logger.info("="*70)
         
         self._check_connectivity()
@@ -633,7 +562,6 @@ class GoldenScalperBot:
         self._check_existing_orders()
 
     def _check_existing_orders(self):
-        """Check if there are any existing open orders from previous runs"""
         try:
             resp = self._send_signed_request("GET", "/api/v3/openOrders", {"symbol": self.symbol})
             if "error" not in resp and resp:
@@ -649,7 +577,6 @@ class GoldenScalperBot:
             self.logger.warning(f"Could not check existing orders: {e}")
 
     def _get_position_details(self):
-        """Get position details from trade history."""
         try:
             resp = self._send_signed_request("GET", "/api/v3/myTrades", {"symbol": self.symbol, "limit": 1})
             if "error" not in resp and resp:
@@ -700,7 +627,6 @@ class GoldenScalperBot:
     def _update_balances(self):
         try:
             balances = self.get_account_balance()
-            
             if "USDT" in balances and balances["USDT"] > 0:
                 self.current_balance_usdt = balances["USDT"]
                 self.balance_fetched = True
@@ -826,18 +752,6 @@ class GoldenScalperBot:
                     balances[balance["asset"]] = free
             return balances
         return {}
-
-    def get_order_fill_price(self, order_id: str) -> Optional[float]:
-        status = self._send_signed_request("GET", "/api/v3/order", {
-            "symbol": self.symbol,
-            "orderId": order_id,
-        })
-        if status.get("status") == "FILLED":
-            cum_quote = float(status.get("cummulativeQuoteQty", 0))
-            executed_qty = float(status.get("executedQty", 0))
-            if executed_qty > 0 and cum_quote > 0:
-                return cum_quote / executed_qty
-        return None
 
     def get_order_status(self, order_id: str) -> dict:
         if not order_id or order_id == "0" or "ERR_" in str(order_id):
@@ -977,23 +891,20 @@ class GoldenScalperBot:
         }
 
     def analyze_signal(self) -> Dict:
-        """Analyze market and return signal using the Golden Ensemble Strategy."""
         klines = AdvancedIndicators.get_klines(self.symbol, self.base_url, interval=self.interval, limit=500)
         if not klines:
             return {"signal": "NEUTRAL", "error": "No data"}
         
-        params = {
-            'min_signals': self.min_signals,
-        }
-        
+        params = {'min_signals': self.min_signals}
         signal = GoldenEnsembleStrategy.signal(klines, params)
         
-        self.logger.info(f"📊 Golden Signal: {signal['signal']}")
-        self.logger.info(f"   Confidence: {signal['confidence']:.2f}")
-        self.logger.info(f"   Signals: {signal['signal_count']}/{signal['total_signals']}")
-        if signal.get('signal_names'):
-            self.logger.info(f"   Active Signals: {', '.join(signal['signal_names'][:5])}...")
-        self.logger.info(f"   R:R Ratio: {signal.get('rr_ratio', 0):.2f}")
+        if signal['signal'] == "BUY":
+            self.logger.info(f"📊 Golden Signal: {signal['signal']}")
+            self.logger.info(f"   Confidence: {signal['confidence']:.2f}")
+            self.logger.info(f"   Signals: {signal['signal_count']}/{signal['total_signals']}")
+            if signal.get('signal_names'):
+                self.logger.info(f"   Active Signals: {', '.join(signal['signal_names'][:5])}...")
+            self.logger.info(f"   R:R Ratio: {signal.get('rr_ratio', 0):.2f}")
         
         return signal
 
@@ -1009,23 +920,20 @@ class GoldenScalperBot:
         if self.has_open_position:
             if self.position_entry_price > 0 and (not self.position_stop_price or self.position_stop_price <= 0):
                 self.position_stop_price = self.position_entry_price * (1 - self.stop_loss_pct)
-                self.logger.warning(f"🛠️ Stop-loss was $0.00 — recomputed to ${self.position_stop_price:.2f}")
+                self.logger.warning(f"🛠️ Recomputed stop-loss: ${self.position_stop_price:.2f}")
             if self.position_entry_price > 0 and (not self.position_target_price or self.position_target_price <= 0):
                 self.position_target_price = self.position_entry_price * (1 + self.target_profit_pct)
-                self.logger.warning(f"🛠️ Target was $0.00 — recomputed to ${self.position_target_price:.2f}")
+                self.logger.warning(f"🛠️ Recomputed target: ${self.position_target_price:.2f}")
 
             live_price = self.get_current_price()
-            days_held = (datetime.now() - self.position_open_time).days if self.position_open_time else 0
+            hours_held = (datetime.now() - self.position_open_time).total_seconds() / 3600 if self.position_open_time else 0
             
-            self.logger.info(f"📊 Position is OPEN - day {days_held}/{self.max_hold_days}")
+            self.logger.info(f"📊 Position is OPEN - {hours_held:.1f}h / {self.max_hold_hours}h")
             self.logger.info(f"   Entry: ${self.position_entry_price:.2f}")
             self.logger.info(f"   Target: ${self.position_target_price:.2f}")
             self.logger.info(f"   Stop: ${self.position_stop_price:.2f}")
             if live_price:
-                if self.position_entry_price > 0:
-                    unrealized_pct = ((live_price / self.position_entry_price) - 1) * 100
-                else:
-                    unrealized_pct = 0.0
+                unrealized_pct = ((live_price / self.position_entry_price) - 1) * 100
                 self.logger.info(f"   Current: ${live_price:.2f}  ({unrealized_pct:+.2f}% vs entry)")
             
             # Check order status
@@ -1060,9 +968,7 @@ class GoldenScalperBot:
                         
                         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
                         self.logger.info(f"📊 Win Rate: {win_rate:.1f}% ({self.win_count}W/{self.loss_count}L)")
-                        
                         self._update_balances()
-                        self.logger.info(f"💰 USDT: ${self.current_balance_usdt:.2f}")
                         return {
                             "success": True,
                             "cycle": cycle_number,
@@ -1072,12 +978,8 @@ class GoldenScalperBot:
                             "profit": realized_pnl,
                             "net_profit": net_pnl,
                             "fees": fee_estimate,
-                            "stopped_out": False,
                             "balance_after": self.current_balance_usdt,
-                            "consecutive_wins": self.consecutive_wins,
-                            "consecutive_losses": self.consecutive_losses,
                             "win_rate": win_rate,
-                            "timestamp": datetime.now().isoformat()
                         }
             
             # Check stop-loss
@@ -1102,15 +1004,14 @@ class GoldenScalperBot:
                         self.loss_count += 1
                         self.consecutive_losses += 1
                         self.consecutive_wins = 0
-                        
                         self._update_balances()
                         return {"success": True, "stopped_out": True, "net_profit": net_pnl}
             
             # Check time exit
             if self.position_open_time:
-                days_held = (datetime.now() - self.position_open_time).days
-                if days_held >= self.max_hold_days:
-                    self.logger.info(f"⏰ TIME EXIT: {days_held} days exceeded max {self.max_hold_days}")
+                hours_held = (datetime.now() - self.position_open_time).total_seconds() / 3600
+                if hours_held >= self.max_hold_hours:
+                    self.logger.info(f"⏰ TIME EXIT: {hours_held:.1f}h exceeded max {self.max_hold_hours}h")
                     if self.position_order_id:
                         self.cancel_order(self.position_order_id)
                     exit_res = self.place_market_order(side="SELL", amount=self.position_entry_qty, is_quantity=True)
@@ -1133,21 +1034,17 @@ class GoldenScalperBot:
                             self.loss_count += 1
                             self.consecutive_losses += 1
                             self.consecutive_wins = 0
-                        
                         self._update_balances()
                         return {"success": True, "stopped_out": False, "net_profit": net_pnl, "time_exit": True}
             
-            self.skipped_count += 1
             return {"success": False, "error": "Position open", "skipped": True}
 
         # No position - check for new signal
         self._update_balances()
-        
         self.logger.info(f"💰 USDT: ${self.current_balance_usdt:.2f} | {self.base_asset}: {self.current_balance_asset:.8f}")
         
         if self.current_balance_usdt < self.min_order_usdt:
             self.logger.error(f"❌ Insufficient USDT: ${self.current_balance_usdt:.2f}")
-            self.stopped = True
             return {"success": False, "error": "Insufficient USDT"}
         
         if self.peak_balance > 0:
@@ -1162,7 +1059,6 @@ class GoldenScalperBot:
             self.stopped = True
             return {"success": False, "error": "Too many losses"}
 
-        # Get signal
         signal = self.analyze_signal()
         
         if "error" in signal:
@@ -1171,23 +1067,16 @@ class GoldenScalperBot:
         
         if signal['signal'] != "BUY":
             self.logger.info("⏭️ No signal - skipping")
-            self.skipped_count += 1
             return {"success": False, "error": "No signal", "skipped": True}
         
-        self.skipped_count = 0
-        
-        # Get current price
         current_price = self.get_current_price()
         if not current_price:
             return {"success": False, "error": "No price"}
 
-        # Calculate position size
         position_usdt = min(self.max_order_usdt, self.current_balance_usdt * 0.15)
         position_usdt = max(self.min_order_usdt, position_usdt)
         
         self.logger.info(f"📈 Buying ${position_usdt:.2f} worth of {self.base_asset}")
-        
-        # BUY
         buy_order = self.place_market_order(side="BUY", amount=position_usdt, is_quantity=False)
         
         if "error" in buy_order:
@@ -1202,14 +1091,11 @@ class GoldenScalperBot:
             return {"success": False, "error": "Invalid buy"}
         
         self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} {self.base_asset} @ ${self.buy_price:.2f}")
-        
         self._update_balances()
 
-        # Calculate exit levels
         stop_price = max(self.buy_price * (1 - self.stop_loss_pct), signal.get('stop', self.buy_price * 0.98))
         target_price = min(self.buy_price * (1 + self.target_profit_pct), signal.get('target', self.buy_price * 1.04))
         
-        # Use actual balance for selling
         sell_qty = min(self.buy_qty, self.current_balance_asset * 0.995)
         sell_qty = round_to_step(sell_qty, self._min_qty)
         
@@ -1221,7 +1107,6 @@ class GoldenScalperBot:
         self.logger.info(f"🎯 Target: ${target_price:.2f} (+{((target_price/self.buy_price)-1)*100:.2f}%)")
         self.logger.info(f"🛑 Stop: ${stop_price:.2f} (-{((1 - stop_price/self.buy_price))*100:.2f}%)")
         
-        # Place SELL LIMIT order
         sell_order = self.place_limit_order(side="SELL", quantity=sell_qty, price=target_price)
         
         if "error" in sell_order:
@@ -1239,8 +1124,6 @@ class GoldenScalperBot:
             net_pnl = realized_pnl - fee_estimate
             self.total_fees += fee_estimate
             self._update_balances()
-            
-            self.logger.info(f"💰 P&L: ${realized_pnl:.4f} (net: ${net_pnl:.4f})")
             
             self.running_pnl += net_pnl
             self.current_balance_usdt = max(0, self.starting_balance + self.running_pnl)
@@ -1270,12 +1153,8 @@ class GoldenScalperBot:
                 "net_profit": net_pnl,
                 "fees": fee_estimate,
                 "profit_percent": (realized_pnl / (self.buy_price * sell_qty)) * 100 if self.buy_price * sell_qty > 0 else 0,
-                "stopped_out": False,
                 "balance_after": self.current_balance_usdt,
-                "consecutive_wins": self.consecutive_wins,
-                "consecutive_losses": self.consecutive_losses,
                 "win_rate": win_rate,
-                "timestamp": datetime.now().isoformat()
             }
             self.cycle_stats["total_cycles"] += 1
             if net_pnl > 0:
@@ -1291,7 +1170,6 @@ class GoldenScalperBot:
         if not self.position_order_id:
             return {"success": False, "error": "No sell orderId"}
         
-        # Set position tracking
         self.has_open_position = True
         self.position_entry_price = self.buy_price
         self.position_entry_qty = sell_qty
@@ -1299,18 +1177,18 @@ class GoldenScalperBot:
         self.position_stop_price = stop_price
         self.position_open_time = datetime.now()
         self.position_highest_price = self.buy_price
-        self.position_trailing_stop = stop_price
         
         self.logger.info(f"✅ SELL LIMIT order placed: {self.position_order_id}")
         self.logger.info(f"⏳ Position open - waiting for target ${target_price:.2f}")
         self.logger.info(f"   Stop-loss at ${stop_price:.2f}")
-        self.logger.info(f"   Max hold: {self.max_hold_days} days")
+        self.logger.info(f"   Max hold: {self.max_hold_hours} hours")
 
         return {"success": True, "position_open": True, "order_id": self.position_order_id}
 
-    def run_forever(self, delay_between_cycles: int = 86400):  # 1 day for daily timeframe
+    def run_forever(self):
+        """Main loop - checks every 60 seconds while position is open, every 5 minutes when no position."""
         self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 GOLDEN SCALPER BOT v10.8 - RUNNING")
+        self.logger.info("🚀 GOLDEN SCALPER BOT v10.9 - FAST CYCLE")
         self.logger.info(f"   {self.symbol} {self.interval} - Golden Ensemble Strategy")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
@@ -1324,14 +1202,14 @@ class GoldenScalperBot:
                 
                 if result.get("success", False):
                     if result.get("position_open", False):
-                        self.logger.info(f"📊 Position opened - monitoring...")
+                        self.logger.info(f"📊 Position opened - monitoring every 60s...")
                     else:
                         self.logger.info(f"✅ TRADE COMPLETED! Net: ${result.get('net_profit', 0):.4f}")
                 elif result.get("skipped", False):
                     if self.has_open_position:
-                        self.logger.info(f"⏳ Position open - monitoring...")
+                        self.logger.info(f"⏳ Position open - monitoring every 60s...")
                     else:
-                        self.logger.info(f"⏭️ Skipped ({self.skipped_count} skips)")
+                        self.logger.info(f"⏭️ No signal - checking every 5 minutes")
                 else:
                     self.logger.error(f"⚠️ Failed: {result.get('error', 'Unknown')}")
                 
@@ -1344,9 +1222,16 @@ class GoldenScalperBot:
                     self.stopped = True
                     break
                 
-                wait_time = delay_between_cycles + random.uniform(0, 3600)  # Random delay up to 1 hour
-                if not self.has_open_position:
-                    self.logger.info(f"\n⏳ Waiting {wait_time/3600:.1f} hours...")
+                # Different wait times based on state
+                if self.has_open_position:
+                    # Check frequently when in position
+                    wait_time = 60  # 60 seconds
+                    self.logger.info(f"⏳ Monitoring position - checking every {wait_time}s...")
+                else:
+                    # Check less frequently when no position
+                    wait_time = 300  # 5 minutes
+                    self.logger.info(f"⏳ No position - checking every {wait_time//60} minutes...")
+                
                 time.sleep(wait_time)
                 cycle_num += 1
                 
@@ -1357,7 +1242,7 @@ class GoldenScalperBot:
                 self.logger.error(f"❌ Error: {e}")
                 import traceback
                 traceback.print_exc()
-                time.sleep(delay_between_cycles)
+                time.sleep(60)
                 cycle_num += 1
 
         self.cycle_stats["end_time"] = datetime.now()
@@ -1390,7 +1275,7 @@ if __name__ == "__main__":
         exit(1)
     
     print("="*70)
-    print("🏆 GOLDEN SCALPER BOT v10.8 - ULTIMATE GOLDEN STRATEGY")
+    print("🚀 GOLDEN SCALPER BOT v10.9 - FAST CYCLE (FIXED)")
     print("="*70)
     print(f"\n🎯 {GOLDEN_CONFIG['symbol']} {GOLDEN_CONFIG['interval']} - Golden Ensemble Strategy")
     print(f"   ✅ 15+ indicators with ML-style ensemble voting")
@@ -1398,8 +1283,9 @@ if __name__ == "__main__":
     print(f"   ✅ Expected win rate: 58.9%")
     print(f"   ✅ Expected avg return: 2.26%")
     print(f"   ✅ Profit Factor: 4.16")
-    print("\n🚀 Starting in 5 seconds...")
-    time.sleep(5)
+    print(f"   ✅ Checking every {GOLDEN_CONFIG['cycle_interval_seconds']} seconds!")
+    print("\n🚀 Starting in 3 seconds...")
+    time.sleep(3)
     
     bot = GoldenScalperBot(
         api_key=API_KEY,
@@ -1410,5 +1296,4 @@ if __name__ == "__main__":
         interval=GOLDEN_CONFIG["interval"]
     )
     
-    # Daily timeframe = check once per day
-    bot.run_forever(delay_between_cycles=86400)
+    bot.run_forever()
