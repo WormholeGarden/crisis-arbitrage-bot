@@ -1,83 +1,52 @@
 #!/usr/bin/env python3
 """
-🚀 HYBRID DCA + RSI/MACD BOT v1.1 - FIXED
+ML ENSEMBLE STRATEGY - HONEST VALIDATION (fixes v4.0's methodology)
 ============================================================
-FIXES:
-- Fixed RSI calculation (was returning 0.0)
-- Added proper position recovery on startup
-- Added check for existing balance before trading
-- Fixed volume ratio calculation
-- Better error handling
+What was wrong with v4.0, concretely:
+  - min_trades=3 per block let near-empty samples count as "valid"
+  - No significance test anywhere - just picked whichever of ~800
+    tested (symbol x parameter) combinations scored highest, with
+    zero correction for how many things were tried
+  - The reported "winner" (AVAXUSDT 1d) had 14 total trades, from
+    as few as 2-3 usable blocks - a profit factor of 4.16 on that
+    sample size is well within what pure noise produces routinely
+  - 0.05%/0.05% fees assumed a fee tier most retail accounts don't
+    have
+
+This script keeps the same 15-indicator ensemble (the indicator math
+itself isn't the problem) and replaces the validation methodology:
+  - Realistic minimum trade counts per block (not 3)
+  - A small, PRE-SPECIFIED parameter set (not an 800-wide sweep)
+  - Bonferroni-corrected significance test on pooled out-of-sample
+    trades, sized to the actual number of combinations tested here
+  - Default fees restored to 0.1%/0.1% - check your own account's
+    real fee tier and adjust if you have solid evidence it's lower
+  - Precomputes each candle's indicator signal ONCE (independent of
+    min_signals/trailing/hold parameters) so the sweep is fast
+
+This can still - and quite plausibly will - come back with nothing.
+That's the honest answer if nothing here holds up.
 ============================================================
 """
 
-import hashlib
-import hmac
-import os
-import random
 import time
-import urllib.parse
-import csv
-import json
-import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any
-import requests
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
-import statistics
 import math
-from collections import deque
+import statistics
+from datetime import datetime
+from typing import Dict, List, Optional
+import requests
+
+MAKER_FEE = 0.001   # 0.1% - adjust only if you've confirmed your actual account tier
+TAKER_FEE = 0.001   # 0.1%
+ROUND_TRIP_FEE = MAKER_FEE + TAKER_FEE
 
 # ========================================================================
-# CONFIGURATION
+# INDICATORS (reused from v4.0 - the math here is reasonable)
 # ========================================================================
 
-DCA_CONFIG = {
-    "symbol": "AVAXUSDT",
-    "interval": "1m",
-    "price_drop_pct": 0.02,        # 2% price drop required
-    "rsi_oversold": 30,            # RSI < 30 to buy
-    "take_profit_pct": 0.025,      # 2.5% profit target
-    "max_buy_levels": 3,           # Maximum 3 DCA levels
-    "martingale_multiplier": 1.5,   # 1.5x scaling
-    "base_order_usdt": 10.0,       # First buy $10
-    "max_order_usdt": 30.0,        # Max per order
-    "max_total_usdt": 60.0,        # Max total in one cycle
-    "trailing_stop_pct": 0.5,      # 50% trailing stop
-    "min_volume_ratio": 1.2,       # Volume spike confirmation (optional)
-}
-
-# ========================================================================
-# DECIMAL HELPERS
-# ========================================================================
-
-def round_to_step(value: float, step: float) -> float:
-    step_dec = Decimal(str(step))
-    val_dec = Decimal(str(value))
-    rounded = (val_dec // step_dec) * step_dec
-    return float(rounded)
-
-def round_to_tick(value: float, tick: float) -> float:
-    tick_dec = Decimal(str(tick))
-    val_dec = Decimal(str(value))
-    rounded = (val_dec / tick_dec).quantize(Decimal('1'), rounding=ROUND_HALF_UP) * tick_dec
-    return float(rounded)
-
-def format_quantity(value: float) -> str:
-    if value <= 0:
-        return "0.00000000"
-    return f"{Decimal(str(value)):.8f}"
-
-def format_price(value: float) -> str:
-    return f"{Decimal(str(value)):.2f}"
-
-# ========================================================================
-# TECHNICAL INDICATORS
-# ========================================================================
-
-class TechnicalIndicators:
+class AdvancedIndicators:
     @staticmethod
-    def get_klines(symbol: str, base_url: str, interval: str = "1m", limit: int = 100,
+    def get_klines(symbol: str, base_url: str, interval: str = "1d", limit: int = 1000,
                     end_time_ms: int = None) -> Optional[Dict]:
         try:
             url = f"{base_url}/api/v3/klines"
@@ -88,45 +57,13 @@ class TechnicalIndicators:
             if resp.status_code == 200:
                 data = resp.json()
                 return {
-                    "timestamps": [c[0] for c in data],
-                    "opens": [float(c[1]) for c in data],
-                    "highs": [float(c[2]) for c in data],
-                    "lows": [float(c[3]) for c in data],
-                    "closes": [float(c[4]) for c in data],
-                    "volumes": [float(c[5]) for c in data],
+                    "timestamps": [c[0] for c in data], "opens": [float(c[1]) for c in data],
+                    "highs": [float(c[2]) for c in data], "lows": [float(c[3]) for c in data],
+                    "closes": [float(c[4]) for c in data], "volumes": [float(c[5]) for c in data],
                 }
             return None
         except Exception:
             return None
-
-    @staticmethod
-    def rsi(closes: List[float], period: int = 14) -> float:
-        """Calculate RSI - fixed to handle insufficient data"""
-        if len(closes) < period + 1:
-            return 50.0  # Return neutral instead of 0
-        
-        gains, losses = [], []
-        for i in range(1, len(closes)):
-            diff = closes[i] - closes[i-1]
-            if diff > 0:
-                gains.append(diff)
-                losses.append(0)
-            else:
-                gains.append(0)
-                losses.append(abs(diff))
-        
-        # Use only the last 'period' values
-        gains = gains[-period:] if len(gains) >= period else gains
-        losses = losses[-period:] if len(losses) >= period else losses
-        
-        avg_gain = sum(gains) / len(gains) if gains else 0
-        avg_loss = sum(losses) / len(losses) if losses else 1
-        
-        if avg_loss == 0:
-            return 100.0
-        
-        rs = avg_gain / avg_loss
-        return 100 - (100 / (1 + rs))
 
     @staticmethod
     def ema(data: List[float], period: int) -> float:
@@ -139,1008 +76,474 @@ class TechnicalIndicators:
         return ema_val
 
     @staticmethod
-    def macd(closes: List[float], fast: int = 12, slow: int = 26, signal: int = 9) -> Dict:
-        if len(closes) < slow:
-            return {"macd": 0, "signal": 0, "histogram": 0, "bullish": False, "bearish": False}
-        ema_fast = TechnicalIndicators.ema(closes, fast)
-        ema_slow = TechnicalIndicators.ema(closes, slow)
-        macd_line = ema_fast - ema_slow
-        signal_line = TechnicalIndicators.ema([macd_line] * signal, signal)
-        histogram = macd_line - signal_line
-        return {
-            "macd": macd_line,
-            "signal": signal_line,
-            "histogram": histogram,
-            "bullish": macd_line > signal_line,
-            "bearish": macd_line < signal_line
-        }
+    def rsi(closes: List[float], period: int = 14) -> float:
+        if len(closes) < period + 1:
+            return 50.0
+        gains, losses = [], []
+        for i in range(1, len(closes)):
+            diff = closes[i] - closes[i-1]
+            gains.append(diff if diff > 0 else 0)
+            losses.append(abs(diff) if diff < 0 else 0)
+        avg_gain = sum(gains[-period:]) / period
+        avg_loss = sum(losses[-period:]) / period
+        if avg_loss == 0:
+            return 100.0
+        return 100 - (100 / (1 + avg_gain / avg_loss))
 
     @staticmethod
-    def atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
+    def atr(highs, lows, closes, period: int = 14) -> float:
         if len(closes) < period + 1:
             return (max(highs) - min(lows)) if highs and lows else 0
         tr_values = []
         for i in range(1, len(closes)):
-            hl = highs[i] - lows[i]
-            hc = abs(highs[i] - closes[i-1])
-            lc = abs(lows[i] - closes[i-1])
-            tr_values.append(max(hl, hc, lc))
+            tr_values.append(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
         return sum(tr_values[-period:]) / period
 
+    @staticmethod
+    def macd(closes: List[float], fast=12, slow=26, signal=9) -> Dict:
+        if len(closes) < slow:
+            return {"macd": 0, "signal": 0, "histogram": 0, "bullish": False}
+        ema_fast = AdvancedIndicators.ema(closes, fast)
+        ema_slow = AdvancedIndicators.ema(closes, slow)
+        macd_line = ema_fast - ema_slow
+        signal_line = AdvancedIndicators.ema([macd_line] * signal, signal)
+        return {"macd": macd_line, "signal": signal_line, "histogram": macd_line - signal_line,
+                "bullish": macd_line > signal_line}
+
+    @staticmethod
+    def bollinger(closes: List[float], period: int = 20, std_dev: float = 2) -> Dict:
+        if len(closes) < period:
+            last = closes[-1] if closes else 0
+            return {"upper": last, "middle": last, "lower": last, "position": 0.5}
+        middle = sum(closes[-period:]) / period
+        squared = [(x - middle) ** 2 for x in closes[-period:]]
+        std = (sum(squared) / period) ** 0.5
+        upper = middle + std * std_dev
+        lower = middle - std * std_dev
+        return {"upper": upper, "middle": middle, "lower": lower,
+                "position": (closes[-1]-lower)/(upper-lower) if upper != lower else 0.5}
+
+    @staticmethod
+    def stochastic(closes, highs, lows, period: int = 14) -> float:
+        if len(closes) < period:
+            return 50.0
+        hh, ll = max(highs[-period:]), min(lows[-period:])
+        return ((closes[-1]-ll)/(hh-ll))*100 if hh != ll else 50.0
+
+    @staticmethod
+    def adx(highs, lows, closes, period: int = 14) -> float:
+        if len(closes) < period + 1:
+            return 25.0
+        plus_dm, minus_dm, tr = [], [], []
+        for i in range(1, len(closes)):
+            up = highs[i]-highs[i-1]; down = lows[i-1]-lows[i]
+            plus_dm.append(up if up > down and up > 0 else 0)
+            minus_dm.append(down if down > up and down > 0 else 0)
+            tr.append(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
+        tr_ema = AdvancedIndicators.ema(tr[-period:], period)
+        if tr_ema == 0:
+            return 25.0
+        plus_di = 100*(AdvancedIndicators.ema(plus_dm[-period:], period)/tr_ema)
+        minus_di = 100*(AdvancedIndicators.ema(minus_dm[-period:], period)/tr_ema)
+        dx = 100*abs(plus_di-minus_di)/(plus_di+minus_di) if (plus_di+minus_di) > 0 else 0
+        return AdvancedIndicators.ema([dx]*period, period)
+
+    @staticmethod
+    def obv(closes: List[float], volumes: List[float]) -> List[float]:
+        if not closes or not volumes:
+            return []
+        vals = [0]
+        for i in range(1, len(closes)):
+            if closes[i] > closes[i-1]: vals.append(vals[-1]+volumes[i])
+            elif closes[i] < closes[i-1]: vals.append(vals[-1]-volumes[i])
+            else: vals.append(vals[-1])
+        return vals
+
+    @staticmethod
+    def vwap(highs, lows, closes, volumes) -> float:
+        if not volumes or sum(volumes) == 0:
+            return closes[-1] if closes else 0
+        typical = [(h+l+c)/3 for h, l, c in zip(highs, lows, closes)]
+        return sum(t*v for t, v in zip(typical, volumes))/sum(volumes)
+
+    @staticmethod
+    def chop(highs, lows, closes, period: int = 14) -> float:
+        if len(closes) < period:
+            return 50.0
+        tr_sum = sum(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+                      for i in range(len(closes)-period, len(closes)))
+        hh, ll = max(highs[-period:]), min(lows[-period:])
+        if hh == ll:
+            return 50.0
+        return max(0, min(100, 100*math.log10(tr_sum/(hh-ll))/math.log10(period)))
+
+    @staticmethod
+    def zscore(data: List[float], period: int = 20) -> float:
+        if len(data) < period:
+            return 0
+        window = data[-period:]
+        mean = sum(window)/period
+        std = statistics.stdev(window) if period > 1 else 0.001
+        return (data[-1]-mean)/std if std > 0 else 0
+
+    @staticmethod
+    def keltner(highs, lows, closes, period: int = 20) -> Dict:
+        if len(closes) < period:
+            last = closes[-1] if closes else 0
+            return {"upper": last, "middle": last, "lower": last}
+        middle = AdvancedIndicators.ema(closes, period)
+        atr_val = AdvancedIndicators.atr(highs, lows, closes, 10)
+        return {"upper": middle+atr_val*1.5, "middle": middle, "lower": middle-atr_val*1.5}
+
+    @staticmethod
+    def ichimoku(highs, lows, closes) -> Dict:
+        if len(closes) < 52:
+            last = closes[-1] if closes else 0
+            return {"tenkan": last, "kijun": last, "senkou_a": last, "senkou_b": last}
+        tenkan = (max(highs[-9:])+min(lows[-9:]))/2
+        kijun = (max(highs[-26:])+min(lows[-26:]))/2
+        return {"tenkan": tenkan, "kijun": kijun, "senkou_a": (tenkan+kijun)/2,
+                "senkou_b": (max(highs[-52:])+min(lows[-52:]))/2}
+
+    @staticmethod
+    def vortex(highs, lows, closes, period: int = 14) -> Dict:
+        if len(closes) < period+1:
+            return {"vi_plus": 0, "vi_minus": 0}
+        vm_plus, vm_minus, tr = [], [], []
+        for i in range(1, len(closes)):
+            vm_plus.append(abs(highs[i]-lows[i-1])); vm_minus.append(abs(lows[i]-highs[i-1]))
+            tr.append(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
+        s_tr = sum(tr[-period:])
+        return {"vi_plus": sum(vm_plus[-period:])/s_tr if s_tr > 0 else 0,
+                "vi_minus": sum(vm_minus[-period:])/s_tr if s_tr > 0 else 0}
+
+    @staticmethod
+    def cci(closes, highs, lows, period: int = 20) -> float:
+        if len(closes) < period:
+            return 0
+        tp = [(h+l+c)/3 for h, l, c in zip(highs, lows, closes)]
+        sma_tp = sum(tp[-period:])/period
+        mean_dev = sum(abs(x-sma_tp) for x in tp[-period:])/period
+        return (tp[-1]-sma_tp)/(0.015*mean_dev) if mean_dev > 0 else 0
+
+    @staticmethod
+    def dmi(highs, lows, closes, period: int = 14) -> Dict:
+        adx = AdvancedIndicators.adx(highs, lows, closes, period)
+        plus_dm, minus_dm, tr = [], [], []
+        for i in range(1, len(closes)):
+            up = highs[i]-highs[i-1]; down = lows[i-1]-lows[i]
+            plus_dm.append(up if up > down and up > 0 else 0)
+            minus_dm.append(down if down > up and down > 0 else 0)
+            tr.append(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
+        tr_smooth = AdvancedIndicators.ema(tr[-period:], period)
+        plus_di = 100*(AdvancedIndicators.ema(plus_dm[-period:], period)/tr_smooth) if tr_smooth > 0 else 0
+        minus_di = 100*(AdvancedIndicators.ema(minus_dm[-period:], period)/tr_smooth) if tr_smooth > 0 else 0
+        return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di}
+
 # ========================================================================
-# DCA STRATEGY ENGINE
+# ML ENSEMBLE - signal generation split from the min_signals threshold,
+# since the 15-indicator computation itself doesn't depend on any of the
+# parameters being swept (min_signals, trailing, hold days)
 # ========================================================================
 
-class DCAStrategy:
-    def __init__(self, config: Dict = None):
-        self.config = config or DCA_CONFIG
-        self.total_qty = 0.0
-        self.total_cost = 0.0
-        self.avg_price = 0.0
-        self.current_level = 0
-        self.last_buy_price = 0.0
-        self.highest_price = 0.0
-        self.trailing_stop = 0.0
-        self.position_open = False
-        self.entry_time = None
-        self.buy_levels = []
-        
-    def reset(self):
-        """Reset DCA state for new cycle"""
-        self.total_qty = 0.0
-        self.total_cost = 0.0
-        self.avg_price = 0.0
-        self.current_level = 0
-        self.last_buy_price = 0.0
-        self.highest_price = 0.0
-        self.trailing_stop = 0.0
-        self.position_open = False
-        self.entry_time = None
-        self.buy_levels = []
-    
-    def calculate_buy_amount(self, level: int) -> float:
-        """Calculate buy amount with Martingale scaling"""
-        base = self.config["base_order_usdt"]
-        multiplier = self.config["martingale_multiplier"]
-        amount = base * (multiplier ** level)
-        return min(amount, self.config["max_order_usdt"])
-    
-    def check_entry_signal(self, data: Dict) -> Dict:
-        """Check if entry conditions are met"""
-        closes = data['closes']
-        highs = data['highs']
-        lows = data['lows']
-        volumes = data['volumes']
-        
-        current_price = closes[-1]
-        
-        # Calculate indicators - with fallbacks
-        rsi = TechnicalIndicators.rsi(closes, 14)
-        macd = TechnicalIndicators.macd(closes, 12, 26, 9)
-        
-        # Price drop check (from 1 minute ago)
-        price_drop = 0
-        if len(closes) >= 5:
-            # Check drop from 5 minutes ago for more stability
-            price_drop = (closes[-5] - current_price) / closes[-5]
-        
-        # Volume spike check
-        avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
-        volume_ratio = volumes[-1] / avg_volume if avg_volume > 0 else 1
-        
-        # Conditions - RSI is the primary filter
-        conditions = {
-            "price_drop": price_drop >= self.config["price_drop_pct"],
-            "rsi_oversold": rsi < self.config["rsi_oversold"],
-            "macd_bullish": macd['bullish'] or macd['histogram'] > 0,
-            "volume_spike": volume_ratio >= self.config["min_volume_ratio"],
-        }
-        
-        # ENTRY: Price drop + RSI oversold (MACD optional, volume optional)
-        entry_signal = conditions["price_drop"] and conditions["rsi_oversold"]
-        
-        return {
-            "entry": entry_signal,
-            "rsi": rsi,
-            "price_drop": price_drop,
-            "macd_bullish": macd['bullish'],
-            "volume_ratio": volume_ratio,
-            "current_price": current_price,
-            "conditions": conditions,
-        }
-    
-    def check_exit_signal(self, current_price: float) -> Dict:
-        """Check if exit conditions are met"""
-        if not self.position_open or self.total_qty <= 0:
-            return {"exit": False, "reason": "No position"}
-        
-        # Update highest price for trailing stop
-        if current_price > self.highest_price:
-            self.highest_price = current_price
-            # Update trailing stop
-            trail_pct = self.config["trailing_stop_pct"] / 100
-            new_stop = self.highest_price * (1 - trail_pct * 2)
-            if new_stop > self.trailing_stop:
-                self.trailing_stop = new_stop
-        
-        # Profit check
-        profit_pct = (current_price - self.avg_price) / self.avg_price
-        target_profit = self.config["take_profit_pct"]
-        
-        # Exit conditions
-        exit_signal = False
-        reason = ""
-        
-        # 1. Target profit hit
-        if profit_pct >= target_profit:
-            exit_signal = True
-            reason = f"Target profit {profit_pct*100:.2f}% >= {target_profit*100:.1f}%"
-        
-        # 2. Trailing stop hit
-        elif self.trailing_stop > 0 and current_price <= self.trailing_stop:
-            exit_signal = True
-            reason = f"Trailing stop hit at ${self.trailing_stop:.2f}"
-        
-        # 3. Time exit (max 4 hours for 1m timeframe)
-        elif self.entry_time:
-            time_held = (datetime.now() - self.entry_time).total_seconds() / 3600
-            if time_held > 4:
-                exit_signal = True
-                reason = f"Time exit after {time_held:.1f}h"
-        
-        # 4. Emergency stop loss (3% from last buy)
-        elif self.last_buy_price > 0:
-            emergency_stop = self.last_buy_price * 0.97
-            if current_price <= emergency_stop:
-                exit_signal = True
-                reason = f"Emergency stop at ${emergency_stop:.2f}"
-        
-        return {
-            "exit": exit_signal,
-            "reason": reason,
-            "profit_pct": profit_pct,
-            "current_price": current_price,
-            "avg_price": self.avg_price,
-            "trailing_stop": self.trailing_stop,
-            "highest_price": self.highest_price,
-            "time_held": (datetime.now() - self.entry_time).total_seconds() / 3600 if self.entry_time else 0,
-        }
+def compute_ml_features(data: Dict) -> Dict:
+    closes, highs, lows, volumes = data['closes'], data['highs'], data['lows'], data['volumes']
+    current = closes[-1]
+
+    ema_9 = AdvancedIndicators.ema(closes, 9)
+    ema_21 = AdvancedIndicators.ema(closes, 21)
+    ema_50 = AdvancedIndicators.ema(closes, 50)
+
+    signals, weights = [], []
+
+    if current > ema_9 > ema_21 > ema_50:
+        signals.append(1); weights.append(1.5)
+    elif current > ema_50:
+        signals.append(1); weights.append(1.0)
+    else:
+        signals.append(0); weights.append(1.0)
+
+    macd = AdvancedIndicators.macd(closes)
+    signals.append(1 if macd['bullish'] else 0); weights.append(1.5)
+
+    rsi = AdvancedIndicators.rsi(closes, 14)
+    if 30 < rsi < 70: signals.append(1 if rsi < 50 else 0.5)
+    elif rsi < 30: signals.append(1)
+    else: signals.append(0)
+    weights.append(1.2)
+
+    bb = AdvancedIndicators.bollinger(closes)
+    if current < bb['lower']*1.02: signals.append(1)
+    elif current > bb['upper']*0.98: signals.append(0)
+    else: signals.append(0.5)
+    weights.append(1.0)
+
+    adx = AdvancedIndicators.adx(highs, lows, closes)
+    signals.append(1 if adx > 25 else 0); weights.append(1.3)
+
+    stoch = AdvancedIndicators.stochastic(closes, highs, lows)
+    signals.append(1 if stoch < 30 else 0.3 if stoch < 50 else 0); weights.append(0.8)
+
+    obv_values = AdvancedIndicators.obv(closes, volumes)
+    if len(obv_values) >= 20:
+        obv_ema = AdvancedIndicators.ema(obv_values, 10)
+        signals.append(1 if obv_values[-1] > obv_ema else 0)
+    else:
+        signals.append(0)
+    weights.append(1.0)
+
+    vwap = AdvancedIndicators.vwap(highs, lows, closes, volumes)
+    signals.append(1 if current > vwap else 0); weights.append(0.8)
+
+    chop = AdvancedIndicators.chop(highs, lows, closes)
+    signals.append(1 if chop < 40 else 0); weights.append(1.0)
+
+    zscore = AdvancedIndicators.zscore(closes, 20)
+    signals.append(1 if zscore < -1 else 0); weights.append(0.7)
+
+    kc = AdvancedIndicators.keltner(highs, lows, closes)
+    signals.append(1 if current < kc['lower']*1.01 else 0); weights.append(0.9)
+
+    ichi = AdvancedIndicators.ichimoku(highs, lows, closes)
+    signals.append(1 if current > ichi['tenkan'] and current > ichi['kijun'] else 0); weights.append(1.2)
+
+    vortex = AdvancedIndicators.vortex(highs, lows, closes)
+    signals.append(1 if vortex['vi_plus'] > vortex['vi_minus'] else 0); weights.append(0.9)
+
+    cci = AdvancedIndicators.cci(closes, highs, lows)
+    signals.append(1 if cci < -100 else 0); weights.append(0.7)
+
+    dmi = AdvancedIndicators.dmi(highs, lows, closes)
+    signals.append(1 if dmi['plus_di'] > dmi['minus_di'] and dmi['adx'] > 20 else 0); weights.append(1.1)
+
+    weighted_sum = sum(s*w for s, w in zip(signals, weights))
+    confidence = weighted_sum / sum(weights)
+    signal_count = sum(1 for s in signals if s > 0.5)
+
+    atr = AdvancedIndicators.atr(highs, lows, closes, 14)
+    recent_low = min(lows[-20:]) if len(lows) >= 20 else min(lows)
+    stop = min(current - atr*1.5, recent_low*0.98)
+    target = current + atr*(3.0 if adx > 30 else 2.0)
+    risk = current - stop
+    reward = target - current
+    rr_ratio = reward / risk if risk > 0 else 0
+
+    return {"signal_count": signal_count, "confidence": confidence, "stop": stop,
+            "target": target, "rr_ratio": rr_ratio}
 
 # ========================================================================
-# DCA BOT - PRODUCTION
+# ROBUST VALIDATION
 # ========================================================================
 
-class DCABot:
+def fetch_history(symbol: str, interval: str, days_back: int, base_url: str = "https://api.binance.us") -> Dict:
+    interval_minutes = {"1d": 1440, "3d": 4320, "1w": 10080}
+    candles_per_day = 1440 // interval_minutes.get(interval, 1440)
+    needed = max(1, days_back * candles_per_day)
+    print(f"  Fetching ~{days_back}d ({needed} candles) of {interval} {symbol}...")
+    all_data = {"timestamps": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
+    end_time = None
+    while len(all_data["closes"]) < needed:
+        batch = AdvancedIndicators.get_klines(symbol, base_url, interval, limit=1000, end_time_ms=end_time)
+        if not batch or not batch["timestamps"]:
+            break
+        for k in all_data:
+            all_data[k] = batch[k] + all_data[k]
+        end_time = batch["timestamps"][0] - 1
+        time.sleep(0.2)
+    return all_data
 
-    def __init__(self, api_key: str, api_secret: str, 
-                 symbol: str = DCA_CONFIG["symbol"],
-                 exchange_region: str = "us", 
-                 log_level: str = "INFO"):
-        
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.symbol = symbol
-        self.base_asset = symbol.replace("USDT", "")
-        self.config = DCA_CONFIG
-        
-        # DCA Strategy
-        self.strategy = DCAStrategy(self.config)
-        
-        if exchange_region.lower() == "us":
-            self.base_url = "https://api.binance.us"
-        elif exchange_region.lower() == "global":
-            self.base_url = "https://api.binance.com"
+
+def precompute_features(klines: Dict, lookback: int = 100, label: str = "") -> List[Optional[Dict]]:
+    total = len(klines["closes"])
+    features: List[Optional[Dict]] = [None] * total
+    report_every = max(1, (total - lookback) // 5)
+    for i in range(lookback, total):
+        window = {k: klines[k][i-lookback:i] for k in klines}
+        features[i] = compute_ml_features(window)
+        if label and (i - lookback) % report_every == 0:
+            print(f"    [{label}] {int((i-lookback)/(max(1,total-lookback))*100)}%")
+    return features
+
+
+def simulate(klines: Dict, features: List[Optional[Dict]], min_signals: int,
+             trailing_stop: bool, trailing_pct: float, max_hold_days: int,
+             min_rr: float = 1.5, min_confidence: float = 0.5, lookback: int = 100) -> List[float]:
+    closes, highs, lows = klines["closes"], klines["highs"], klines["lows"]
+    total = len(closes)
+    trades = []
+    in_position = False
+    entry_price = entry_i = stop_price = target_price = highest = trail = None
+
+    for i in range(lookback, total):
+        if not in_position:
+            f = features[i]
+            if (f['signal_count'] >= min_signals and f['confidence'] > min_confidence
+                    and f['rr_ratio'] > min_rr):
+                entry_price = closes[i]
+                stop_price = f['stop']
+                target_price = f['target']
+                highest = entry_price
+                trail = stop_price
+                entry_i = i
+                in_position = True
         else:
-            raise ValueError('exchange_region must be "us" or "global"')
-        
-        self.maker_fee_rate = 0.001
-        self.taker_fee_rate = 0.001
-        
-        self._min_qty = 0.00001
-        self._tick_size = 0.01
-        self._min_notional = 10.0
-        self._price_cache = {}
-        self._price_cache_time = 0
-        self._price_cache_ttl = 10
-        
-        # State
-        self.has_open_position = False
-        self.position_order_id = None
-        self.current_balance_usdt = 0.0
-        self.current_balance_asset = 0.0
-        self.starting_balance = 0.0
-        self.peak_balance = 0.0
-        self.consecutive_losses = 0
-        self.consecutive_wins = 0
-        self.balance_fetched = False
-        self.stopped = False
-        self.skipped_count = 0
-        self.total_invested = 0.0
-        
-        # Stats
-        self.trade_history = []
-        self.win_count = 0
-        self.loss_count = 0
-        self.total_trades = 0
-        self.total_fees = 0.0
-        self.running_pnl = 0.0
-        
-        self.cycle_stats = {
-            "total_cycles": 0,
-            "successful_cycles": 0,
-            "failed_cycles": 0,
-            "net_profit": 0.0,
-            "start_time": None,
-            "end_time": None,
-            "cycle_results": []
-        }
-        
-        # Logging
-        log_filename = f"dca_bot_{datetime.now().strftime('%Y%m%d')}.log"
-        logging.basicConfig(
-            filename=log_filename,
-            level=getattr(logging, log_level.upper()),
-            format='%(asctime)s - %(levelname)s - %(message)s'
-        )
-        self.logger = logging.getLogger(__name__)
-        console = logging.StreamHandler()
-        console.setLevel(logging.INFO)
-        console.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        self.logger.addHandler(console)
-        
-        self.logger.info("="*70)
-        self.logger.info("🚀 HYBRID DCA + RSI/MACD BOT v1.1 (FIXED)")
-        self.logger.info("="*70)
-        self.logger.info(f"   Symbol: {symbol}")
-        self.logger.info(f"   Check Interval: {self.config['interval']}")
-        self.logger.info(f"   Price Drop: {self.config['price_drop_pct']*100:.1f}%")
-        self.logger.info(f"   RSI Threshold: < {self.config['rsi_oversold']}")
-        self.logger.info(f"   Take Profit: {self.config['take_profit_pct']*100:.1f}%")
-        self.logger.info(f"   Max DCA Levels: {self.config['max_buy_levels']}")
-        self.logger.info("="*70)
-        
-        self._check_connectivity()
-        self._get_exchange_info()
-        self._update_balances()
-        self._recover_existing_position()
+            if closes[i] > highest:
+                highest = closes[i]
+            if trailing_stop:
+                candidate = highest * (1 - trailing_pct * 0.02)
+                if candidate > trail:
+                    trail = candidate
+            current_stop = trail if trailing_stop else stop_price
 
-    def _recover_existing_position(self):
-        """Recover existing position from balance and open orders"""
-        self.logger.info("🔍 Checking for existing position...")
-        
-        # First check if we have any AVAX balance
-        self._update_balances()
-        
-        if self.current_balance_asset > 0.00001:
-            self.logger.info(f"💰 Found {self.current_balance_asset:.8f} {self.base_asset} in balance")
-            
-            # Try to get average entry price from trade history
-            try:
-                resp = self._send_signed_request("GET", "/api/v3/myTrades", {"symbol": self.symbol, "limit": 50})
-                if "error" not in resp and resp:
-                    buys = [t for t in resp if t.get("isBuyer")]
-                    if buys:
-                        total_qty = sum(float(t.get("qty", 0)) for t in buys)
-                        total_cost = sum(float(t.get("price", 0)) * float(t.get("qty", 0)) for t in buys)
-                        self.strategy.total_qty = total_qty
-                        self.strategy.total_cost = total_cost
-                        self.strategy.avg_price = total_cost / total_qty if total_qty > 0 else 0
-                        self.strategy.position_open = True
-                        self.strategy.entry_time = datetime.now()
-                        self.strategy.highest_price = self.strategy.avg_price
-                        self.strategy.trailing_stop = self.strategy.avg_price * (1 - 0.015)
-                        self.has_open_position = True
-                        self.logger.info(f"📊 Recovered position: {total_qty:.8f} @ ${self.strategy.avg_price:.2f}")
-                        
-                        # Check if there's an open sell order
-                        self._check_open_orders()
-                        return
-            except Exception as e:
-                self.logger.warning(f"Could not recover position details: {e}")
-        
-        # Check for open orders
-        self._check_open_orders()
+            exit_price = None
+            if lows[i] <= current_stop:
+                exit_price = current_stop
+            elif highs[i] >= target_price:
+                exit_price = target_price
+            elif (i - entry_i) > max_hold_days:
+                exit_price = closes[i]
 
-    def _check_open_orders(self):
-        """Check for any existing open orders"""
-        try:
-            resp = self._send_signed_request("GET", "/api/v3/openOrders", {"symbol": self.symbol})
-            if "error" not in resp and resp:
-                for order in resp:
-                    if order.get("side") == "SELL" and order.get("status") == "NEW":
-                        self.position_order_id = order.get("orderId")
-                        self.has_open_position = True
-                        self.strategy.position_open = True
-                        self.logger.info(f"📊 Found existing SELL order: {self.position_order_id}")
-                        break
-        except Exception as e:
-            self.logger.warning(f"Could not check open orders: {e}")
+            if exit_price is not None:
+                gross = (exit_price - entry_price) / entry_price
+                trades.append(gross - ROUND_TRIP_FEE)
+                in_position = False
 
-    def _check_connectivity(self):
-        self.logger.info("🔍 Running connectivity check...")
-        ticker = self.get_order_book_ticker()
-        if not ticker:
-            self.logger.error("❌ STARTUP CHECK FAILED")
-            raise SystemExit("Aborting.")
-        self.logger.info("✅ Connectivity OK.")
+    return trades
 
-    def _get_exchange_info(self):
-        try:
-            resp = requests.get(f"{self.base_url}/api/v3/exchangeInfo", timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                for symbol_info in data.get("symbols", []):
-                    if symbol_info["symbol"] == self.symbol:
-                        for filter_data in symbol_info.get("filters", []):
-                            if filter_data["filterType"] == "LOT_SIZE":
-                                self._min_qty = float(filter_data.get("minQty", 0.00001))
-                            if filter_data["filterType"] == "PRICE_FILTER":
-                                self._tick_size = float(filter_data.get("tickSize", 0.01))
-                            if filter_data["filterType"] == "MIN_NOTIONAL":
-                                self._min_notional = float(filter_data.get("minNotional", 10.0))
-                        self.logger.info(f"✅ Exchange info loaded")
-                        break
-        except Exception as e:
-            self.logger.warning(f"Could not fetch exchange info: {e}")
 
-    def _update_balances(self):
-        try:
-            balances = self.get_account_balance()
-            if "USDT" in balances and balances["USDT"] > 0:
-                self.current_balance_usdt = balances["USDT"]
-                self.balance_fetched = True
-            else:
-                self.current_balance_usdt = 0.0
-            
-            if self.base_asset in balances and balances[self.base_asset] > 0:
-                self.current_balance_asset = balances[self.base_asset]
-            else:
-                self.current_balance_asset = 0.0
-            
-            if self.starting_balance == 0 and self.current_balance_usdt > 0:
-                self.starting_balance = self.current_balance_usdt
-                self.peak_balance = self.current_balance_usdt
-                self.logger.info(f"💰 Starting USDT: ${self.starting_balance:.2f}")
-            
-            if self.current_balance_usdt > self.peak_balance:
-                self.peak_balance = self.current_balance_usdt
-            
-            return True
-        except Exception as e:
-            self.logger.error(f"Error fetching balances: {e}")
-            return False
+def summarize(trades: List[float]) -> Dict:
+    if not trades:
+        return {"trades": 0, "win_rate": 0, "expectancy_pct": 0}
+    wins = [t for t in trades if t > 0]
+    return {"trades": len(trades), "win_rate": len(wins)/len(trades), "expectancy_pct": sum(trades)/len(trades)}
 
-    def _generate_signature(self, params: dict) -> str:
-        query_string = urllib.parse.urlencode(params)
-        return hmac.new(self.api_secret.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
 
-    def _send_signed_request(self, method: str, endpoint: str, params: dict = None, retries: int = 3) -> dict:
-        if params is None:
-            params = {}
-        if "quantity" in params:
-            try:
-                qty_val = float(params["quantity"])
-                if qty_val <= 0:
-                    return {"error": "Invalid quantity", "code": -1003}
-                params["quantity"] = format_quantity(qty_val)
-            except (ValueError, TypeError):
-                return {"error": "Invalid quantity", "code": -1003}
-        if "price" in params:
-            try:
-                price_val = float(params["price"])
-                if price_val <= 0:
-                    return {"error": "Invalid price", "code": -1003}
-                params["price"] = format_price(price_val)
-            except (ValueError, TypeError):
-                return {"error": "Invalid price", "code": -1003}
-        
-        for attempt in range(retries):
-            try:
-                params["timestamp"] = int(time.time() * 1000)
-                params["signature"] = self._generate_signature(params)
-                headers = {"X-MBX-APIKEY": self.api_key}
-                url = f"{self.base_url}{endpoint}"
+def run_robust_ml_validation(symbols_days, param_variants, n_folds: int = 4,
+                              alpha: float = 0.05, min_trades_per_fold: int = 8,
+                              min_pooled_trades: int = 25):
+    """
+    symbols_days: list of (symbol, interval, days_back)
+    param_variants: list of dicts with min_signals/trailing_stop/trailing_pct/max_hold_days
 
-                if method.upper() == "GET":
-                    response = requests.get(url, headers=headers, params=params, timeout=10)
-                elif method.upper() == "POST":
-                    response = requests.post(url, headers=headers, data=params, timeout=10)
-                elif method.upper() == "DELETE":
-                    response = requests.delete(url, headers=headers, params=params, timeout=10)
-                else:
-                    raise ValueError(f"Unsupported HTTP method: {method}")
+    Fixes vs v4.0: realistic min_trades_per_fold (8, not 3), an additional
+    floor on total pooled trades (25) before any conclusion is drawn at
+    all, and a Bonferroni-corrected significance test instead of picking
+    the max of an uncorrected score across ~800 combinations.
+    """
+    n_combos = len(symbols_days) * len(param_variants)
+    bonferroni_alpha = alpha / n_combos
+    normal = statistics.NormalDist()
+    print(f"Testing {n_combos} total (symbol, params) combinations.")
+    print(f"Bonferroni-corrected significance bar: p < {bonferroni_alpha:.6f}\n")
 
-                try:
-                    data = response.json()
-                except ValueError:
-                    if attempt < retries - 1:
-                        time.sleep(2 ** attempt)
-                        continue
-                    return {"error": "Invalid JSON response", "status_code": response.status_code}
+    passing = []
 
-                if isinstance(data, dict) and "code" in data and "msg" in data:
-                    error_code = data.get("code")
-                    if error_code in [-1003, -1001, -1016]:
-                        time.sleep(2 ** attempt)
-                        continue
-                    if error_code == -2010:
-                        self._update_balances()
-                        return {"error": data.get("msg"), "code": error_code, "insufficient": True}
-                    return {"error": data.get("msg"), "code": error_code}
-                return data
-            except Exception as e:
-                if attempt < retries - 1:
-                    time.sleep(2 ** attempt)
+    for symbol, interval, days_back in symbols_days:
+        print(f"\n{'='*70}\n{symbol} {interval}\n{'='*70}")
+        klines = fetch_history(symbol, interval, days_back)
+        total = len(klines["closes"])
+        if total < 100 * (n_folds + 1):
+            print(f"  Not enough data ({total} candles) for {n_folds} blocks - skipping.")
+            continue
+
+        block_size = total // n_folds
+        blocks = []
+        for f in range(n_folds):
+            start = f * block_size
+            end = total if f == n_folds - 1 else (f + 1) * block_size
+            lookback_start = max(0, start - 100)
+            blocks.append({k: klines[k][lookback_start:end] for k in klines})
+
+        print("  Precomputing 15-indicator features per block...")
+        block_features = [precompute_features(b, label=f"block {i+1}/{n_folds}") for i, b in enumerate(blocks)]
+
+        for params in param_variants:
+            pooled_trades = []
+            blocks_positive = 0
+            blocks_tested = 0
+            for block, feats in zip(blocks, block_features):
+                trades = simulate(block, feats, params['min_signals'], params['trailing_stop'],
+                                   params['trailing_pct'], params['max_hold_days'])
+                if len(trades) < min_trades_per_fold:
                     continue
-                return {"error": str(e)}
-        return {"error": "Max retries exceeded"}
+                blocks_tested += 1
+                s = summarize(trades)
+                if s['expectancy_pct'] > 0:
+                    blocks_positive += 1
+                pooled_trades.extend(trades)
 
-    def get_order_book_ticker(self) -> Optional[dict]:
-        now = time.time()
-        if now - self._price_cache_time < self._price_cache_ttl:
-            if 'ticker' in self._price_cache:
-                return self._price_cache['ticker']
-        url = f"{self.base_url}/api/v3/ticker/bookTicker"
-        try:
-            resp = requests.get(url, params={"symbol": self.symbol}, timeout=5)
-            if resp.status_code != 200:
-                return None
-            data = resp.json()
-            if "bidPrice" in data and "askPrice" in data:
-                ticker_data = {"bid": float(data["bidPrice"]), "ask": float(data["askPrice"])}
-                self._price_cache = {'ticker': ticker_data}
-                self._price_cache_time = now
-                return ticker_data
-            return None
-        except Exception:
-            return None
+            label = (f"signals>={params['min_signals']} trail={params['trailing_pct']:.1f}% "
+                     f"hold<={params['max_hold_days']}d trail_stop={params['trailing_stop']}")
 
-    def get_current_price(self) -> Optional[float]:
-        ticker = self.get_order_book_ticker()
-        if not ticker:
-            return None
-        return (ticker["bid"] + ticker["ask"]) / 2
+            if blocks_tested < max(2, n_folds - 1) or len(pooled_trades) < min_pooled_trades:
+                print(f"  [{label}] {len(pooled_trades)} pooled trades, {blocks_tested}/{n_folds} usable "
+                      f"blocks - INSUFFICIENT DATA to evaluate, skipping")
+                continue
 
-    def get_account_balance(self) -> Dict[str, float]:
-        resp = self._send_signed_request("GET", "/api/v3/account")
-        if "balances" in resp and not resp.get("error"):
-            balances = {}
-            for balance in resp["balances"]:
-                free = float(balance["free"])
-                if free > 0:
-                    balances[balance["asset"]] = free
-            return balances
-        return {}
+            mean_ret = sum(pooled_trades) / len(pooled_trades)
+            stdev_ret = statistics.stdev(pooled_trades) if len(pooled_trades) > 1 else 0
+            if stdev_ret == 0:
+                continue
+            se = stdev_ret / (len(pooled_trades) ** 0.5)
+            z = mean_ret / se
+            p_value = 2 * (1 - normal.cdf(abs(z)))
+            consistency_ok = blocks_positive >= max(2, int(0.75 * blocks_tested))
+            significant = mean_ret > 0 and p_value < bonferroni_alpha
 
-    def get_order_status(self, order_id: str) -> dict:
-        if not order_id or order_id == "0" or "ERR_" in str(order_id):
-            return {"status": "FILLED", "orderId": order_id}
-        params = {"symbol": self.symbol, "orderId": order_id}
-        return self._send_signed_request("GET", "/api/v3/order", params)
+            status = "PASS" if (consistency_ok and significant) else "fail"
+            print(f"  [{label}] {len(pooled_trades)} trades, {blocks_positive}/{blocks_tested} blocks "
+                  f"positive, mean/trade={mean_ret*100:.3f}%, p={p_value:.5f} -> {status}")
 
-    def cancel_order(self, order_id: str) -> dict:
-        if not order_id or order_id == "0" or "ERR_" in str(order_id):
-            return {"status": "CANCELED", "orderId": order_id}
-        params = {"symbol": self.symbol, "orderId": order_id}
-        response = self._send_signed_request("DELETE", "/api/v3/order", params)
-        if response.get("code") == -2011:
-            return {"status": "CANCELED", "orderId": order_id}
-        return response
+            if consistency_ok and significant:
+                passing.append({"symbol": symbol, "interval": interval, **params,
+                                 "pooled_trades": len(pooled_trades), "blocks_positive": blocks_positive,
+                                 "blocks_tested": blocks_tested, "mean_return_pct": mean_ret, "p_value": p_value})
 
-    def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
-        ticker = self.get_order_book_ticker()
-        if not ticker:
-            return {"error": "Failed to get market price"}
-        
-        price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
-        
-        if amount <= 0:
-            return {"error": "Invalid amount", "code": -1003}
-        
-        if is_quantity:
-            qty = amount
-        else:
-            qty = amount / price
-        
-        qty = round_to_step(qty, self._min_qty)
-        if qty < self._min_qty:
-            qty = self._min_qty
-        
-        notional = qty * price
-        if notional < self._min_notional:
-            qty = self._min_notional / price
-            qty = round_to_step(qty, self._min_qty)
-        
-        qty_str = format_quantity(qty)
-        self.logger.info(f"📊 Placing {side} MARKET order: {qty_str} @ ~${price:.2f}")
-        
-        params = {"symbol": self.symbol, "side": side.upper(), "type": "MARKET", "quantity": qty_str}
-        response = self._send_signed_request("POST", "/api/v3/order", params)
-        
-        if "error" in response:
-            return response
-        
-        order_id = response.get("orderId")
-        if not order_id:
-            return {"error": "No orderId returned"}
-        
-        self.logger.info(f"⏳ Waiting for {side} order to fill...")
-        max_wait = 30
-        wait_start = time.time()
-        
-        while time.time() - wait_start < max_wait:
-            status = self.get_order_status(order_id)
-            status_val = status.get("status")
-            
-            if status_val == "FILLED":
-                executed_qty = float(status.get("executedQty", 0))
-                cum_quote = float(status.get("cummulativeQuoteQty", 0))
-                if executed_qty > 0:
-                    fill_price = cum_quote / executed_qty if cum_quote > 0 else price
-                    self.logger.info(f"✅ {side} order FILLED: {executed_qty:.8f} @ ${fill_price:.2f}")
-                    return {
-                        "orderId": order_id,
-                        "price": str(fill_price),
-                        "executedQty": str(executed_qty),
-                        "status": "FILLED",
-                        "side": side,
-                    }
-            
-            if status_val == "CANCELED" or status_val == "EXPIRED":
-                self.logger.error(f"❌ {side} order was {status_val}")
-                return {"error": f"Order {status_val}"}
-            
-            time.sleep(2)
-        
-        status = self.get_order_status(order_id)
-        executed_qty = float(status.get("executedQty", 0))
-        cum_quote = float(status.get("cummulativeQuoteQty", 0))
-        if executed_qty > 0:
-            fill_price = cum_quote / executed_qty if cum_quote > 0 else price
-            self.logger.info(f"⚠️ Partial fill: {executed_qty:.8f} @ ${fill_price:.2f}")
-            return {
-                "orderId": order_id,
-                "price": str(fill_price),
-                "executedQty": str(executed_qty),
-                "status": "PARTIALLY_FILLED",
-                "side": side,
-            }
-        
-        return {"error": "Order fill timeout"}
+    print("\n" + "="*70)
+    if not passing:
+        print("RESULT: Nothing survived realistic trade-count minimums, multi-block")
+        print("consistency, AND Bonferroni-corrected significance testing.")
+        print()
+        print("Given the earlier run's 'winner' had only 14 total trades, it's quite")
+        print("plausible that daily-candle crypto data over the available history")
+        print("just doesn't produce enough trade volume for this indicator-count-vote")
+        print("approach to be validated at all, in either direction. That's a real,")
+        print("useful answer: it means you can't currently DISPROVE the strategy is")
+        print("worthless, but you also can't claim it's proven - the honest stance is")
+        print("'unknown, insufficient data,' not 'ready for live trading.'")
+        print("="*70)
+        return []
 
-    def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
-        if quantity <= 0:
-            return {"error": "Invalid quantity", "code": -1003}
-        
-        if side.upper() == "SELL":
-            self._update_balances()
-            if self.current_balance_asset < quantity * 0.99:
-                self.logger.error(f"❌ Insufficient {self.base_asset}: {self.current_balance_asset:.8f} (need {quantity:.8f})")
-                return {"error": f"Insufficient {self.base_asset} balance", "code": -2010}
-        
-        qty = round_to_step(quantity, self._min_qty)
-        if qty < self._min_qty:
-            qty = self._min_qty
-        
-        limit_price = round_to_tick(price, self._tick_size)
-        qty_str = format_quantity(qty)
-        price_str = format_price(limit_price)
-        
-        self.logger.info(f"📊 Placing {side} LIMIT order: {qty_str} @ ${price_str}")
-        
-        params = {
-            "symbol": self.symbol,
-            "side": side.upper(),
-            "type": "LIMIT",
-            "quantity": qty_str,
-            "price": price_str,
-            "timeInForce": "GTC",
-        }
-        
-        response = self._send_signed_request("POST", "/api/v3/order", params)
-        if "error" in response:
-            return response
-        
-        return {
-            "orderId": response.get("orderId"),
-            "price": str(response.get("price", limit_price)),
-            "origQty": str(response.get("origQty", qty)),
-            "status": response.get("status", "NEW"),
-            "side": side,
-        }
+    passing.sort(key=lambda r: r["p_value"])
+    print(f"RESULT: {len(passing)} combination(s) passed:")
+    for r in passing:
+        print(f"  {r['symbol']} {r['interval']} signals>={r['min_signals']} trail={r['trailing_pct']:.1f}% "
+              f"hold<={r['max_hold_days']}d | {r['pooled_trades']} trades | "
+              f"{r['blocks_positive']}/{r['blocks_tested']} blocks | p={r['p_value']:.6f}")
+    print("="*70)
+    return passing
 
-    def check_market(self) -> Dict:
-        """Get market data and analyze entry signal"""
-        klines = TechnicalIndicators.get_klines(
-            self.symbol, self.base_url, 
-            interval=self.config["interval"], 
-            limit=50  # Need at least 50 candles for RSI
-        )
-        if not klines:
-            return {"error": "No data"}
-        
-        # Check if we have enough data
-        if len(klines['closes']) < 15:
-            return {"error": "Insufficient data for indicators"}
-        
-        signal = self.strategy.check_entry_signal(klines)
-        
-        # Get current price
-        current_price = self.get_current_price()
-        if current_price:
-            signal["current_price"] = current_price
-        
-        return signal
-
-    def execute_dca_buy(self) -> Dict:
-        """Execute a DCA buy order"""
-        # Check if we've reached max levels
-        if self.strategy.current_level >= self.config["max_buy_levels"]:
-            return {"success": False, "error": "Max DCA levels reached"}
-        
-        # Check if we have enough USDT
-        self._update_balances()
-        
-        # Calculate buy amount
-        buy_usdt = self.strategy.calculate_buy_amount(self.strategy.current_level)
-        
-        # Check if this would exceed max total
-        if self.strategy.total_cost + buy_usdt > self.config["max_total_usdt"]:
-            buy_usdt = self.config["max_total_usdt"] - self.strategy.total_cost
-            if buy_usdt < self.config["base_order_usdt"]:
-                return {"success": False, "error": "Not enough room for another DCA"}
-        
-        # Check if we have enough balance
-        if self.current_balance_usdt < buy_usdt:
-            return {"success": False, "error": f"Insufficient USDT: ${self.current_balance_usdt:.2f} < ${buy_usdt:.2f}"}
-        
-        # Place buy order
-        self.logger.info(f"💰 DCA Level {self.strategy.current_level + 1}: Buying ${buy_usdt:.2f}")
-        buy_order = self.place_market_order(side="BUY", amount=buy_usdt, is_quantity=False)
-        
-        if "error" in buy_order:
-            return {"success": False, "error": buy_order.get("error", "Buy failed")}
-        
-        buy_price = float(buy_order.get("price", 0))
-        buy_qty = float(buy_order.get("executedQty", 0))
-        
-        if buy_qty <= 0 or buy_price <= 0:
-            return {"success": False, "error": "Invalid buy"}
-        
-        # Update strategy state
-        self.strategy.total_qty += buy_qty
-        self.strategy.total_cost += buy_usdt
-        self.strategy.avg_price = self.strategy.total_cost / self.strategy.total_qty
-        self.strategy.last_buy_price = buy_price
-        self.strategy.current_level += 1
-        self.strategy.position_open = True
-        self.strategy.entry_time = datetime.now()
-        self.strategy.buy_levels.append({"level": self.strategy.current_level, "price": buy_price, "qty": buy_qty})
-        
-        # Update highest price for trailing stop
-        if buy_price > self.strategy.highest_price:
-            self.strategy.highest_price = buy_price
-            self.strategy.trailing_stop = buy_price * (1 - self.config["trailing_stop_pct"] / 100 * 2)
-        
-        self.has_open_position = True
-        self.total_invested += buy_usdt
-        
-        self.logger.info(f"✅ DCA BUY {self.strategy.current_level}: {buy_qty:.8f} @ ${buy_price:.2f}")
-        self.logger.info(f"   Avg Price: ${self.strategy.avg_price:.2f}, Total: {self.strategy.total_qty:.8f}")
-        
-        return {
-            "success": True,
-            "level": self.strategy.current_level,
-            "price": buy_price,
-            "quantity": buy_qty,
-            "avg_price": self.strategy.avg_price,
-            "total_qty": self.strategy.total_qty,
-            "total_cost": self.strategy.total_cost,
-        }
-
-    def exit_position(self, exit_price: float) -> Dict:
-        """Exit the entire position at market price"""
-        if self.strategy.total_qty <= 0:
-            # Try to sell all AVAX balance
-            self._update_balances()
-            if self.current_balance_asset <= 0:
-                return {"success": False, "error": "No position to exit"}
-            sell_qty = self.current_balance_asset
-        else:
-            sell_qty = self.strategy.total_qty
-        
-        self.logger.info(f"📊 Exiting position: {sell_qty:.8f} @ ${exit_price:.2f}")
-        
-        # Sell all
-        sell_order = self.place_market_order(side="SELL", amount=sell_qty, is_quantity=True)
-        
-        if "error" in sell_order:
-            return {"success": False, "error": sell_order.get("error", "Sell failed")}
-        
-        sell_price = float(sell_order.get("price", exit_price))
-        sell_qty_filled = float(sell_order.get("executedQty", sell_qty))
-        
-        if sell_qty_filled <= 0:
-            return {"success": False, "error": "Invalid sell"}
-        
-        # Calculate P&L
-        avg_price = self.strategy.avg_price if self.strategy.avg_price > 0 else sell_price * 0.98
-        realized_pnl = (sell_price - avg_price) * sell_qty_filled
-        fee_estimate = (sell_qty_filled * avg_price * self.maker_fee_rate) + (sell_qty_filled * sell_price * self.taker_fee_rate)
-        net_pnl = realized_pnl - fee_estimate
-        
-        self.logger.info(f"💰 P&L: ${realized_pnl:.4f} (net: ${net_pnl:.4f})")
-        
-        # Update stats
-        self.running_pnl += net_pnl
-        self.current_balance_usdt = max(0, self.starting_balance + self.running_pnl)
-        self.total_trades += 1
-        
-        if net_pnl > 0:
-            self.win_count += 1
-            self.consecutive_wins += 1
-            self.consecutive_losses = 0
-            if self.current_balance_usdt > self.peak_balance:
-                self.peak_balance = self.current_balance_usdt
-        else:
-            self.loss_count += 1
-            self.consecutive_losses += 1
-            self.consecutive_wins = 0
-        
-        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-        
-        # Reset strategy for next cycle
-        self.strategy.reset()
-        self.has_open_position = False
-        self.position_order_id = None
-        
-        self._update_balances()
-        
-        return {
-            "success": True,
-            "entry_price": avg_price,
-            "exit_price": sell_price,
-            "quantity": sell_qty_filled,
-            "profit": realized_pnl,
-            "net_profit": net_pnl,
-            "fees": fee_estimate,
-            "balance_after": self.current_balance_usdt,
-            "win_rate": win_rate,
-        }
-
-    def run_cycle(self, cycle_number: int = 0) -> dict:
-        if self.stopped:
-            return {"success": False, "error": "Bot stopped"}
-        
-        self.logger.info(f"\n{'='*60}")
-        self.logger.info(f"🔄 CYCLE {cycle_number} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        self.logger.info(f"{'='*60}")
-
-        # Update balances
-        self._update_balances()
-        
-        # Get current price
-        current_price = self.get_current_price()
-        if not current_price:
-            return {"success": False, "error": "No price", "skipped": True}
-        
-        self.logger.info(f"💰 USDT: ${self.current_balance_usdt:.2f} | {self.base_asset}: {self.current_balance_asset:.8f}")
-        self.logger.info(f"📊 Price: ${current_price:.4f}")
-        
-        # Check if we have an existing position to manage
-        if self.has_open_position or self.strategy.position_open or self.current_balance_asset > 0.00001:
-            # Make sure strategy is populated
-            if self.strategy.total_qty == 0 and self.current_balance_asset > 0:
-                self.strategy.total_qty = self.current_balance_asset
-                self.strategy.position_open = True
-                self.has_open_position = True
-                self.strategy.entry_time = datetime.now()
-                self.strategy.highest_price = current_price
-                self.strategy.trailing_stop = current_price * 0.97
-                # Estimate average price from current price
-                self.strategy.avg_price = current_price * 0.98  # Approximate
-                self.logger.info(f"📊 Position recovered from balance: {self.strategy.total_qty:.8f}")
-            
-            # Check exit conditions
-            exit_check = self.strategy.check_exit_signal(current_price)
-            
-            self.logger.info(f"📊 Position OPEN - Avg: ${self.strategy.avg_price:.2f}, Qty: {self.strategy.total_qty:.8f}")
-            self.logger.info(f"   Current: ${current_price:.2f} ({exit_check.get('profit_pct', 0)*100:.2f}% P&L)")
-            if self.strategy.trailing_stop > 0:
-                self.logger.info(f"   Trailing Stop: ${self.strategy.trailing_stop:.2f}")
-            
-            if exit_check.get('exit', False):
-                self.logger.info(f"🚪 {exit_check.get('reason', 'Exit triggered')}")
-                result = self.exit_position(current_price)
-                if result.get('success', False):
-                    self.logger.info(f"✅ EXIT COMPLETE! Net: ${result.get('net_profit', 0):.4f}")
-                    return {"success": True, **result}
-                else:
-                    self.logger.error(f"❌ Exit failed: {result.get('error', 'Unknown')}")
-                    return {"success": False, "error": result.get('error', 'Exit failed')}
-            
-            # Check if we should DCA more (price dropped further)
-            if self.strategy.current_level < self.config["max_buy_levels"] and self.strategy.last_buy_price > 0:
-                drop_from_last = (self.strategy.last_buy_price - current_price) / self.strategy.last_buy_price
-                if drop_from_last >= self.config["price_drop_pct"] * 0.8:
-                    self.logger.info(f"📉 Price dropped {drop_from_last*100:.2f}% from last buy")
-                    self.logger.info(f"🔄 Executing DCA Level {self.strategy.current_level + 1}")
-                    dca_result = self.execute_dca_buy()
-                    if dca_result.get('success', False):
-                        self.logger.info(f"✅ DCA BUY COMPLETE! Level {dca_result.get('level', 0)}")
-                        return {"success": True, "dca": True, **dca_result}
-            
-            # Position still open
-            return {"success": False, "error": "Position open", "skipped": True}
-        
-        # No position - check for new entry signal
-        self.logger.info("📊 Checking for entry signal...")
-        signal = self.check_market()
-        
-        if "error" in signal:
-            self.logger.warning(f"⚠️ {signal['error']}")
-            return {"success": False, "error": signal['error'], "skipped": True}
-        
-        # Log current conditions
-        rsi = signal.get('rsi', 50)
-        price_drop = signal.get('price_drop', 0)
-        macd_bullish = signal.get('macd_bullish', False)
-        volume_ratio = signal.get('volume_ratio', 1)
-        entry = signal.get('entry', False)
-        
-        self.logger.info(f"📊 RSI: {rsi:.1f} {'✅' if rsi < self.config['rsi_oversold'] else '❌'}")
-        self.logger.info(f"   Price Drop: {price_drop*100:.2f}% {'✅' if price_drop >= self.config['price_drop_pct'] else '❌'}")
-        self.logger.info(f"   MACD: {'✅ Bullish' if macd_bullish else '❌ Bearish'}")
-        self.logger.info(f"   Volume Ratio: {volume_ratio:.2f}x {'✅' if volume_ratio >= self.config['min_volume_ratio'] else '❌'}")
-        
-        if not entry:
-            self.logger.info("⏭️ No entry signal - waiting for conditions")
-            return {"success": False, "error": "No signal", "skipped": True}
-        
-        # ENTRY SIGNAL!
-        self.logger.info("🚀 ENTRY SIGNAL DETECTED!")
-        self.logger.info(f"   RSI: {rsi:.1f} (oversold)")
-        self.logger.info(f"   Price Drop: {price_drop*100:.2f}%")
-        
-        # Reset strategy for new cycle
-        self.strategy.reset()
-        
-        # Execute first DCA buy
-        dca_result = self.execute_dca_buy()
-        
-        if not dca_result.get('success', False):
-            self.logger.error(f"❌ Entry failed: {dca_result.get('error', 'Unknown')}")
-            return {"success": False, "error": dca_result.get('error', 'Entry failed')}
-        
-        self.logger.info(f"✅ ENTRY COMPLETE! Level {dca_result.get('level', 0)}")
-        self.logger.info(f"   Avg Price: ${self.strategy.avg_price:.2f}, Qty: {self.strategy.total_qty:.8f}")
-        
-        # Place take-profit limit order
-        take_profit_price = self.strategy.avg_price * (1 + self.config["take_profit_pct"])
-        take_profit_price = round_to_tick(take_profit_price, self._tick_size)
-        
-        self.logger.info(f"🎯 Take Profit: ${take_profit_price:.2f} (+{self.config['take_profit_pct']*100:.1f}%)")
-        
-        sell_order = self.place_limit_order(
-            side="SELL",
-            quantity=self.strategy.total_qty,
-            price=take_profit_price
-        )
-        
-        if "error" in sell_order:
-            self.logger.error(f"❌ Take profit order failed: {sell_order}")
-            # Try market sell as fallback
-            self.logger.info("🔄 Trying market sell as fallback...")
-            exit_result = self.exit_position(self.get_current_price() or self.strategy.avg_price)
-            if exit_result.get('success', False):
-                return {"success": True, **exit_result}
-            return {"success": False, "error": "Sell failed"}
-        
-        self.position_order_id = sell_order.get("orderId")
-        self.has_open_position = True
-        
-        self.logger.info(f"✅ SELL LIMIT order placed: {self.position_order_id}")
-        self.logger.info(f"⏳ Position open - waiting for target ${take_profit_price:.2f}")
-        self.logger.info(f"   Max DCA Levels: {self.config['max_buy_levels']}")
-
-        return {"success": True, "position_open": True, "order_id": self.position_order_id}
-
-    def run_forever(self):
-        self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 HYBRID DCA + RSI/MACD BOT v1.1 - RUNNING")
-        self.logger.info(f"   {self.symbol} - Checking every {self.config['interval']}")
-        self.logger.info("   Press Ctrl+C to stop")
-        self.logger.info("="*70)
-
-        self.cycle_stats["start_time"] = datetime.now()
-        cycle_num = 1
-        
-        while not self.stopped:
-            try:
-                result = self.run_cycle(cycle_number=cycle_num)
-                
-                if result.get("success", False):
-                    if result.get("position_open", False) or result.get("dca", False):
-                        self.logger.info(f"📊 Position/DCA updated - monitoring...")
-                    else:
-                        self.logger.info(f"✅ TRADE COMPLETED! Net: ${result.get('net_profit', 0):.4f}")
-                elif result.get("skipped", False):
-                    if self.has_open_position or self.strategy.position_open:
-                        self.logger.info(f"⏳ Position open - monitoring...")
-                    else:
-                        self.logger.info(f"⏭️ Waiting for signal...")
-                else:
-                    self.logger.error(f"⚠️ Failed: {result.get('error', 'Unknown')}")
-                
-                if self.total_trades > 0:
-                    win_rate = (self.win_count / self.total_trades) * 100
-                    self.logger.info(f"📊 STATS: {self.total_trades} trades, {win_rate:.1f}% win, ${self.cycle_stats['net_profit']:.4f}")
-                
-                # Always check every minute
-                wait_time = 60
-                self.logger.info(f"⏳ Next check in {wait_time}s")
-                time.sleep(wait_time)
-                cycle_num += 1
-                
-            except KeyboardInterrupt:
-                self.logger.info("⚠️ Stopped by user")
-                break
-            except Exception as e:
-                self.logger.error(f"❌ Error: {e}")
-                import traceback
-                traceback.print_exc()
-                time.sleep(60)
-                cycle_num += 1
-
-        self.cycle_stats["end_time"] = datetime.now()
-        self.print_final_summary()
-
-    def print_final_summary(self):
-        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-        self.logger.info("\n" + "="*70)
-        self.logger.info("🏆 DCA STRATEGY - FINAL SUMMARY")
-        self.logger.info("="*70)
-        self.logger.info(f"📊 Trades: {self.total_trades} | Wins: {self.win_count} | Losses: {self.loss_count}")
-        self.logger.info(f"📊 Win Rate: {win_rate:.1f}%")
-        self.logger.info(f"💰 Start: ${self.starting_balance:.2f} | Final: ${self.current_balance_usdt:.2f}")
-        self.logger.info(f"💰 Net Profit: ${self.cycle_stats['net_profit']:.4f}")
-        if self.starting_balance > 0:
-            roi = (self.cycle_stats['net_profit'] / self.starting_balance) * 100
-            self.logger.info(f"📊 ROI: {roi:.1f}%")
-        self.logger.info("="*70)
-
-# ========================================================================
-# MAIN
-# ========================================================================
 
 if __name__ == "__main__":
-    API_KEY = "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn"
-    API_SECRET = "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0"
-    
-    if not API_KEY or not API_SECRET:
-        print("❌ API KEYS NOT FOUND!")
-        exit(1)
-    
-    print("="*70)
-    print("🚀 HYBRID DCA + RSI/MACD BOT v1.1 (FIXED)")
-    print("="*70)
-    print(f"\n🎯 {DCA_CONFIG['symbol']} - 1 Minute Check")
-    print(f"   ✅ Price Drop: {DCA_CONFIG['price_drop_pct']*100:.1f}%")
-    print(f"   ✅ RSI Oversold: < {DCA_CONFIG['rsi_oversold']}")
-    print(f"   ✅ Take Profit: {DCA_CONFIG['take_profit_pct']*100:.1f}%")
-    print(f"   ✅ Max DCA Levels: {DCA_CONFIG['max_buy_levels']}")
-    print(f"   ✅ Martingale: {DCA_CONFIG['martingale_multiplier']}x scaling")
-    print(f"\n📊 Current BALANCE: You have AVAX from previous trades")
-    print(f"   Bot will recover and manage existing position")
-    print(f"\n🚀 Starting in 3 seconds...")
-    time.sleep(3)
-    
-    bot = DCABot(
-        api_key=API_KEY,
-        api_secret=API_SECRET,
-        symbol=DCA_CONFIG["symbol"],
-        exchange_region="us",
-        log_level="INFO"
-    )
-    
-    bot.run_forever()
+    # Small, pre-specified set (not an 800-wide sweep). Bonferroni above
+    # is sized to exactly len(symbols_days) * len(param_variants).
+    param_variants = [
+        {"min_signals": 7, "trailing_stop": False, "trailing_pct": 0.5, "max_hold_days": 30},
+        {"min_signals": 8, "trailing_stop": False, "trailing_pct": 0.5, "max_hold_days": 30},
+        {"min_signals": 8, "trailing_stop": True, "trailing_pct": 0.5, "max_hold_days": 45},
+        {"min_signals": 9, "trailing_stop": True, "trailing_pct": 0.7, "max_hold_days": 45},
+    ]
+
+    # 1d candles need a LOT of calendar time to produce enough trades.
+    # 730 days (v4.0's setting) produced only 14 trades for the "winner" -
+    # using more history here to give the significance test a fair shot,
+    # while being upfront that even this may not be enough.
+    symbols_days = [
+        ("BTCUSDT", "1d", 1500),
+        ("ETHUSDT", "1d", 1500),
+        ("SOLUSDT", "1d", 1500),
+        ("LINKUSDT", "1d", 1500),
+        ("AVAXUSDT", "1d", 1500),
+    ]
+
+    run_robust_ml_validation(symbols_days, param_variants, n_folds=4)
