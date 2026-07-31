@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-🚀 INSTANT SCALPING BOT v2.1 - FULLY FIXED
+🚀 INSTANT SCALPING BOT v2.2 - STALE DATA FIX
 ============================================================
 FIXES:
-- Fixed 'self' not defined error in ScalpStrategy
-- Proper RSI calculation
-- Working signal detection
-- Stable execution
+- Detects stale/unchanging price data
+- Only trades when price is actually moving
+- Proper RSI calculation with movement detection
+- Volume spike detection with stale data handling
 ============================================================
 """
 
@@ -28,14 +28,15 @@ from decimal import Decimal
 CONFIG = {
     "symbol": "AVAXUSDT",
     "interval": "1m",
-    "target_pct": 0.005,       # 0.5% target
-    "stop_pct": 0.003,         # 0.3% stop
+    "target_pct": 0.005,
+    "stop_pct": 0.003,
     "min_order_usdt": 10.0,
     "max_order_usdt": 30.0,
     "min_volume_spike": 1.2,
     "rsi_oversold": 35,
     "rsi_overbought": 65,
-    "min_momentum": 0.1,
+    "min_momentum": 0.05,
+    "min_price_move_pct": 0.05,  # Minimum price movement to consider
 }
 
 # ========================================================================
@@ -211,7 +212,6 @@ class BinanceAPI:
         if not order_id:
             return {"error": "No order ID"}
         
-        # Wait for fill
         max_wait = 30
         for _ in range(max_wait):
             status = self._send_request("GET", "/api/v3/order", {"symbol": symbol, "orderId": order_id}, signed=True)
@@ -233,7 +233,7 @@ class BinanceAPI:
         return {"error": "Order fill timeout"}
 
 # ========================================================================
-# FIXED SCALPING INDICATORS
+# SCALPING INDICATORS - WITH STALE DATA DETECTION
 # ========================================================================
 
 class ScalpIndicators:
@@ -243,6 +243,11 @@ class ScalpIndicators:
             return 50.0
         
         deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+        
+        # Check if there's any movement
+        if all(abs(d) < 0.0001 for d in deltas[-period:]):
+            return 50.0  # No movement = neutral
+        
         gains = [d if d > 0 else 0 for d in deltas]
         losses = [-d if d < 0 else 0 for d in deltas]
         
@@ -253,7 +258,7 @@ class ScalpIndicators:
         avg_loss = sum(losses) / period if losses else 0
         
         if avg_loss == 0:
-            return 100.0
+            return 90.0  # Not 100, just very high
         
         rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
@@ -274,6 +279,8 @@ class ScalpIndicators:
     def calculate_momentum(closes: List[float], period: int = 5) -> float:
         if len(closes) < period + 1:
             return 0.0
+        if closes[-period] == 0:
+            return 0.0
         return ((closes[-1] - closes[-period]) / closes[-period]) * 100
     
     @staticmethod
@@ -289,6 +296,8 @@ class ScalpIndicators:
     def calculate_price_change(closes: List[float], period: int = 3) -> float:
         if len(closes) < period + 1:
             return 0.0
+        if closes[-period] == 0:
+            return 0.0
         return ((closes[-1] - closes[-period]) / closes[-period]) * 100
     
     @staticmethod
@@ -303,9 +312,25 @@ class ScalpIndicators:
         lower = middle - (std * std_dev)
         position = (closes[-1] - lower) / (upper - lower) if upper != lower else 0.5
         return {"upper": upper, "middle": middle, "lower": lower, "position": position}
+    
+    @staticmethod
+    def is_price_stale(closes: List[float], threshold_pct: float = 0.01) -> bool:
+        """Check if price has been stuck in a tight range."""
+        if len(closes) < 10:
+            return True
+        
+        recent = closes[-10:]
+        high = max(recent)
+        low = min(recent)
+        
+        if low == 0:
+            return True
+        
+        range_pct = (high - low) / low * 100
+        return range_pct < threshold_pct
 
 # ========================================================================
-# FIXED SCALPING STRATEGY - NO 'self' ERROR
+# SCALPING STRATEGY - WITH STALE DATA CHECK
 # ========================================================================
 
 class ScalpStrategy:
@@ -330,7 +355,28 @@ class ScalpStrategy:
                 "target": current,
                 "stop": current,
                 "target_pct": 0,
-                "confidence": 0
+                "confidence": 0,
+                "stale_data": True
+            }
+        
+        # Check for stale data
+        stale_data = ScalpIndicators.is_price_stale(closes, CONFIG["min_price_move_pct"])
+        
+        if stale_data:
+            return {
+                "signal": "NEUTRAL",
+                "reason": f"STALE DATA - Price stuck in tight range (need > {CONFIG['min_price_move_pct']}% move)",
+                "rsi": 50,
+                "momentum": 0,
+                "volume_ratio": 1,
+                "price_change": 0,
+                "bb_position": 0.5,
+                "above_ema9": False,
+                "target": current,
+                "stop": current,
+                "target_pct": 0,
+                "confidence": 0,
+                "stale_data": True
             }
         
         # Calculate indicators
@@ -374,17 +420,12 @@ class ScalpStrategy:
         
         bullish_confidence = min(1.0, bullish_conditions / total_bullish)
         
-        # BEARISH CONDITIONS
-        bearish_conditions = 0
-        if overbought:
-            bearish_conditions += 1
-        if not above_ema9:
-            bearish_conditions += 1
-        if momentum < -CONFIG["min_momentum"]:
-            bearish_conditions += 1
-        
-        # FINAL SIGNAL
-        buy_signal = (bullish_confidence >= 0.5 and volume_spike and positive_momentum and not overbought)
+        # FINAL SIGNAL - ONLY if price is moving
+        buy_signal = (bullish_confidence >= 0.5 and 
+                     volume_spike and 
+                     positive_momentum and 
+                     not overbought and
+                     not stale_data)
         
         # Calculate target and stop
         atr = (max(highs[-14:]) - min(lows[-14:])) / 14 if len(highs) >= 14 else 0.01
@@ -394,14 +435,16 @@ class ScalpStrategy:
         stop = current * (1 - CONFIG["stop_pct"])
         
         # Generate reason string
-        if bullish_conditions >= 4:
-            reason = f"STRONG SIGNAL (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume_ratio:.2f}x)"
+        if stale_data:
+            reason = f"⏸️ STALE - No price movement"
+        elif bullish_conditions >= 4:
+            reason = f"✅ STRONG (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume_ratio:.2f}x)"
         elif bullish_conditions >= 3:
-            reason = f"MODERATE SIGNAL (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume_ratio:.2f}x)"
+            reason = f"⚠️ MODERATE (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume_ratio:.2f}x)"
         elif bullish_conditions >= 2:
-            reason = f"WEAK SIGNAL (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume_ratio:.2f}x)"
+            reason = f"⚠️ WEAK (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume_ratio:.2f}x)"
         else:
-            reason = f"NO SIGNAL (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume_ratio:.2f}x)"
+            reason = f"❌ NO SIGNAL (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume_ratio:.2f}x)"
         
         return {
             "signal": "BUY" if buy_signal else "NEUTRAL",
@@ -415,7 +458,8 @@ class ScalpStrategy:
             "target": target,
             "stop": stop,
             "target_pct": target_pct * 100,
-            "reason": reason
+            "reason": reason,
+            "stale_data": stale_data
         }
 
 # ========================================================================
@@ -449,11 +493,12 @@ class ScalpingBot:
         self.logger = logging.getLogger(__name__)
         
         self.logger.info("="*60)
-        self.logger.info("🚀 INSTANT SCALPING BOT v2.1 - FULLY FIXED")
+        self.logger.info("🚀 INSTANT SCALPING BOT v2.2 - STALE DATA FIX")
         self.logger.info("="*60)
         self.logger.info(f"Symbol: {self.symbol}")
         self.logger.info(f"Target: {CONFIG['target_pct']*100:.1f}%")
         self.logger.info(f"Stop: {CONFIG['stop_pct']*100:.1f}%")
+        self.logger.info(f"Min Move: {CONFIG['min_price_move_pct']}%")
         self.logger.info("="*60)
     
     def get_balance_usdt(self) -> float:
@@ -470,7 +515,11 @@ class ScalpingBot:
         signal = ScalpStrategy.analyze(data)
         
         # Log detailed info
-        self.logger.info(f"📊 RSI: {signal['rsi']:.1f} | Volume: {signal['volume_ratio']:.2f}x | Momentum: {signal['momentum']:.2f}% | BB: {signal['bb_position']:.2f}")
+        if signal.get('stale_data', False):
+            self.logger.info(f"⏸️ {signal['reason']}")
+            return {"success": False, "error": "Stale data", "skipped": True}
+        
+        self.logger.info(f"📊 RSI: {signal['rsi']:.1f} | Vol: {signal['volume_ratio']:.2f}x | Mom: {signal['momentum']:.2f}% | BB: {signal['bb_position']:.2f}")
         self.logger.info(f"   {signal['reason']}")
         
         if signal['signal'] != "BUY":
@@ -505,7 +554,7 @@ class ScalpingBot:
         self.logger.info(f"⏳ Monitoring - Target: ${self.target_price:.4f} | Stop: ${self.stop_price:.4f}")
         
         # Monitor position
-        max_hold_seconds = 120  # 2 minutes
+        max_hold_seconds = 120
         
         while time.time() - self.entry_time < max_hold_seconds:
             current_price = self.api.get_price(self.symbol)
@@ -513,13 +562,11 @@ class ScalpingBot:
                 time.sleep(1)
                 continue
             
-            # Show progress every 5 seconds
             elapsed = int(time.time() - self.entry_time)
             if elapsed % 5 == 0:
                 pnl_pct = (current_price / self.entry_price - 1) * 100
                 self.logger.info(f"   [{elapsed}s] Price: ${current_price:.4f} ({pnl_pct:+.2f}%) | Target: ${self.target_price:.4f} | Stop: ${self.stop_price:.4f}")
             
-            # Check target hit
             if current_price >= self.target_price:
                 self.logger.info(f"🎯 TARGET HIT! ${current_price:.4f}")
                 sell_result = self.api.market_order(self.symbol, "SELL", self.entry_qty, is_quantity=True)
@@ -539,7 +586,6 @@ class ScalpingBot:
                 self.logger.info(f"✅ PROFIT: ${pnl:.4f} ({pnl_pct:.2f}%)")
                 return {"success": True, "profit": pnl, "profit_pct": pnl_pct, "exit_type": "TARGET"}
             
-            # Check stop hit
             if current_price <= self.stop_price:
                 self.logger.info(f"🛑 STOP HIT! ${current_price:.4f}")
                 sell_result = self.api.market_order(self.symbol, "SELL", self.entry_qty, is_quantity=True)
@@ -591,7 +637,6 @@ class ScalpingBot:
         
         while True:
             try:
-                # Run a scalp
                 result = self.run_scalp()
                 
                 if result.get("success", False):
@@ -602,12 +647,10 @@ class ScalpingBot:
                 else:
                     self.logger.warning(f"⚠️ {result.get('error', 'Unknown error')}")
                 
-                # Stats
                 if self.total_trades > 0:
                     win_rate = (self.wins / self.total_trades) * 100
                     self.logger.info(f"📊 STATS: {self.total_trades} trades | {win_rate:.1f}% win | ${self.total_pnl:.4f}")
                 
-                # Wait
                 wait_time = 10
                 self.logger.info(f"⏳ Next check in {wait_time}s...")
                 time.sleep(wait_time)
@@ -648,12 +691,12 @@ if __name__ == "__main__":
         exit(1)
     
     print("="*60)
-    print("🚀 INSTANT SCALPING BOT v2.1 - FULLY FIXED")
+    print("🚀 INSTANT SCALPING BOT v2.2 - STALE DATA FIX")
     print("="*60)
     print("\n⚠️ WARNING:")
-    print("   - Makes 0.5% profits in 1-5 minutes")
-    print("   - Win rate target: 55-65%")
-    print("   - Uses 1-minute candles")
+    print("   - Only trades when price is actually moving")
+    print("   - Detects stale/unchanging data")
+    print("   - 0.5% targets in 1-5 minutes")
     print("   - Checks every 10 seconds")
     print("\nStarting in 3 seconds...")
     time.sleep(3)
