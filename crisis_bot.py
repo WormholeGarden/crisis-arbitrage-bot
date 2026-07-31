@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-🧠 QUANTUM NEURAL EVOLUTION BOT v10.1 - THE REAL MASTERPIECE
+🧠 QUANTUM NEURAL EVOLUTION BOT v10.2 - REAL MONEY MASTERPIECE
 ============================================================
-FIXED: Bot now WAITS for target or stop to hit
-- Real fees: 0.1% each way (0.2% total)
-- Must overcome fees to win
-- Waits up to 5 minutes for price to move
-- Only exits on target hit or stop loss
+STRATEGY: REAL MONEY + DYNAMIC POSITION SIZING
+- Uses REAL money from Binance account
+- Starts with MINIMUM size ($1.00)
+- Scales size based on win rate confidence
+- Higher win rate = larger positions
+- Lower win rate = smaller positions
 - 10/10 ULTIMATE MASTERPIECE
 ============================================================
 """
@@ -217,24 +218,17 @@ class TradingStrategy:
     def __init__(self, genes=None):
         if genes is None:
             self.genes = {
-                # Entry conditions
                 "rsi_threshold": random.uniform(25, 75),
                 "bb_position": random.uniform(0.15, 0.85),
                 "macd_histogram": random.uniform(-0.05, 0.05),
                 "volume_ratio": random.uniform(0.6, 1.8),
                 "price_position": random.uniform(0.15, 0.85),
                 "trend_preference": random.choice(["uptrend", "downtrend", "neutral"]),
-                
-                # Exit conditions - MUST overcome 0.2% fees
-                "take_profit": random.uniform(0.003, 0.01),  # 0.3% to 1.0%
-                "stop_loss": random.uniform(0.002, 0.005),   # 0.2% to 0.5%
+                "take_profit": random.uniform(0.003, 0.01),
+                "stop_loss": random.uniform(0.002, 0.005),
                 "trailing_stop": random.choice([True, False]),
-                
-                # Position sizing
                 "risk_per_trade": random.uniform(0.01, 0.03),
                 "position_scaling": random.choice(["fixed", "kelly"]),
-                
-                # Timing
                 "trade_duration": random.choice(["scalp", "swing"]),
                 "max_bars": random.randint(3, 10),
             }
@@ -426,7 +420,7 @@ class StrategyPopulation:
         return child_genes
 
 # ========================================================================
-# 🧠 QUANTUM NEURAL EVOLUTION BOT v10.1 - THE REAL MASTERPIECE
+# 🧠 QUANTUM NEURAL EVOLUTION BOT v10.2 - REAL MONEY + DYNAMIC SIZING
 # ========================================================================
 
 class QuantumNeuralEvolutionBot:
@@ -460,16 +454,20 @@ class QuantumNeuralEvolutionBot:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 Trading parameters - REAL FEES
-        self.trade_size_usdt = 1.00
-        self.fee_rate = 0.001  # 0.1% per trade, 0.2% round trip
+        # 💰 REAL MONEY - Start with minimum
+        self.min_position_usdt = 1.00  # Minimum $1.00
+        self.max_position_usdt = 10.00  # Maximum $10.00
+        self.position_size_usdt = 1.00  # Start at minimum
+        
+        # Fee rate (real)
+        self.fee_rate = 0.001  # 0.1% per trade
         
         # 🧬 Strategy Population
         self.strategy_population = StrategyPopulation(population_size=20)
         
-        # Exploration parameters
+        # Parameters
         self.cycles_before_evolution = 3
-        self.max_hold_time = 180  # 3 minutes max hold
+        self.max_hold_time = 180  # 3 minutes
         
         # Price cache
         self._price_cache = {}
@@ -481,14 +479,15 @@ class QuantumNeuralEvolutionBot:
         self._tick_size = 0.01
         self._min_notional = 1.00
 
-        # Track running P&L
-        self.simulated_balance = 100.00
-        self.current_balance = 100.00
-        self.peak_balance = 100.00
-        self.starting_balance = 100.00
+        # Track performance
+        self.real_balance = 0.0
+        self.current_balance = 0.0
+        self.peak_balance = 0.0
+        self.starting_balance = 0.0
         self.consecutive_losses = 0
         self.consecutive_wins = 0
         self.stopped = False
+        self.use_simulated = False  # USE REAL MONEY!
         
         # Performance metrics
         self.trade_history = []
@@ -496,6 +495,10 @@ class QuantumNeuralEvolutionBot:
         self.loss_count = 0
         self.total_trades = 0
         self.longest_loss_streak = 0
+        
+        # Dynamic sizing
+        self.win_rate_window = deque(maxlen=20)
+        self.position_size_multiplier = 1.0
         
         # Strategy tracking
         self.best_strategy_found = None
@@ -511,18 +514,107 @@ class QuantumNeuralEvolutionBot:
         }
 
         self.logger.info("="*70)
-        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v10.1")
-        self.logger.info("   THE REAL ULTIMATE MASTERPIECE")
+        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v10.2")
+        self.logger.info("   REAL MONEY + DYNAMIC SIZING")
         self.logger.info("="*70)
-        self.logger.info(f"   Strategy: WAITS for target or stop")
-        self.logger.info(f"   Target Profit: 0.3-1.0%")
-        self.logger.info(f"   Stop Loss: 0.2-0.5%")
-        self.logger.info(f"   Fee Rate: 0.1% per trade (REAL)")
-        self.logger.info(f"   Max Hold Time: 3 minutes")
+        self.logger.info(f"   Strategy: REAL MONEY trading")
+        self.logger.info(f"   Starting Size: ${self.position_size_usdt:.2f}")
+        self.logger.info(f"   Max Size: ${self.max_position_usdt:.2f}")
+        self.logger.info(f"   Fee Rate: {self.fee_rate*100:.1f}% per trade")
+        self.logger.info(f"   Size scales with win rate confidence")
         self.logger.info("="*70)
 
         self._check_connectivity()
         self._get_exchange_info()
+        self._initialize_balance()
+
+    def _initialize_balance(self):
+        """Get REAL balance from Binance"""
+        try:
+            balances = self.get_account_balance()
+            if "USDT" in balances and balances["USDT"] > 0:
+                self.real_balance = balances["USDT"]
+                self.current_balance = self.real_balance
+                self.peak_balance = self.real_balance
+                self.starting_balance = self.real_balance
+                self.use_simulated = False
+                self.logger.info(f"💰 REAL Balance: ${self.real_balance:.2f}")
+                
+                # Adjust max position based on balance
+                if self.real_balance < 50:
+                    self.max_position_usdt = min(5.00, self.real_balance * 0.2)
+                    self.logger.info(f"📊 Max position adjusted to ${self.max_position_usdt:.2f}")
+                
+                return True
+            else:
+                self.logger.error("❌ No USDT balance found!")
+                self.logger.info("💡 Please deposit USDT to your Binance account")
+                self.stopped = True
+                return False
+        except Exception as e:
+            self.logger.error(f"Error fetching balance: {e}")
+            self.stopped = True
+            return False
+
+    def _update_balance(self):
+        """Update REAL balance"""
+        try:
+            balances = self.get_account_balance()
+            if "USDT" in balances and balances["USDT"] > 0:
+                self.real_balance = balances["USDT"]
+                self.current_balance = self.real_balance
+                if self.real_balance > self.peak_balance:
+                    self.peak_balance = self.real_balance
+                self.logger.info(f"💰 REAL Balance: ${self.real_balance:.2f}")
+            else:
+                self.logger.warning("⚠️ Could not fetch balance")
+        except Exception as e:
+            self.logger.error(f"Error updating balance: {e}")
+
+    def _update_position_size(self):
+        """Dynamically update position size based on win rate confidence"""
+        # Calculate recent win rate
+        if len(self.win_rate_window) > 0:
+            recent_wins = sum(1 for x in self.win_rate_window if x > 0)
+            recent_win_rate = recent_wins / len(self.win_rate_window)
+        else:
+            recent_win_rate = 0.5
+        
+        # Calculate overall win rate
+        overall_win_rate = self.win_count / max(1, self.total_trades)
+        
+        # Weighted average (70% recent, 30% overall)
+        confidence = (recent_win_rate * 0.7) + (overall_win_rate * 0.3)
+        
+        # Scale position size based on confidence
+        if confidence < 0.3:
+            multiplier = 0.5  # Reduce size
+        elif confidence < 0.4:
+            multiplier = 0.75
+        elif confidence < 0.5:
+            multiplier = 1.0  # Neutral
+        elif confidence < 0.6:
+            multiplier = 1.25
+        elif confidence < 0.7:
+            multiplier = 1.5
+        else:
+            multiplier = 2.0  # Double size for high confidence
+        
+        # Calculate new position size
+        base_size = 1.00
+        new_size = base_size * multiplier
+        
+        # Clamp to min/max
+        new_size = max(self.min_position_usdt, min(self.max_position_usdt, new_size))
+        
+        # Only update if changed significantly
+        if abs(new_size - self.position_size_usdt) > 0.10:
+            self.position_size_usdt = new_size
+            self.logger.info(f"📊 Position Size Updated:")
+            self.logger.info(f"   Confidence: {confidence:.2f} (Recent WR: {recent_win_rate:.2f}, Overall WR: {overall_win_rate:.2f})")
+            self.logger.info(f"   New Size: ${self.position_size_usdt:.2f}")
+        
+        return confidence
 
     def _check_connectivity(self):
         self.logger.info("🔍 Running startup connectivity check...")
@@ -606,6 +698,13 @@ class QuantumNeuralEvolutionBot:
                         time.sleep(wait_time)
                         continue
                     
+                    if error_code == -2010 and "insufficient balance" in data.get("msg", "").lower():
+                        self.logger.warning(f"Insufficient balance, reducing position size...")
+                        self.position_size_usdt = max(self.min_position_usdt, self.position_size_usdt * 0.5)
+                        if attempt < retries - 1:
+                            time.sleep(1.0 * (attempt + 1))
+                            continue
+                    
                     if error_code == -1022:
                         if attempt < retries - 1:
                             continue
@@ -675,67 +774,164 @@ class QuantumNeuralEvolutionBot:
             return balances
         return {"USDT": 0.0}
 
+    def get_order_fill_price(self, order_id: str) -> Optional[float]:
+        status = self._send_signed_request("GET", "/api/v3/order", {
+            "symbol": self.symbol,
+            "orderId": order_id,
+        })
+        if status.get("status") == "FILLED":
+            cum_quote = float(status.get("cummulativeQuoteQty", 0))
+            executed_qty = float(status.get("executedQty", 0))
+            if executed_qty > 0 and cum_quote > 0:
+                return cum_quote / executed_qty
+        return None
+
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
-        current_price = self.get_current_price() or 64000.0
-        price = current_price
+        """Place REAL market order"""
+        ticker = self.get_order_book_ticker()
+        if not ticker:
+            return {"error": "Failed to get market price"}
+
+        price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
+        balances = self.get_account_balance()
         
         if side.upper() == "BUY":
+            usdt_balance = balances.get("USDT", 0)
+            if amount > usdt_balance * 0.99:
+                amount = usdt_balance * 0.95
+                self.logger.warning(f"⚠️ Adjusted amount to ${amount:.2f}")
+            
+            if amount < self._min_notional:
+                amount = self._min_notional
+            
             qty = round_to_step(amount / price, self._min_qty)
-            if qty * price < self._min_notional:
-                qty = round_to_step(self._min_notional / price, self._min_qty)
             
-            return {
-                "orderId": f"SIM_{int(time.time())}",
-                "price": str(price),
-                "executedQty": format_quantity(qty),
-                "origQty": format_quantity(qty),
-                "status": "FILLED",
-                "side": side,
-            }
+        else:  # SELL
+            if is_quantity:
+                qty = round_to_step(amount, self._min_qty)
+            else:
+                qty = round_to_step(amount / price, self._min_qty)
+            
+            btc_balance = balances.get("BTC", 0)
+            if btc_balance < qty * 0.999:
+                self.logger.warning(f"⚠️ Insufficient BTC: have {btc_balance:.8f}, need {qty:.8f}")
+                qty = round_to_step(btc_balance * 0.95, self._min_qty)
+                if qty < self._min_qty:
+                    return {"error": f"Insufficient BTC balance"}
+
+        if qty < self._min_qty:
+            qty = self._min_qty
+
+        notional = qty * price
+        if notional < self._min_notional:
+            qty = round_to_step(self._min_notional / price, self._min_qty)
+
+        qty_str = format_quantity(qty)
+        trade_value = qty * price
+        
+        self.logger.info(f"💰 REAL {side} order: {qty_str} (${trade_value:.2f})")
+
+        order_params = {
+            "symbol": self.symbol,
+            "side": side.upper(),
+            "type": "MARKET",
+            "quantity": qty_str,
+        }
+        
+        response = self._send_signed_request("POST", "/api/v3/order", order_params)
+        
+        if "error" in response:
+            return response
+        
+        order_id = response.get("orderId")
+        if order_id:
+            time.sleep(0.5)
+            fill_price = self.get_order_fill_price(order_id)
+            if fill_price:
+                price = str(fill_price)
+            else:
+                price = str(ticker["ask"] if side.upper() == "BUY" else ticker["bid"])
         else:
-            qty = round_to_step(amount, self._min_qty) if is_quantity else round_to_step(amount / price, self._min_qty)
-            if qty * price < self._min_notional:
-                qty = round_to_step(self._min_notional / price, self._min_qty)
-            
-            return {
-                "orderId": f"SIM_{int(time.time())}",
-                "price": str(price),
-                "executedQty": format_quantity(qty),
-                "origQty": format_quantity(qty),
-                "status": "FILLED",
-                "side": side,
-            }
+            price = "0"
+        
+        return {
+            "orderId": order_id,
+            "price": price,
+            "executedQty": response.get("executedQty", str(qty)),
+            "origQty": response.get("origQty", str(qty)),
+            "status": response.get("status", "FILLED"),
+            "side": side,
+        }
 
     def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
+        """Place REAL limit order"""
+        if quantity * price < self._min_notional:
+            quantity = round_to_step(self._min_notional / price, self._min_qty)
+
+        if side.upper() == "SELL":
+            balances = self.get_account_balance()
+            btc_balance = balances.get("BTC", 0)
+            if btc_balance < quantity * 0.999:
+                quantity = round_to_step(btc_balance * 0.95, self._min_qty)
+                if quantity < self._min_qty:
+                    return {"error": "Insufficient BTC balance"}
+
+        qty = round_to_step(quantity, self._min_qty)
+        if qty < self._min_qty:
+            qty = self._min_qty
+
+        limit_price = round_to_tick(price, self._tick_size)
+        qty_str = format_quantity(qty)
+        price_str = format_price(limit_price)
+
+        self.logger.info(f"💰 REAL LIMIT {side}: {qty_str} @ ${price_str}")
+
+        order_params = {
+            "symbol": self.symbol,
+            "side": side.upper(),
+            "type": "LIMIT",
+            "quantity": qty_str,
+            "price": price_str,
+            "timeInForce": "GTC",
+        }
+        
+        response = self._send_signed_request("POST", "/api/v3/order", order_params)
+        
+        if "error" in response:
+            return response
+        
         return {
-            "orderId": f"SIM_LIMIT_{int(time.time())}",
-            "price": str(price),
-            "origQty": format_quantity(quantity),
-            "executedQty": "0",
-            "status": "NEW",
+            "orderId": response.get("orderId", f"ERR_{int(time.time())}"),
+            "price": str(response.get("price", limit_price)),
+            "origQty": str(response.get("origQty", qty)),
+            "executedQty": str(response.get("executedQty", "0")),
+            "status": response.get("status", "NEW"),
             "side": side,
         }
 
     def cancel_order(self, order_id: str) -> dict:
-        return {"success": True}
+        params = {"symbol": self.symbol, "orderId": order_id}
+        return self._send_signed_request("DELETE", "/api/v3/order", params)
 
     def get_order_status(self, order_id: str) -> dict:
-        return {"status": "NEW", "price": str(self.get_current_price() or 64000.0)}
+        params = {"symbol": self.symbol, "orderId": order_id}
+        return self._send_signed_request("GET", "/api/v3/order", params)
 
     def execute_trade(self, direction: str, strategy: TradingStrategy, 
                       current_price: float, indicators: Dict) -> dict:
-        """Execute a trade - WAITS for target or stop to hit"""
+        """Execute REAL trade with dynamic sizing"""
         
         stop_loss_pct = strategy.genes["stop_loss"]
         take_profit_pct = strategy.genes["take_profit"]
         
-        self.logger.info(f"\n🧬 TRADE: {direction}")
+        self.logger.info(f"\n💰 REAL TRADE: {direction}")
+        self.logger.info(f"   Position Size: ${self.position_size_usdt:.2f}")
         self.logger.info(f"   Fitness: {strategy.fitness:.4f}")
         self.logger.info(f"   Win Rate: {(strategy.wins / max(1, strategy.trades)) * 100:.1f}%")
         
         if direction == "BUY":
             self.entry_price = current_price
-            self.entry_qty = self.trade_size_usdt / current_price
+            self.entry_qty = self.position_size_usdt / current_price
             
             target_price = current_price * (1 + take_profit_pct)
             stop_price = current_price * (1 - stop_loss_pct)
@@ -744,41 +940,34 @@ class QuantumNeuralEvolutionBot:
             self.logger.info(f"   Target: ${target_price:.2f} (+{take_profit_pct*100:.2f}%)")
             self.logger.info(f"   Stop: ${stop_price:.2f} (-{stop_loss_pct*100:.2f}%)")
             
-            # ⭐ CRITICAL: WAIT for target or stop to hit
-            start_time = time.time()
-            exit_price = None
-            hit_target = False
-            hit_stop = False
+            # Place BUY market order
+            buy_order = self.place_market_order("BUY", self.position_size_usdt, is_quantity=False)
+            if "error" in buy_order:
+                return {"success": False, "error": buy_order.get("error")}
             
-            while time.time() - start_time < self.max_hold_time:
-                current_price_check = self.get_current_price()
-                if current_price_check is None:
-                    time.sleep(1)
-                    continue
-                
-                if current_price_check >= target_price:
-                    exit_price = target_price
-                    hit_target = True
-                    self.logger.info(f"✅ TARGET HIT: ${exit_price:.2f}")
-                    break
-                elif current_price_check <= stop_price:
-                    exit_price = stop_price
-                    hit_stop = True
-                    self.logger.info(f"🛑 STOP HIT: ${exit_price:.2f}")
-                    break
-                
-                time.sleep(1)
+            self.entry_price = float(buy_order.get("price", current_price))
+            self.entry_qty = float(buy_order.get("executedQty", 0))
             
-            # If timeout, exit at current price
+            self.logger.info(f"✅ BUY FILLED: {self.entry_qty:.8f} @ ${self.entry_price:.2f}")
+            
+            # Wait for settlement
+            time.sleep(2)
+            
+            # Place SELL limit order at target
+            tp_order = self.place_limit_order("SELL", self.entry_qty, target_price)
+            if "error" in tp_order:
+                return {"success": False, "error": tp_order.get("error")}
+            
+            # Monitor trade
+            exit_price = self.monitor_trade(tp_order.get("orderId"), stop_price, "long")
             if exit_price is None:
-                exit_price = self.get_current_price() or current_price
-                self.logger.info(f"⏰ TIMEOUT: Exiting at ${exit_price:.2f}")
+                return {"success": False, "error": "Trade monitoring failed"}
             
             realized_pnl = (exit_price - self.entry_price) * self.entry_qty
             
         elif direction == "SELL":
             self.entry_price = current_price
-            self.entry_qty = self.trade_size_usdt / current_price
+            self.entry_qty = self.position_size_usdt / current_price
             
             target_price = current_price * (1 - take_profit_pct)
             stop_price = current_price * (1 + stop_loss_pct)
@@ -787,54 +976,63 @@ class QuantumNeuralEvolutionBot:
             self.logger.info(f"   Target: ${target_price:.2f} (+{take_profit_pct*100:.2f}%)")
             self.logger.info(f"   Stop: ${stop_price:.2f} (-{stop_loss_pct*100:.2f}%)")
             
-            start_time = time.time()
-            exit_price = None
-            hit_target = False
-            hit_stop = False
+            # Check BTC balance
+            balances = self.get_account_balance()
+            btc_balance = balances.get("BTC", 0)
+            btc_needed = self.position_size_usdt / current_price
             
-            while time.time() - start_time < self.max_hold_time:
-                current_price_check = self.get_current_price()
-                if current_price_check is None:
-                    time.sleep(1)
-                    continue
-                
-                if current_price_check <= target_price:
-                    exit_price = target_price
-                    hit_target = True
-                    self.logger.info(f"✅ TARGET HIT: ${exit_price:.2f}")
-                    break
-                elif current_price_check >= stop_price:
-                    exit_price = stop_price
-                    hit_stop = True
-                    self.logger.info(f"🛑 STOP HIT: ${exit_price:.2f}")
-                    break
-                
-                time.sleep(1)
+            if btc_balance < btc_needed * 0.9:
+                self.logger.warning(f"⚠️ Insufficient BTC: have {btc_balance:.8f}, need {btc_needed:.8f}")
+                return {"success": False, "error": "Insufficient BTC for SELL"}
             
+            sell_qty = round_to_step(btc_needed * 0.9, self._min_qty)
+            
+            # Place SELL market order
+            sell_order = self.place_market_order("SELL", sell_qty, is_quantity=True)
+            if "error" in sell_order:
+                return {"success": False, "error": sell_order.get("error")}
+            
+            self.entry_price = float(sell_order.get("price", current_price))
+            self.entry_qty = float(sell_order.get("executedQty", 0))
+            
+            self.logger.info(f"✅ SELL FILLED: {self.entry_qty:.8f} @ ${self.entry_price:.2f}")
+            
+            # Wait for settlement
+            time.sleep(2)
+            
+            # Place BUY limit order at target
+            cover_order = self.place_limit_order("BUY", self.entry_qty, target_price)
+            if "error" in cover_order:
+                return {"success": False, "error": cover_order.get("error")}
+            
+            # Monitor trade
+            exit_price = self.monitor_trade(cover_order.get("orderId"), stop_price, "short")
             if exit_price is None:
-                exit_price = self.get_current_price() or current_price
-                self.logger.info(f"⏰ TIMEOUT: Exiting at ${exit_price:.2f}")
+                return {"success": False, "error": "Trade monitoring failed"}
             
             realized_pnl = (self.entry_price - exit_price) * self.entry_qty
         
         else:
             return {"success": False, "error": f"Invalid direction: {direction}"}
         
-        # ⭐ REAL FEES: 0.1% each way
+        # Calculate fees
         fee_estimate = (self.entry_price * self.entry_qty * self.fee_rate) + (exit_price * self.entry_qty * self.fee_rate)
         net_pnl = realized_pnl - fee_estimate
         
         # Update balance
-        self.simulated_balance += net_pnl
-        self.current_balance = self.simulated_balance
+        self.real_balance += net_pnl
+        self.current_balance = self.real_balance
         self.total_trades += 1
+        
+        # Track win/loss
+        self.win_rate_window.append(net_pnl)
         
         if net_pnl > 0:
             self.win_count += 1
             self.consecutive_wins += 1
             self.consecutive_losses = 0
-            if self.current_balance > self.peak_balance:
-                self.peak_balance = self.current_balance
+            if self.real_balance > self.peak_balance:
+                self.peak_balance = self.real_balance
         else:
             self.loss_count += 1
             self.consecutive_losses += 1
@@ -845,14 +1043,18 @@ class QuantumNeuralEvolutionBot:
         # Update strategy fitness
         strategy.update_fitness(net_pnl)
         
-        self.logger.info(f"\n📊 RESULTS:")
+        # Update position size dynamically
+        confidence = self._update_position_size()
+        
+        self.logger.info(f"\n📊 REAL RESULTS:")
         self.logger.info(f"   Entry: ${self.entry_price:.2f} → Exit: ${exit_price:.2f}")
-        self.logger.info(f"   Target Hit: {hit_target}, Stop Hit: {hit_stop}")
         self.logger.info(f"   Realized P&L: ${realized_pnl:.4f}")
         self.logger.info(f"   Fees: ${fee_estimate:.4f}")
         self.logger.info(f"   Net P&L: ${net_pnl:.4f}")
-        self.logger.info(f"   Balance: ${self.simulated_balance:.2f}")
+        self.logger.info(f"   Balance: ${self.real_balance:.2f}")
         self.logger.info(f"   Streak: {self.consecutive_wins}W / {self.consecutive_losses}L")
+        self.logger.info(f"   Confidence: {confidence:.2f}")
+        self.logger.info(f"   Position Size: ${self.position_size_usdt:.2f}")
         
         result = {
             "success": True,
@@ -863,8 +1065,8 @@ class QuantumNeuralEvolutionBot:
             "profit": realized_pnl,
             "net_profit": net_pnl,
             "fees": fee_estimate,
-            "hit_target": hit_target,
-            "hit_stop": hit_stop,
+            "position_size": self.position_size_usdt,
+            "confidence": confidence,
             "timestamp": datetime.now().isoformat()
         }
         
@@ -873,14 +1075,73 @@ class QuantumNeuralEvolutionBot:
         
         return result
 
+    def monitor_trade(self, order_id: str, stop_price: float, direction: str) -> Optional[float]:
+        """Monitor REAL trade - WAITS for target or stop"""
+        start_time = time.time()
+        timeout = self.max_hold_time
+        exit_price = None
+        
+        while time.time() - start_time < timeout:
+            status = self.get_order_status(order_id)
+            
+            if status.get("status") == "FILLED":
+                cum_quote = float(status.get("cummulativeQuoteQty", 0))
+                executed_qty = float(status.get("executedQty", 0))
+                if executed_qty > 0 and cum_quote > 0:
+                    return cum_quote / executed_qty
+                return float(status.get("price", 0))
+            
+            # Check stop loss
+            current_price = self.get_current_price()
+            if current_price:
+                if direction == "long" and current_price <= stop_price:
+                    self.logger.warning(f"🛑 STOP LOSS: ${current_price:.2f}")
+                    self.cancel_order(order_id)
+                    exit_order = self.place_market_order("SELL", self.entry_qty, is_quantity=True)
+                    if "error" not in exit_order:
+                        return float(exit_order.get("price", current_price))
+                    return current_price
+                elif direction == "short" and current_price >= stop_price:
+                    self.logger.warning(f"🛑 STOP LOSS: ${current_price:.2f}")
+                    self.cancel_order(order_id)
+                    exit_order = self.place_market_order("BUY", self.entry_qty, is_quantity=True)
+                    if "error" not in exit_order:
+                        return float(exit_order.get("price", current_price))
+                    return current_price
+            
+            time.sleep(1)
+        
+        # Timeout - cancel and market exit
+        self.logger.warning("⏰ TRADE TIMEOUT - Exiting at market")
+        self.cancel_order(order_id)
+        
+        if direction == "long":
+            exit_order = self.place_market_order("SELL", self.entry_qty, is_quantity=True)
+        else:
+            exit_order = self.place_market_order("BUY", self.entry_qty, is_quantity=True)
+        
+        if "error" not in exit_order:
+            return float(exit_order.get("price", self.get_current_price() or self.entry_price))
+        
+        return None
+
     def run_cycle(self, cycle_number: int = 0) -> dict:
         if self.stopped:
             return {"success": False, "error": "Bot stopped"}
         
         self.logger.info(f"\n{'='*60}")
-        self.logger.info(f"🧬 EVOLUTION CYCLE {cycle_number}")
+        self.logger.info(f"💰 REAL CYCLE {cycle_number}")
+        self.logger.info(f"   Balance: ${self.real_balance:.2f}")
+        self.logger.info(f"   Position Size: ${self.position_size_usdt:.2f}")
         self.logger.info(f"   Best Fitness: {self.strategy_population.best_fitness:.4f}")
         self.logger.info(f"{'='*60}")
+        
+        # Check balance
+        self._update_balance()
+        if self.real_balance < self.min_position_usdt:
+            self.logger.error(f"❌ Insufficient balance: ${self.real_balance:.2f}")
+            self.stopped = True
+            return {"success": False, "error": "Insufficient balance"}
         
         # Get market data
         klines = TechnicalAnalysis.get_klines(self.symbol, self.base_url, interval="1m", limit=100)
@@ -901,7 +1162,7 @@ class QuantumNeuralEvolutionBot:
             self.logger.info("📊 No signal, waiting...")
             return {"success": True, "pnl": 0, "signal": "NEUTRAL"}
         
-        # Execute trade
+        # Execute REAL trade
         result = self.execute_trade(signal, best_strategy, current_price, indicators)
         
         # Evolve every N cycles
@@ -915,7 +1176,6 @@ class QuantumNeuralEvolutionBot:
                 self.logger.info(f"🏆 NEW BEST STRATEGY!")
                 self.logger.info(f"   Fitness: {best.fitness:.4f}")
                 self.logger.info(f"   Win Rate: {(best.wins / max(1, best.trades)) * 100:.1f}%")
-                self.logger.info(f"   Genes: {best.genes}")
         
         self.cycle_stats["total_cycles"] += 1
         if result.get("success"):
@@ -923,14 +1183,15 @@ class QuantumNeuralEvolutionBot:
         
         return result
 
-    def run_forever(self, delay_between_cycles: int = 10):
+    def run_forever(self, delay_between_cycles: int = 15):
         self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v10.1")
-        self.logger.info("   THE REAL ULTIMATE MASTERPIECE")
+        self.logger.info("💰 QUANTUM NEURAL EVOLUTION BOT v10.2")
+        self.logger.info("   REAL MONEY + DYNAMIC SIZING")
         self.logger.info("="*70)
-        self.logger.info("   ⭐ WAITS for target or stop to hit")
-        self.logger.info("   💰 REAL fees: 0.1% per trade")
-        self.logger.info("   📈 Must overcome 0.2% round trip")
+        self.logger.info("   💰 REAL MONEY trading")
+        self.logger.info("   📈 Size scales with win rate")
+        self.logger.info("   ⭐ Starts at $1.00")
+        self.logger.info("   🔥 Grows with confidence")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
         
@@ -939,8 +1200,9 @@ class QuantumNeuralEvolutionBot:
         cycle_num = 1
         while not self.stopped:
             try:
-                self.logger.info(f"\n💥 Cycle {cycle_num}")
-                self.logger.info(f"   Balance: ${self.current_balance:.2f}")
+                self.logger.info(f"\n💰 Cycle {cycle_num}")
+                self.logger.info(f"   Balance: ${self.real_balance:.2f}")
+                self.logger.info(f"   Position: ${self.position_size_usdt:.2f}")
                 self.logger.info(f"   Wins: {self.win_count} | Losses: {self.loss_count}")
                 self.logger.info(f"   Streak: {self.consecutive_wins}W / {self.consecutive_losses}L")
                 self.logger.info(f"   Best Fitness: {self.strategy_population.best_fitness:.4f}")
@@ -981,23 +1243,25 @@ class QuantumNeuralEvolutionBot:
         self.logger.info(f"   Trades: {self.total_trades} | Win Rate: {win_rate:.1f}%")
         self.logger.info(f"   Wins: {self.win_count} | Losses: {self.loss_count}")
         self.logger.info(f"   Streak: {self.consecutive_wins}W / {self.consecutive_losses}L")
-        self.logger.info(f"   Balance: ${self.current_balance:.2f}")
+        self.logger.info(f"   Balance: ${self.real_balance:.2f}")
+        self.logger.info(f"   Position Size: ${self.position_size_usdt:.2f}")
         self.logger.info(f"   Best Fitness: {self.strategy_population.best_fitness:.4f}")
 
     def print_final_summary(self):
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
         self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT - FINAL SUMMARY")
+        self.logger.info("💰 QUANTUM NEURAL EVOLUTION BOT - FINAL SUMMARY")
         self.logger.info("   10/10 TRUE ULTIMATE MASTERPIECE")
         self.logger.info("="*70)
         self.logger.info(f"💰 Starting Balance: ${self.starting_balance:.2f}")
-        self.logger.info(f"💰 Final Balance: ${self.current_balance:.2f}")
+        self.logger.info(f"💰 Final Balance: ${self.real_balance:.2f}")
         self.logger.info(f"💰 Peak Balance: ${self.peak_balance:.2f}")
         self.logger.info(f"📈 Total Profit: ${self.cycle_stats['net_profit']:.4f}")
         self.logger.info(f"🏆 Win Rate: {win_rate:.1f}%")
         self.logger.info(f"📊 Total Trades: {self.total_trades}")
         self.logger.info(f"📊 Wins: {self.win_count} | Losses: {self.loss_count}")
         self.logger.info(f"📊 Longest Loss Streak: {self.longest_loss_streak}")
+        self.logger.info(f"📊 Final Position Size: ${self.position_size_usdt:.2f}")
         if self.starting_balance > 0:
             roi = (self.cycle_stats['net_profit'] / self.starting_balance) * 100
             self.logger.info(f"📊 ROI: {roi:.1f}%")
@@ -1012,7 +1276,7 @@ class QuantumNeuralEvolutionBot:
         filename = f"quantum_bot_results_{datetime.now().strftime('%Y%m%d')}.csv"
         file_exists = os.path.isfile(filename)
         with open(filename, 'a', newline='') as csvfile:
-            fieldnames = ['cycle', 'timestamp', 'direction', 'entry_price', 'exit_price', 'profit', 'net_profit', 'fees', 'hit_target', 'hit_stop', 'balance']
+            fieldnames = ['cycle', 'timestamp', 'direction', 'entry_price', 'exit_price', 'profit', 'net_profit', 'fees', 'position_size', 'confidence', 'balance']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             if not file_exists:
                 writer.writeheader()
@@ -1026,18 +1290,18 @@ class QuantumNeuralEvolutionBot:
                 'profit': f"{latest['profit']:.4f}",
                 'net_profit': f"{latest.get('net_profit', 0):.4f}",
                 'fees': f"{latest.get('fees', 0):.4f}",
-                'hit_target': latest.get('hit_target', False),
-                'hit_stop': latest.get('hit_stop', False),
-                'balance': f"{self.current_balance:.2f}"
+                'position_size': f"{latest.get('position_size', 0):.2f}",
+                'confidence': f"{latest.get('confidence', 0):.2f}",
+                'balance': f"{self.real_balance:.2f}"
             })
 
     def export_final_report(self):
         report = {
-            "version": "10.1",
-            "strategy": "Quantum Neural Evolution - Real Masterpiece",
+            "version": "10.2",
+            "strategy": "Quantum Neural Evolution - Real Money Masterpiece",
             "fee_rate": self.fee_rate,
             "starting_balance": self.starting_balance,
-            "final_balance": self.current_balance,
+            "final_balance": self.real_balance,
             "peak_balance": self.peak_balance,
             "total_profit": self.cycle_stats['net_profit'],
             "win_rate": (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0,
@@ -1045,6 +1309,7 @@ class QuantumNeuralEvolutionBot:
             "wins": self.win_count,
             "losses": self.loss_count,
             "longest_loss_streak": self.longest_loss_streak,
+            "final_position_size": self.position_size_usdt,
             "best_strategy": {
                 "fitness": self.best_strategy_found.fitness if self.best_strategy_found else 0,
                 "win_rate": (self.best_strategy_found.wins / max(1, self.best_strategy_found.trades)) * 100 if self.best_strategy_found else 0
@@ -1074,18 +1339,20 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("="*70)
-    print("🧠 QUANTUM NEURAL EVOLUTION BOT v10.1")
-    print("   THE REAL ULTIMATE MASTERPIECE")
+    print("💰 QUANTUM NEURAL EVOLUTION BOT v10.2")
+    print("   REAL MONEY + DYNAMIC SIZING")
     print("="*70)
-    print("\nKEY FIXES:")
-    print("1. ✅ Bot WAITS for target or stop to hit")
-    print("2. ✅ REAL fees: 0.1% per trade")
-    print("3. ✅ Must overcome 0.2% round trip")
-    print("4. ✅ 3 minute max hold time")
-    print("5. ✅ Tracks target/stop hits")
+    print("\nFEATURES:")
+    print("1. ✅ REAL MONEY from your Binance account")
+    print("2. ✅ Starts at $1.00 minimum position")
+    print("3. ✅ Size scales with win rate confidence")
+    print("4. ✅ Higher win rate = larger positions")
+    print("5. ✅ Lower win rate = smaller positions")
+    print("6. ✅ 10/10 ULTIMATE MASTERPIECE")
     print("="*70)
     
-    print("\n🧬 Starting REAL BOT in 3 seconds...")
+    print("\n💰 Starting REAL MONEY Bot in 3 seconds...")
+    print("   (Make sure you have USDT in your Binance account)")
     time.sleep(3)
     
     bot = QuantumNeuralEvolutionBot(
@@ -1096,4 +1363,4 @@ if __name__ == "__main__":
         log_level="INFO"
     )
     
-    bot.run_forever(delay_between_cycles=10)
+    bot.run_forever(delay_between_cycles=15)
