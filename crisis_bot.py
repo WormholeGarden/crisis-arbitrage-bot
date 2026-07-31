@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
-🧠 QUANTUM NEURAL EVOLUTION BOT v9.1 - FULLY FIXED ULTIMATE MASTERPIECE
+🧠 QUANTUM NEURAL EVOLUTION BOT v9.2 - ULTIMATE MASTERPIECE FIXED
 ============================================================
-STRATEGY: TRUE REINFORCEMENT LEARNING WITH STRATEGY EXPLORATION
-- Explores MULTIPLE strategies simultaneously (like a multiverse)
-- Each strategy is a complete trading system (entry, exit, position sizing)
-- Strategies compete against each other (Darwinian selection)
-- Winning strategies reproduce and mutate (Genetic Algorithm)
-- Neural network learns from ALL strategy outcomes
-- NEVER stops learning and adapting
+FIXED: -inf fitness bug
+- Proper fitness calculation even with losses
+- Strategies evolve even when losing
+- Learns from failures to find winning patterns
+- Darwinian evolution: survival of the fittest
 - 10/10 ULTIMATE ALGORITHMIC MASTERPIECE
 ============================================================
 """
@@ -120,6 +118,10 @@ class TechnicalAnalysis:
         # Price position
         price_position = (current_price - sr['support']) / (sr['resistance'] - sr['support'] + 0.001)
         
+        # BB position
+        bb_position = (current_price - bb['lower']) / (bb['upper'] - bb['lower'] + 0.001)
+        bb['position'] = bb_position
+        
         return {
             "rsi": rsi,
             "macd": macd,
@@ -230,7 +232,7 @@ class TechnicalAnalysis:
         return {"support": recent_support, "resistance": recent_resistance}
 
 # ========================================================================
-# 🧬 SIMPLE NEURAL NETWORK - FIXED: Added missing class
+# 🧬 SIMPLE NEURAL NETWORK
 # ========================================================================
 
 class SimpleNeuralNetwork:
@@ -291,7 +293,7 @@ class SimpleNeuralNetwork:
             self.backward(inputs, targets)
 
 # ========================================================================
-# 🧬 REINFORCEMENT LEARNING AGENT - FIXED: Added missing class
+# 🧬 REINFORCEMENT LEARNING AGENT
 # ========================================================================
 
 class RLAgent:
@@ -350,7 +352,7 @@ class RLAgent:
         return np.argmax(self.q_table[state_key])
 
 # ========================================================================
-# 🧬 STRATEGY DEFINITION - LIKE A UNIVERSE OF POSSIBILITIES
+# 🧬 STRATEGY DEFINITION - FIXED FITNESS
 # ========================================================================
 
 class TradingStrategy:
@@ -358,7 +360,7 @@ class TradingStrategy:
     
     def __init__(self, genes=None):
         if genes is None:
-            # Generate random genes - this creates a UNIQUE strategy
+            # Generate random genes - creates a UNIQUE strategy
             self.genes = {
                 # Entry conditions
                 "rsi_threshold": random.uniform(20, 80),
@@ -384,7 +386,7 @@ class TradingStrategy:
         else:
             self.genes = genes.copy()
         
-        self.fitness = 0
+        self.fitness = 0.01  # Start with positive fitness to avoid -inf
         self.trades = 0
         self.wins = 0
         self.total_pnl = 0
@@ -408,7 +410,6 @@ class TradingStrategy:
                         new_genes[key] = value + noise
                 
                 elif isinstance(value, str):
-                    # Mutate categorical
                     if key == "trend_preference":
                         new_genes[key] = random.choice(["uptrend", "downtrend", "neutral"])
                     elif key == "position_scaling":
@@ -477,11 +478,11 @@ class TradingStrategy:
             elif trend == "downtrend":
                 sell_score += 2
         
-        # Determine signal
+        # Determine signal - LOWER threshold to get more trades
         signal = "NEUTRAL"
-        if buy_score > sell_score + 1:
+        if buy_score > sell_score:
             signal = "BUY"
-        elif sell_score > buy_score + 1:
+        elif sell_score > buy_score:
             signal = "SELL"
         
         # Calculate position size
@@ -522,7 +523,6 @@ class TradingStrategy:
         if self.genes["position_scaling"] == "fixed":
             return 1.0
         elif self.genes["position_scaling"] == "kelly":
-            # Simplified Kelly based on win rate
             win_rate = self.wins / max(1, self.trades)
             kelly = win_rate * 2 - 1
             return max(0.5, min(2, 1 + kelly))
@@ -533,7 +533,7 @@ class TradingStrategy:
             return 1.0 / (1 + volatility * 10)
     
     def update_fitness(self, pnl: float):
-        """Update strategy fitness based on trade outcome"""
+        """Update strategy fitness based on trade outcome - FIXED"""
         self.total_pnl += pnl
         self.trades += 1
         
@@ -547,16 +547,16 @@ class TradingStrategy:
         drawdown = (self.peak - self.total_pnl) / max(1, self.peak)
         self.max_drawdown = max(self.max_drawdown, drawdown)
         
-        # Calculate fitness score
+        # Calculate fitness - FIXED: always positive
         win_rate = self.wins / max(1, self.trades)
         
-        # Profit factor
-        total_profit = sum([pnl for pnl in [self.total_pnl] if pnl > 0])
-        total_loss = abs(sum([pnl for pnl in [self.total_pnl] if pnl < 0]))
-        profit_factor = total_profit / max(0.001, total_loss) if total_loss > 0 else 10
+        # Profit factor - handle losses gracefully
+        total_profit = max(0, self.total_pnl)
+        total_loss = max(0.001, abs(self.total_pnl) if self.total_pnl < 0 else 0.001)
+        profit_factor = total_profit / total_loss if total_loss > 0 else 10
         
-        # Fitness = Win Rate * Profit Factor * (1 - Drawdown)
-        self.fitness = win_rate * profit_factor * (1 - self.max_drawdown)
+        # Fitness = Win Rate * Profit Factor * (1 - Drawdown) + 0.01
+        self.fitness = (win_rate * profit_factor * (1 - min(0.99, self.max_drawdown))) + 0.01
         
         return self.fitness
 
@@ -567,12 +567,13 @@ class TradingStrategy:
 class StrategyPopulation:
     """A population of strategies that evolve through natural selection"""
     
-    def __init__(self, population_size: int = 20):
+    def __init__(self, population_size: int = 30):
         self.population = []
         self.population_size = population_size
         self.generation = 0
         self.best_strategy = None
         self.best_fitness = -float('inf')
+        self.fitness_history = []
         
         # Initialize population
         for _ in range(population_size):
@@ -591,7 +592,7 @@ class StrategyPopulation:
         for strategy, pnl in zip(self.population, results):
             strategy.update_fitness(pnl)
     
-    def evolve(self, mutation_rate: float = 0.2, elitism: int = 3):
+    def evolve(self, mutation_rate: float = 0.3, elitism: int = 5):
         """Evolve the population - Darwinian selection"""
         # Sort by fitness
         sorted_pop = sorted(self.population, key=lambda s: s.fitness, reverse=True)
@@ -600,6 +601,7 @@ class StrategyPopulation:
         if sorted_pop and sorted_pop[0].fitness > self.best_fitness:
             self.best_fitness = sorted_pop[0].fitness
             self.best_strategy = copy.deepcopy(sorted_pop[0])
+            self.fitness_history.append(self.best_fitness)
         
         # Select top strategies (elitism)
         new_population = sorted_pop[:elitism]
@@ -622,7 +624,11 @@ class StrategyPopulation:
         self.population = new_population
         self.generation += 1
         
-        return self.best_strategy
+        # Log evolution progress
+        avg_fitness = sum(s.fitness for s in self.population) / self.population_size
+        max_fitness = max(s.fitness for s in self.population)
+        
+        return self.best_strategy, avg_fitness, max_fitness
     
     def _tournament_selection(self, sorted_pop, tournament_size: int = 3):
         """Tournament selection"""
@@ -642,7 +648,7 @@ class StrategyPopulation:
         return child_genes
 
 # ========================================================================
-# 🧠 QUANTUM NEURAL EVOLUTION BOT v9.1 - FULLY FIXED
+# 🧠 QUANTUM NEURAL EVOLUTION BOT v9.2 - FIXED
 # ========================================================================
 
 class QuantumNeuralEvolutionBot:
@@ -682,19 +688,19 @@ class QuantumNeuralEvolutionBot:
         self.max_order_usdt = 5.00
         
         # 🧬 Strategy Population - THE MULTIVERSE
-        self.strategy_population = StrategyPopulation(population_size=20)
+        self.strategy_population = StrategyPopulation(population_size=30)
         self.current_strategy_index = 0
         self.strategy_performance = []
         
-        # The NEURAL NETWORK - FIXED: Now defined
+        # The NEURAL NETWORK
         self.neural_net = SimpleNeuralNetwork(input_size=10, hidden_size=20, output_size=2)
         
-        # The RL AGENT - FIXED: Now defined
+        # The RL AGENT
         self.rl_agent = RLAgent(state_size=10, action_size=2)
         
         # Exploration parameters
         self.exploration_mode = True
-        self.exploration_cycles = 50
+        self.exploration_cycles = 30
         
         # Price cache
         self._price_cache = {}
@@ -732,6 +738,7 @@ class QuantumNeuralEvolutionBot:
         self.strategy_results = []
         self.best_strategy_found = None
         self.best_strategy_reward = -float('inf')
+        self.last_evolution_stats = {}
         
         # Statistics
         self.cycle_stats = {
@@ -747,7 +754,7 @@ class QuantumNeuralEvolutionBot:
         }
 
         self.logger.info("="*70)
-        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v9.1")
+        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v9.2")
         self.logger.info("   10/10 TRUE ULTIMATE MASTERPIECE")
         self.logger.info("="*70)
         self.logger.info(f"   Strategy: MULTIVERSE OF STRATEGIES")
@@ -1120,7 +1127,7 @@ class QuantumNeuralEvolutionBot:
         return np.array([
             rsi, atr, price_position, volume_ratio,
             win_rate, consecutive_wins, consecutive_losses,
-            balance_ratio, drawdown, best_fitness
+            balance_ratio, drawdown, min(1, best_fitness)
         ])
 
     def run_cycle(self, cycle_number: int = 0) -> dict:
@@ -1150,12 +1157,14 @@ class QuantumNeuralEvolutionBot:
         # Evaluate ALL strategies
         self.logger.info(f"🧬 Evaluating {len(self.strategy_population.population)} strategies...")
         pnl_results = []
+        signals_used = {"BUY": 0, "SELL": 0, "NEUTRAL": 0}
         
         for i, strategy in enumerate(self.strategy_population.population):
             signal, size, stop, target = strategy.evaluate(indicators)
+            signals_used[signal] = signals_used.get(signal, 0) + 1
             
             if signal != "NEUTRAL":
-                self.logger.info(f"   Strategy {i+1}: {signal} (Fitness: {strategy.fitness:.3f})")
+                self.logger.info(f"   Strategy {i+1}: {signal} (Fitness: {strategy.fitness:.4f})")
                 # Execute the trade
                 result = self.execute_trade(signal, strategy, current_price, indicators)
                 if result.get("success"):
@@ -1164,16 +1173,21 @@ class QuantumNeuralEvolutionBot:
                 else:
                     pnl_results.append(0)
             else:
-                self.logger.info(f"   Strategy {i+1}: NEUTRAL")
                 pnl_results.append(0)
+        
+        self.logger.info(f"📊 Signals: BUY={signals_used['BUY']}, SELL={signals_used['SELL']}, NEUTRAL={signals_used['NEUTRAL']}")
         
         # Update strategy fitness
         self.strategy_population.update_fitness(pnl_results)
         
-        # Evolve the population every 5 cycles
-        if cycle_number > 0 and cycle_number % 5 == 0:
+        # Evolve the population every 3 cycles
+        if cycle_number > 0 and cycle_number % 3 == 0:
             self.logger.info(f"🧬 EVOLVING POPULATION...")
-            best = self.strategy_population.evolve(mutation_rate=0.3)
+            best, avg_fitness, max_fitness = self.strategy_population.evolve(mutation_rate=0.3)
+            
+            self.logger.info(f"   Generation: {self.strategy_population.generation}")
+            self.logger.info(f"   Avg Fitness: {avg_fitness:.4f}")
+            self.logger.info(f"   Max Fitness: {max_fitness:.4f}")
             
             if best and best.fitness > self.best_strategy_reward:
                 self.best_strategy_reward = best.fitness
@@ -1181,6 +1195,7 @@ class QuantumNeuralEvolutionBot:
                 self.logger.info(f"🏆 NEW BEST STRATEGY FOUND!")
                 self.logger.info(f"   Fitness: {best.fitness:.4f}")
                 self.logger.info(f"   Win Rate: {(best.wins / max(1, best.trades)) * 100:.1f}%")
+                self.logger.info(f"   Trades: {best.trades}")
                 self.logger.info(f"   Genes: {best.genes}")
         
         # Update neural network with the results
@@ -1198,12 +1213,12 @@ class QuantumNeuralEvolutionBot:
         total_pnl = sum(pnl_results)
         self.cycle_stats["net_profit"] += total_pnl
         
-        return {"success": True, "pnl": total_pnl}
+        return {"success": True, "pnl": total_pnl, "signals": signals_used}
 
     def run_forever(self, delay_between_cycles: int = 5):
         """Run forever - CONTINUOUS EVOLUTION"""
         self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v9.1")
+        self.logger.info("🧠 QUANTUM NEURAL EVOLUTION BOT v9.2")
         self.logger.info("   10/10 TRUE ULTIMATE MASTERPIECE")
         self.logger.info("="*70)
         self.logger.info("   🧬 MULTIVERSE OF STRATEGIES")
@@ -1229,7 +1244,8 @@ class QuantumNeuralEvolutionBot:
                 result = self.run_cycle(cycle_number=cycle_num)
                 
                 if result.get("success", False):
-                    self.logger.info(f"✅ Cycle P&L: ${result.get('pnl', 0):.4f}")
+                    signals = result.get("signals", {})
+                    self.logger.info(f"✅ Cycle P&L: ${result.get('pnl', 0):.4f} (BUY:{signals.get('BUY',0)} SELL:{signals.get('SELL',0)})")
                 else:
                     self.logger.error(f"⚠️ Cycle failed: {result.get('error', 'Unknown')}")
                 
@@ -1237,7 +1253,7 @@ class QuantumNeuralEvolutionBot:
                 self.export_results()
                 
                 # Save best strategy periodically
-                if cycle_num % 20 == 0 and self.best_strategy_found:
+                if cycle_num % 10 == 0 and self.best_strategy_found:
                     self.save_strategy()
                 
                 wait_time = delay_between_cycles + random.uniform(0, 2)
@@ -1336,7 +1352,7 @@ class QuantumNeuralEvolutionBot:
 
     def export_final_report(self):
         report = {
-            "version": "9.1",
+            "version": "9.2",
             "strategy": "Quantum Neural Evolution - 10/10 Masterpiece",
             "starting_balance": self.starting_balance,
             "final_balance": self.current_balance,
@@ -1377,18 +1393,16 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("="*70)
-    print("🧠 QUANTUM NEURAL EVOLUTION BOT v9.1")
+    print("🧠 QUANTUM NEURAL EVOLUTION BOT v9.2")
     print("   10/10 TRUE ULTIMATE MASTERPIECE")
     print("="*70)
-    print("\nTHE MULTIVERSE STRATEGY:")
-    print("1. ✅ 20 UNIQUE strategies explore the market simultaneously")
-    print("2. ✅ Each strategy has DIFFERENT entry/exit rules")
-    print("3. ✅ Strategies COMPETE against each other")
-    print("4. ✅ Winning strategies REPRODUCE and MUTATE")
-    print("5. ✅ Neural Network learns from ALL strategies")
-    print("6. ✅ NEVER stops learning and evolving")
-    print("7. ✅ FINDS the winning strategy through evolution")
-    print("8. ✅ 10/10 ULTIMATE ALGORITHMIC MASTERPIECE")
+    print("\nFIXES APPLIED:")
+    print("1. ✅ Fixed -inf fitness bug")
+    print("2. ✅ Strategies always have positive fitness")
+    print("3. ✅ More frequent evolution (every 3 cycles)")
+    print("4. ✅ Larger population (30 strategies)")
+    print("5. ✅ Lower threshold for trade signals")
+    print("6. ✅ Better fitness calculation")
     print("="*70)
     
     print("\n🧬 Starting QUANTUM EVOLUTION Bot in 3 seconds...")
