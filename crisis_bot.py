@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """
-GOLDEN STRATEGY SCALPER v5.1 - FIXED BALANCE ISSUE
+🚀 GOLDEN SCALPER BOT v11.0 - ULTIMATE PRODUCTION
 ============================================================
-FIXES:
-  - Better balance fetching with error handling
-  - Fallback to simulated balance for testing
-  - Proper API permission checks
-  - More detailed error messages
-  - Auto-retry on balance fetch failure
+INTEGRATES THE GOLDEN STRATEGY FINDINGS:
+- ETHUSDT 4h with 15+ advanced indicators
+- ML-inspired ensemble voting (4 strategies)
+- Optimized parameters from walk-forward validation:
+  * min_votes = 1
+  * min_confidence = 0.2
+  * target = 1.5% | stop = 0.8%
+- Production-ready with:
+  * Single position tracking (no duplicate buys)
+  * GTC orders stay active indefinitely
+  * Stop-loss monitoring
+  * Resume capability on restart
+  * Proper fee handling
+  * Detailed logging
 ============================================================
 """
 
@@ -26,35 +34,7 @@ import requests
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 import statistics
 import math
-from collections import deque, defaultdict
-
-# ========================================================================
-# CONFIGURATION
-# ========================================================================
-
-# Trading parameters (FOUND BY VALIDATION)
-SYMBOL = "AVAXUSDT"
-INTERVAL = "1d"  # Daily candles
-MIN_SIGNALS = 10  # Need 10+ signals from 15 indicators
-TRAILING_PCT = 0.3  # 0.3% trailing stop
-MAX_HOLD_DAYS = 30  # Maximum days to hold
-TRAILING_STOP = False  # Use fixed stop instead
-
-# Risk parameters
-MAX_RISK_PER_TRADE = 0.02  # 2% of capital per trade
-MIN_RISK_PER_TRADE = 0.005  # 0.5% minimum
-MAX_POSITIONS = 3  # Maximum concurrent positions
-DAILY_STOP_LOSS = 0.05  # 5% daily loss limit
-WEEKLY_STOP_LOSS = 0.10  # 10% weekly loss limit
-MONTHLY_STOP_LOSS = 0.15  # 15% monthly loss limit
-
-# Fees (optimistic scenario)
-MAKER_FEE = 0.0005  # 0.05%
-TAKER_FEE = 0.0005  # 0.05%
-
-# Test mode - use simulated balance if true
-TEST_MODE = True  # Set to False for live trading
-SIMULATED_BALANCE = 1000.0  # Starting balance for testing
+from collections import deque
 
 # ========================================================================
 # DECIMAL HELPERS
@@ -85,10 +65,8 @@ def format_price(value: float) -> str:
 # ========================================================================
 
 class AdvancedIndicators:
-    """15+ technical indicators for the ensemble strategy."""
-    
     @staticmethod
-    def get_klines(symbol: str, base_url: str, interval: str = "1d", limit: int = 500,
+    def get_klines(symbol: str, base_url: str, interval: str = "4h", limit: int = 500,
                     end_time_ms: int = None) -> Optional[Dict]:
         try:
             url = f"{base_url}/api/v3/klines"
@@ -156,42 +134,25 @@ class AdvancedIndicators:
     @staticmethod
     def macd(closes: List[float], fast: int = 12, slow: int = 26, signal: int = 9) -> Dict:
         if len(closes) < slow:
-            return {"macd": 0, "signal": 0, "histogram": 0, "bullish": False, "bearish": False}
+            return {"macd": 0, "signal": 0, "histogram": 0, "bullish": False}
         ema_fast = AdvancedIndicators.ema(closes, fast)
         ema_slow = AdvancedIndicators.ema(closes, slow)
         macd_line = ema_fast - ema_slow
         signal_line = AdvancedIndicators.ema([macd_line] * signal, signal)
         histogram = macd_line - signal_line
-        return {
-            "macd": macd_line,
-            "signal": signal_line,
-            "histogram": histogram,
-            "bullish": macd_line > signal_line,
-            "bearish": macd_line < signal_line
-        }
+        return {"macd": macd_line, "signal": signal_line, "histogram": histogram, "bullish": macd_line > signal_line}
 
     @staticmethod
     def bollinger(closes: List[float], period: int = 20, std_dev: float = 2) -> Dict:
         if len(closes) < period:
-            return {"upper": closes[-1], "middle": closes[-1], "lower": closes[-1], "position": 0.5, "width": 0}
+            return {"upper": closes[-1], "middle": closes[-1], "lower": closes[-1], "position": 0.5}
         middle = sum(closes[-period:]) / period
         squared = [(x - middle) ** 2 for x in closes[-period:]]
         std = (sum(squared) / period) ** 0.5
         upper = middle + (std * std_dev)
         lower = middle - (std * std_dev)
         position = (closes[-1] - lower) / (upper - lower) if upper != lower else 0.5
-        width = (upper - lower) / middle if middle else 0
-        return {"upper": upper, "middle": middle, "lower": lower, "position": position, "width": width}
-
-    @staticmethod
-    def stochastic(closes: List[float], highs: List[float], lows: List[float], period: int = 14) -> float:
-        if len(closes) < period:
-            return 50.0
-        highest = max(highs[-period:])
-        lowest = min(lows[-period:])
-        if highest == lowest:
-            return 50.0
-        return ((closes[-1] - lowest) / (highest - lowest)) * 100
+        return {"upper": upper, "middle": middle, "lower": lower, "position": position}
 
     @staticmethod
     def adx(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
@@ -204,7 +165,6 @@ class AdvancedIndicators:
             plus_dm.append(up if up > down and up > 0 else 0)
             minus_dm.append(down if down > up and down > 0 else 0)
             tr.append(max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])))
-        
         tr_ema = AdvancedIndicators.ema(tr[-period:], period)
         if tr_ema == 0:
             return 25.0
@@ -247,54 +207,14 @@ class AdvancedIndicators:
         return max(0, min(100, 100 * math.log10(tr_sum / (highest - lowest)) / math.log10(period)))
 
     @staticmethod
-    def zscore(data: List[float], period: int = 20) -> float:
-        if len(data) < period:
-            return 0
-        window = data[-period:]
-        mean = sum(window) / period
-        std = statistics.stdev(window) if period > 1 else 0.001
-        return (data[-1] - mean) / std if std > 0 else 0
-
-    @staticmethod
-    def keltner(highs: List[float], lows: List[float], closes: List[float], period: int = 20) -> Dict:
+    def stochastic(closes: List[float], highs: List[float], lows: List[float], period: int = 14) -> float:
         if len(closes) < period:
-            return {"upper": closes[-1], "middle": closes[-1], "lower": closes[-1]}
-        middle = AdvancedIndicators.ema(closes, period)
-        atr_val = AdvancedIndicators.atr(highs, lows, closes, 10)
-        return {"upper": middle + atr_val * 1.5, "middle": middle, "lower": middle - atr_val * 1.5}
-
-    @staticmethod
-    def ichimoku(highs: List[float], lows: List[float], closes: List[float]) -> Dict:
-        if len(closes) < 52:
-            return {"tenkan": closes[-1], "kijun": closes[-1], "senkou_a": closes[-1], "senkou_b": closes[-1]}
-        tenkan = (max(highs[-9:]) + min(lows[-9:])) / 2
-        kijun = (max(highs[-26:]) + min(lows[-26:])) / 2
-        senkou_a = (tenkan + kijun) / 2
-        senkou_b = (max(highs[-52:]) + min(lows[-52:])) / 2
-        return {"tenkan": tenkan, "kijun": kijun, "senkou_a": senkou_a, "senkou_b": senkou_b}
-
-    @staticmethod
-    def vortex(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> Dict:
-        if len(closes) < period + 1:
-            return {"vi_plus": 0, "vi_minus": 0}
-        vm_plus, vm_minus, tr = [], [], []
-        for i in range(1, len(closes)):
-            vm_plus.append(abs(highs[i] - lows[i-1]))
-            vm_minus.append(abs(lows[i] - highs[i-1]))
-            tr.append(max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])))
-        sum_vm_plus = sum(vm_plus[-period:])
-        sum_vm_minus = sum(vm_minus[-period:])
-        sum_tr = sum(tr[-period:])
-        return {"vi_plus": sum_vm_plus / sum_tr if sum_tr > 0 else 0, "vi_minus": sum_vm_minus / sum_tr if sum_tr > 0 else 0}
-
-    @staticmethod
-    def cci(closes: List[float], highs: List[float], lows: List[float], period: int = 20) -> float:
-        if len(closes) < period:
-            return 0
-        tp = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
-        sma_tp = sum(tp[-period:]) / period
-        mean_dev = sum([abs(x - sma_tp) for x in tp[-period:]]) / period
-        return (tp[-1] - sma_tp) / (0.015 * mean_dev) if mean_dev > 0 else 0
+            return 50.0
+        highest = max(highs[-period:])
+        lowest = min(lows[-period:])
+        if highest == lowest:
+            return 50.0
+        return ((closes[-1] - lowest) / (highest - lowest)) * 100
 
     @staticmethod
     def dmi(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> Dict:
@@ -314,229 +234,186 @@ class AdvancedIndicators:
         return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di}
 
 # ========================================================================
-# ML ENSEMBLE STRATEGY (THE GOLDEN STRATEGY)
+# GOLDEN STRATEGY - 4 STRATEGIES WITH ENSEMBLE VOTING
 # ========================================================================
 
-class MLEnsembleStrategy:
-    """ML-inspired ensemble of 15+ indicators - THE VALIDATED STRATEGY."""
-    
+class StrategyBreakout:
+    name = "Breakout"
     @staticmethod
-    def analyze(klines: Dict, min_signals: int = MIN_SIGNALS) -> Dict:
-        """Analyze market and return signal."""
-        if not klines or len(klines['closes']) < 100:
-            return {"signal": "NEUTRAL", "confidence": 0, "reason": "Insufficient data"}
-        
-        closes = klines['closes']
-        highs = klines['highs']
-        lows = klines['lows']
-        volumes = klines['volumes']
+    def signal(data: Dict) -> Dict:
+        closes, highs, lows = data['closes'], data['highs'], data['lows']
         current = closes[-1]
-        
-        # Calculate ALL indicators
-        signals = []
-        weights = []
-        signal_names = []
-        
-        # 1. EMA Trend (Weight: 1.5)
-        ema_9 = AdvancedIndicators.ema(closes, 9)
-        ema_21 = AdvancedIndicators.ema(closes, 21)
-        ema_50 = AdvancedIndicators.ema(closes, 50)
-        
-        if current > ema_9 > ema_21 > ema_50:
-            signals.append(1); weights.append(1.5); signal_names.append("EMA_StrongTrend")
-        elif current > ema_50:
-            signals.append(1); weights.append(1.0); signal_names.append("EMA_Uptrend")
-        else:
-            signals.append(0); weights.append(1.0); signal_names.append("EMA_Downtrend")
-        
-        # 2. MACD Bullish (Weight: 1.5)
-        macd = AdvancedIndicators.macd(closes)
-        signals.append(1 if macd['bullish'] else 0)
-        weights.append(1.5)
-        signal_names.append("MACD_Bullish" if macd['bullish'] else "MACD_Bearish")
-        
-        # 3. RSI (Weight: 1.2)
+        donchian_high = max(highs[-20:]) if len(highs) >= 20 else max(highs)
+        donchian_low = min(lows[-20:]) if len(lows) >= 20 else min(lows)
+        adx = AdvancedIndicators.adx(highs, lows, closes, 14)
         rsi = AdvancedIndicators.rsi(closes, 14)
-        if rsi < 30:
-            signals.append(1); signal_names.append("RSI_Oversold")
-        elif 30 <= rsi <= 70:
-            signals.append(1 if rsi < 50 else 0.5); signal_names.append("RSI_Neutral" if rsi < 50 else "RSI_Overbought")
-        else:
-            signals.append(0); signal_names.append("RSI_Extreme")
-        weights.append(1.2)
-        
-        # 4. Bollinger (Weight: 1.0)
-        bb = AdvancedIndicators.bollinger(closes)
-        if current < bb['lower'] * 1.02:
-            signals.append(1); signal_names.append("BB_LowerBand")
-        elif current > bb['upper'] * 0.98:
-            signals.append(0); signal_names.append("BB_UpperBand")
-        else:
-            signals.append(0.5); signal_names.append("BB_Middle")
-        weights.append(1.0)
-        
-        # 5. ADX (Weight: 1.3)
-        adx = AdvancedIndicators.adx(highs, lows, closes)
-        signals.append(1 if adx > 25 else 0)
-        weights.append(1.3)
-        signal_names.append(f"ADX_{adx:.1f}")
-        
-        # 6. Stochastic (Weight: 0.8)
-        stoch = AdvancedIndicators.stochastic(closes, highs, lows)
-        if stoch < 30:
-            signals.append(1); signal_names.append("Stoch_Oversold")
-        elif stoch < 50:
-            signals.append(0.3); signal_names.append("Stoch_Low")
-        else:
-            signals.append(0); signal_names.append("Stoch_High")
-        weights.append(0.8)
-        
-        # 7. OBV (Weight: 1.0)
-        obv_values = AdvancedIndicators.obv(closes, volumes)
-        if len(obv_values) >= 20:
-            obv_ema = AdvancedIndicators.ema(obv_values, 10)
-            signals.append(1 if obv_values[-1] > obv_ema else 0)
-            signal_names.append("OBV_Up" if obv_values[-1] > obv_ema else "OBV_Down")
-        else:
-            signals.append(0); signal_names.append("OBV_NA")
-        weights.append(1.0)
-        
-        # 8. VWAP (Weight: 0.8)
-        vwap = AdvancedIndicators.vwap(highs, lows, closes, volumes)
-        signals.append(1 if current > vwap else 0)
-        weights.append(0.8)
-        signal_names.append("VWAP_Above" if current > vwap else "VWAP_Below")
-        
-        # 9. Choppiness (Weight: 1.0)
-        chop = AdvancedIndicators.chop(highs, lows, closes)
-        signals.append(1 if chop < 40 else 0)
-        weights.append(1.0)
-        signal_names.append(f"Chop_{chop:.1f}")
-        
-        # 10. Z-Score (Weight: 0.7)
-        zscore = AdvancedIndicators.zscore(closes, 20)
-        signals.append(1 if zscore < -1 else 0)
-        weights.append(0.7)
-        signal_names.append(f"ZScore_{zscore:.2f}")
-        
-        # 11. Keltner Channel (Weight: 0.9)
-        kc = AdvancedIndicators.keltner(highs, lows, closes)
-        signals.append(1 if current < kc['lower'] * 1.01 else 0)
-        weights.append(0.9)
-        signal_names.append("KC_Lower" if current < kc['lower'] * 1.01 else "KC_Above")
-        
-        # 12. Ichimoku (Weight: 1.2)
-        ichi = AdvancedIndicators.ichimoku(highs, lows, closes)
-        if current > ichi['tenkan'] and current > ichi['kijun']:
-            signals.append(1); signal_names.append("Ichi_Bullish")
-        else:
-            signals.append(0); signal_names.append("Ichi_Bearish")
-        weights.append(1.2)
-        
-        # 13. Vortex (Weight: 0.9)
-        vortex = AdvancedIndicators.vortex(highs, lows, closes)
-        signals.append(1 if vortex['vi_plus'] > vortex['vi_minus'] else 0)
-        weights.append(0.9)
-        signal_names.append("Vortex_Bullish" if vortex['vi_plus'] > vortex['vi_minus'] else "Vortex_Bearish")
-        
-        # 14. CCI (Weight: 0.7)
-        cci = AdvancedIndicators.cci(closes, highs, lows)
-        signals.append(1 if cci < -100 else 0)
-        weights.append(0.7)
-        signal_names.append(f"CCI_{cci:.1f}")
-        
-        # 15. DMI (Weight: 1.1)
-        dmi = AdvancedIndicators.dmi(highs, lows, closes)
-        if dmi['plus_di'] > dmi['minus_di'] and dmi['adx'] > 20:
-            signals.append(1); signal_names.append("DMI_Bullish")
-        else:
-            signals.append(0); signal_names.append("DMI_Bearish")
-        weights.append(1.1)
-        
-        # Weighted average
-        weighted_sum = sum(s * w for s, w in zip(signals, weights))
-        total_weight = sum(weights)
-        confidence = weighted_sum / total_weight
-        
-        # Count signals (binary)
-        signal_count = sum(1 for s in signals if s > 0.5)
-        
-        # Final decision
-        buy_signal = signal_count >= min_signals and confidence > 0.5
-        
-        # Dynamic targets based on indicators
+        buy = 0
+        total = 4
+        if current > donchian_high: buy += 1
+        if adx > 25: buy += 1
+        if rsi < 70: buy += 1
+        if current > AdvancedIndicators.ema(closes, 50): buy += 1
+        confidence = buy / total
         atr = AdvancedIndicators.atr(highs, lows, closes, 14)
-        atr_pct = atr / current if current > 0 else 0.02
-        
-        # Stop: below recent lows or ATR-based
-        recent_low = min(lows[-20:]) if len(lows) >= 20 else min(lows)
-        stop = min(current - atr * 1.5, recent_low * 0.98)
-        
-        # Target: based on volatility and trend
-        if adx > 30:  # Strong trend
-            target = current + atr * 3.0
-        else:
-            target = current + atr * 2.0
-        
-        # R:R check
-        risk = current - stop
-        reward = target - current
-        rr_ratio = reward / risk if risk > 0 else 0
-        
         return {
-            "signal": "BUY" if buy_signal and rr_ratio > 1.5 else "NEUTRAL",
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
             "confidence": confidence,
-            "signal_count": signal_count,
-            "total_signals": len(signals),
-            "min_signals_required": min_signals,
-            "stop": stop,
-            "target": target,
-            "rr_ratio": rr_ratio,
-            "adx": adx,
-            "rsi": rsi,
-            "atr_pct": atr_pct,
-            "weighted_score": weighted_sum / total_weight,
-            "signal_names": signal_names[:5],
-            "reasons": signal_names,
-            "current_price": current,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": donchian_low,
+            "target": current + atr * 2.0,
+        }
+
+class StrategyMeanReversion:
+    name = "MeanRev"
+    @staticmethod
+    def signal(data: Dict) -> Dict:
+        closes, highs, lows, volumes = data['closes'], data['highs'], data['lows'], data['volumes']
+        current = closes[-1]
+        bb = AdvancedIndicators.bollinger(closes, 20, 2)
+        rsi = AdvancedIndicators.rsi(closes, 14)
+        atr = AdvancedIndicators.atr(highs, lows, closes, 14)
+        vol_avg = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
+        buy = 0
+        total = 4
+        if current < bb['lower'] * 1.02: buy += 1
+        if 20 < rsi < 40: buy += 1
+        if volumes[-1] > vol_avg * 1.2: buy += 1
+        if current < AdvancedIndicators.ema(closes, 20): buy += 1
+        confidence = buy / total
+        return {
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
+            "confidence": confidence,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": current - atr * 1.5,
+            "target": current + (bb['middle'] - bb['lower']) * 0.5,
+        }
+
+class StrategyTrendFollowing:
+    name = "Trend"
+    @staticmethod
+    def signal(data: Dict) -> Dict:
+        closes = data['closes']
+        current = closes[-1]
+        macd = AdvancedIndicators.macd(closes, 12, 26, 9)
+        ema9 = AdvancedIndicators.ema(closes, 9)
+        ema21 = AdvancedIndicators.ema(closes, 21)
+        ema50 = AdvancedIndicators.ema(closes, 50)
+        rsi = AdvancedIndicators.rsi(closes, 14)
+        buy = 0
+        total = 4
+        if macd['bullish']: buy += 1
+        if current > ema9 > ema21: buy += 1
+        if current > ema50: buy += 1
+        if 40 < rsi < 70: buy += 1
+        confidence = buy / total
+        return {
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
+            "confidence": confidence,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": ema21 * 0.98,
+            "target": current * 1.04,
+        }
+
+class StrategyVolumeAccumulation:
+    name = "VolumeAcc"
+    @staticmethod
+    def signal(data: Dict) -> Dict:
+        closes, highs, lows, volumes = data['closes'], data['highs'], data['lows'], data['volumes']
+        current = closes[-1]
+        vol_avg = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
+        obv_values = AdvancedIndicators.obv(closes, volumes)
+        vwap = AdvancedIndicators.vwap(highs, lows, closes, volumes)
+        buy = 0
+        total = 3
+        if volumes[-1] > vol_avg * 1.1: buy += 1
+        if current > AdvancedIndicators.ema(closes, 20): buy += 1
+        if AdvancedIndicators.rsi(closes, 14) < 65: buy += 1
+        confidence = buy / total
+        return {
+            "signal": "BUY" if confidence >= 0.5 else "NEUTRAL",
+            "confidence": confidence,
+            "buy_conditions": buy,
+            "total_conditions": total,
+            "stop": current * 0.97,
+            "target": current * 1.05,
+        }
+
+class EnsembleVoter:
+    @staticmethod
+    def analyze(data: Dict, min_votes: int = 1, min_confidence: float = 0.2) -> Dict:
+        strategies = [
+            StrategyBreakout(),
+            StrategyMeanReversion(),
+            StrategyTrendFollowing(),
+            StrategyVolumeAccumulation(),
+        ]
+        signals, votes = [], []
+        for strategy in strategies:
+            try:
+                result = strategy.signal(data)
+                if result and result.get('signal') == "BUY":
+                    signals.append({
+                        'name': strategy.name,
+                        'confidence': result.get('confidence', 0),
+                        'stop': result.get('stop'),
+                        'target': result.get('target'),
+                        'details': result,
+                    })
+                    votes.append(result.get('confidence', 0))
+            except Exception:
+                continue
+        ensemble_buy = len(signals) >= min_votes
+        avg_confidence = sum(votes) / len(votes) if votes else 0
+        stops = [s['stop'] for s in signals if s.get('stop')]
+        targets = [s['target'] for s in signals if s.get('target')]
+        final_stop = statistics.median(stops) if stops else data['closes'][-1] * 0.97
+        final_target = statistics.median(targets) if targets else data['closes'][-1] * 1.04
+        return {
+            "signal": "BUY" if ensemble_buy and avg_confidence >= min_confidence else "NEUTRAL",
+            "confidence": avg_confidence,
+            "votes": len(signals),
+            "voting_strategies": [s['name'] for s in signals],
+            "stop_price": final_stop,
+            "target_price": final_target,
+            "signals": signals,
         }
 
 # ========================================================================
-# SCALPER BOT - FULL IMPLEMENTATION (FIXED)
+# GOLDEN SCALPER BOT - PRODUCTION
 # ========================================================================
 
 class GoldenScalperBot:
-    """Full trading bot with the validated strategy."""
-    
-    def __init__(self, api_key: str, api_secret: str, symbol: str = SYMBOL,
-                 exchange_region: str = "us", log_level: str = "INFO",
-                 test_mode: bool = TEST_MODE):
+    def __init__(self, api_key: str, api_secret: str, 
+                 symbol: str = "ETHUSDT", exchange_region: str = "us", 
+                 log_level: str = "INFO", interval: str = "4h"):
         
         self.api_key = api_key
         self.api_secret = api_secret
         self.symbol = symbol
-        self.interval = INTERVAL
-        self.test_mode = test_mode
+        self.interval = interval
+        self.base_asset = symbol.replace("USDT", "")
         
-        # Strategy parameters (VALIDATED)
-        self.min_signals = MIN_SIGNALS
-        self.trailing_pct = TRAILING_PCT
-        self.max_hold_days = MAX_HOLD_DAYS
-        self.trailing_stop = TRAILING_STOP
+        # Golden strategy parameters (validated)
+        self.min_votes = 1
+        self.min_confidence = 0.2
         
-        # Risk parameters
-        self.max_risk_per_trade = MAX_RISK_PER_TRADE
-        self.min_risk_per_trade = MIN_RISK_PER_TRADE
-        self.max_positions = MAX_POSITIONS
-        self.daily_stop_loss = DAILY_STOP_LOSS
-        self.weekly_stop_loss = WEEKLY_STOP_LOSS
-        self.monthly_stop_loss = MONTHLY_STOP_LOSS
+        # Position sizing
+        self.min_order_usdt = 10.0
+        self.max_order_usdt = 30.0
         
-        # Fees
-        self.maker_fee = MAKER_FEE
-        self.taker_fee = TAKER_FEE
+        # Target & Stop - Optimized for ETH 4h
+        self.target_profit_pct = 0.015  # 1.5% target
+        self.stop_loss_pct = 0.008      # 0.8% stop
         
-        # Exchange setup
+        # Safety
+        self.max_drawdown_pct = 0.12
+        self.max_consecutive_losses = 4
+        self.max_skips_before_pause = 20
+        
+        # Exchange
         if exchange_region.lower() == "us":
             self.base_url = "https://api.binance.us"
         elif exchange_region.lower() == "global":
@@ -544,191 +421,199 @@ class GoldenScalperBot:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
         
-        # Price cache
-        self._price_cache = {}
-        self._price_cache_time = 0
-        self._price_cache_ttl = 5
+        self.maker_fee_rate = 0.001
+        self.taker_fee_rate = 0.001
         
-        # Exchange info
+        # Cache
         self._min_qty = 0.00001
         self._tick_size = 0.01
         self._min_notional = 10.0
+        self._price_cache = {}
+        self._price_cache_time = 0
+        self._price_cache_ttl = 60
         
-        # Trading state
-        self.active_positions = []
-        self.trade_history = []
-        self.daily_pnl = 0.0
-        self.weekly_pnl = 0.0
-        self.monthly_pnl = 0.0
-        self.total_pnl = 0.0
-        self.current_balance = SIMULATED_BALANCE if test_mode else 0.0
-        self.starting_balance = SIMULATED_BALANCE if test_mode else 0.0
-        self.peak_balance = SIMULATED_BALANCE if test_mode else 0.0
+        # Position state
+        self.has_open_position = False
+        self.position_entry_price = 0.0
+        self.position_entry_qty = 0.0
+        self.position_target_price = 0.0
+        self.position_stop_price = 0.0
+        self.position_order_id = None
+        self.position_open_time = None
+        
+        # Balance tracking
+        self.current_balance_usdt = 0.0
+        self.current_balance_asset = 0.0
+        self.starting_balance = 0.0
+        self.peak_balance = 0.0
+        self.balance_fetched = False
+        self.stopped = False
+        self.skipped_count = 0
         
         # Stats
-        self.wins = 0
-        self.losses = 0
+        self.trade_history = []
+        self.win_count = 0
+        self.loss_count = 0
         self.total_trades = 0
+        self.total_fees = 0.0
+        self.running_pnl = 0.0
         self.consecutive_losses = 0
         self.consecutive_wins = 0
-        self.win_rate = 0.0
+        
+        self.cycle_stats = {
+            "total_cycles": 0,
+            "successful_cycles": 0,
+            "failed_cycles": 0,
+            "net_profit": 0.0,
+            "start_time": None,
+            "end_time": None,
+            "cycle_results": []
+        }
         
         # Logging
         log_filename = f"golden_scalper_{datetime.now().strftime('%Y%m%d')}.log"
         logging.basicConfig(
             filename=log_filename,
             level=getattr(logging, log_level.upper()),
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+            format='%(asctime)s - %(levelname)s - %(message)s'
         )
         self.logger = logging.getLogger(__name__)
-        
-        # Console handler
         console = logging.StreamHandler()
         console.setLevel(logging.INFO)
         console.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
         self.logger.addHandler(console)
         
-        # Risk tracking
-        self.daily_start_balance = self.current_balance
-        self.weekly_start_balance = self.current_balance
-        self.monthly_start_balance = self.current_balance
-        self.last_day = datetime.now().day
-        self.last_week = datetime.now().isocalendar()[1]
-        self.last_month = datetime.now().month
+        self.logger.info("="*70)
+        self.logger.info("🏆 GOLDEN SCALPER BOT v11.0 - ULTIMATE PRODUCTION")
+        self.logger.info("="*70)
+        self.logger.info(f"   Symbol: {symbol}")
+        self.logger.info(f"   Interval: {interval}")
+        self.logger.info(f"   Target: {self.target_profit_pct*100:.1f}%")
+        self.logger.info(f"   Stop: {self.stop_loss_pct*100:.1f}%")
+        self.logger.info(f"   min_votes: {self.min_votes}")
+        self.logger.info(f"   min_confidence: {self.min_confidence}")
+        self.logger.info("="*70)
         
-        self.logger.info("=" * 70)
-        self.logger.info(f"GOLDEN STRATEGY SCALPER v5.1 - {symbol}")
-        self.logger.info("=" * 70)
-        self.logger.info(f"Strategy: ML Ensemble (15+ indicators)")
-        self.logger.info(f"Interval: {self.interval}")
-        self.logger.info(f"Min Signals Required: {self.min_signals}/15")
-        self.logger.info(f"Trailing Stop: {self.trailing_stop} ({self.trailing_pct}%)")
-        self.logger.info(f"Max Hold Days: {self.max_hold_days}")
-        self.logger.info(f"Risk per Trade: {self.max_risk_per_trade*100:.1f}%")
-        self.logger.info(f"Max Positions: {self.max_positions}")
-        self.logger.info(f"Test Mode: {self.test_mode}")
-        if self.test_mode:
-            self.logger.info(f"Simulated Balance: ${self.current_balance:.2f}")
-        self.logger.info("=" * 70)
-    
-    # ========================================================================
-    # EXCHANGE HELPERS
-    # ========================================================================
-    
+        # Initialize
+        self._check_connectivity()
+        self._get_exchange_info()
+        self._update_balances()
+        self._check_existing_orders()
+
     def _check_connectivity(self):
-        """Check API connectivity before starting."""
-        self.logger.info("Running connectivity check...")
-        
-        if self.test_mode:
-            self.logger.info("TEST MODE: Connectivity check skipped")
-            return
-        
+        self.logger.info("🔍 Running connectivity check...")
         ticker = self.get_order_book_ticker()
         if not ticker:
-            self.logger.error("CONNECTIVITY CHECK FAILED!")
-            self.logger.error("Please check your API keys and internet connection")
-            raise SystemExit("Aborting: fix connectivity before running live.")
-        self.logger.info(f"Connectivity OK - {self.symbol} price: ${ticker['bid']:.2f}")
-    
+            self.logger.error("❌ STARTUP CHECK FAILED")
+            raise SystemExit("Aborting.")
+        self.logger.info("✅ Connectivity OK.")
+
     def _get_exchange_info(self):
-        """Fetch exchange info for symbol."""
-        if self.test_mode:
-            self.logger.info("TEST MODE: Using default exchange info")
-            return
-            
         try:
             resp = requests.get(f"{self.base_url}/api/v3/exchangeInfo", timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
                 for symbol_info in data.get("symbols", []):
                     if symbol_info["symbol"] == self.symbol:
-                        for f in symbol_info.get("filters", []):
-                            if f["filterType"] == "LOT_SIZE":
-                                self._min_qty = float(f.get("minQty", 0.00001))
-                            if f["filterType"] == "PRICE_FILTER":
-                                self._tick_size = float(f.get("tickSize", 0.01))
-                            if f["filterType"] == "MIN_NOTIONAL":
-                                self._min_notional = float(f.get("minNotional", 10.0))
-                        self.logger.info("Exchange info loaded")
-                        return
+                        for filter_data in symbol_info.get("filters", []):
+                            if filter_data["filterType"] == "LOT_SIZE":
+                                self._min_qty = float(filter_data.get("minQty", 0.00001))
+                            if filter_data["filterType"] == "PRICE_FILTER":
+                                self._tick_size = float(filter_data.get("tickSize", 0.01))
+                            if filter_data["filterType"] == "MIN_NOTIONAL":
+                                self._min_notional = float(filter_data.get("minNotional", 10.0))
+                        self.logger.info(f"✅ Exchange info loaded")
+                        break
         except Exception as e:
             self.logger.warning(f"Could not fetch exchange info: {e}")
-    
-    def get_order_book_ticker(self) -> Optional[dict]:
-        """Get current bid/ask."""
-        if self.test_mode:
-            return {"bid": 6.48, "ask": 6.49}
-            
-        now = time.time()
-        if now - self._price_cache_time < self._price_cache_ttl and 'ticker' in self._price_cache:
-            return self._price_cache['ticker']
-        
+
+    def _update_balances(self):
         try:
-            resp = requests.get(f"{self.base_url}/api/v3/ticker/bookTicker", 
-                              params={"symbol": self.symbol}, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                ticker = {"bid": float(data["bidPrice"]), "ask": float(data["askPrice"])}
-                self._price_cache = {'ticker': ticker}
-                self._price_cache_time = now
-                return ticker
+            balances = self.get_account_balance()
+            if "USDT" in balances and balances["USDT"] > 0:
+                self.current_balance_usdt = balances["USDT"]
+                self.balance_fetched = True
+            else:
+                self.current_balance_usdt = 0.0
+            
+            if self.base_asset in balances and balances[self.base_asset] > 0:
+                self.current_balance_asset = balances[self.base_asset]
+            else:
+                self.current_balance_asset = 0.0
+            
+            if self.starting_balance == 0 and self.current_balance_usdt > 0:
+                self.starting_balance = self.current_balance_usdt
+                self.peak_balance = self.current_balance_usdt
+                self.logger.info(f"💰 Starting USDT: ${self.starting_balance:.2f}")
+            
+            if self.current_balance_usdt > self.peak_balance:
+                self.peak_balance = self.current_balance_usdt
+            
+            return True
         except Exception as e:
-            self.logger.warning(f"Error fetching ticker: {e}")
-        return None
-    
-    def get_current_price(self) -> Optional[float]:
-        """Get current mid price."""
-        ticker = self.get_order_book_ticker()
-        return (ticker["bid"] + ticker["ask"]) / 2 if ticker else None
-    
+            self.logger.error(f"Error fetching balances: {e}")
+            return False
+
+    def _check_existing_orders(self):
+        """Check if there are any existing open orders from previous runs"""
+        try:
+            resp = self._send_signed_request("GET", "/api/v3/openOrders", {"symbol": self.symbol})
+            if "error" not in resp and resp:
+                for order in resp:
+                    if order.get("side") == "SELL" and order.get("status") == "NEW":
+                        self.has_open_position = True
+                        self.position_order_id = order.get("orderId")
+                        self.position_target_price = float(order.get("price", 0))
+                        self.logger.info(f"📊 Found existing SELL order: {self.position_order_id} @ ${self.position_target_price:.2f}")
+                        self._get_position_details()
+                        break
+        except Exception as e:
+            self.logger.warning(f"Could not check existing orders: {e}")
+
+    def _get_position_details(self):
+        """Get position details from trade history."""
+        try:
+            resp = self._send_signed_request("GET", "/api/v3/myTrades", {"symbol": self.symbol, "limit": 1})
+            if "error" not in resp and resp:
+                buys = [t for t in resp if t.get("isBuyer")]
+                if buys:
+                    self.position_entry_price = float(buys[-1].get("price", 0))
+                    self.position_entry_qty = float(buys[-1].get("qty", 0))
+                    self.position_open_time = datetime.now()
+                    self.logger.info(f"📊 Position entry: {self.position_entry_qty:.8f} @ ${self.position_entry_price:.2f}")
+        except Exception:
+            pass
+
+        # Rebuild stop/target from config if needed
+        if self.position_entry_price > 0:
+            if not self.position_stop_price or self.position_stop_price <= 0:
+                self.position_stop_price = self.position_entry_price * (1 - self.stop_loss_pct)
+                self.logger.info(f"🛠️ Recomputed stop-loss: ${self.position_stop_price:.2f}")
+            if not self.position_target_price or self.position_target_price <= 0:
+                self.position_target_price = self.position_entry_price * (1 + self.target_profit_pct)
+                self.logger.info(f"🛠️ Recomputed target: ${self.position_target_price:.2f}")
+
     def _generate_signature(self, params: dict) -> str:
-        """Generate HMAC signature."""
         query_string = urllib.parse.urlencode(params)
-        return hmac.new(self.api_secret.encode("utf-8"), 
-                       query_string.encode("utf-8"), 
-                       hashlib.sha256).hexdigest()
-    
-    def _send_signed_request(self, method: str, endpoint: str, 
-                            params: dict = None, retries: int = 3) -> dict:
-        """Send signed API request."""
-        if self.test_mode:
-            # Simulate API response
-            if "order" in endpoint:
-                return {
-                    "orderId": "TEST_" + str(random.randint(1000, 9999)),
-                    "status": "FILLED",
-                    "executedQty": params.get("quantity", "0.1"),
-                    "price": params.get("price", "6.48"),
-                }
-            if "account" in endpoint:
-                return {
-                    "balances": [
-                        {"asset": "USDT", "free": str(self.current_balance), "locked": "0"},
-                        {"asset": "AVAX", "free": "0", "locked": "0"}
-                    ]
-                }
-            return {}
-        
+        return hmac.new(self.api_secret.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _send_signed_request(self, method: str, endpoint: str, params: dict = None, retries: int = 3) -> dict:
         if params is None:
             params = {}
-        
-        # Validate quantity/price
         if "quantity" in params:
             try:
-                qty = float(params["quantity"])
-                if qty <= 0:
+                qty_val = float(params["quantity"])
+                if qty_val <= 0:
                     return {"error": "Invalid quantity", "code": -1003}
-                params["quantity"] = format_quantity(qty)
+                params["quantity"] = format_quantity(qty_val)
             except (ValueError, TypeError):
                 return {"error": "Invalid quantity", "code": -1003}
-        
         if "price" in params:
             try:
-                price = float(params["price"])
-                if price <= 0:
+                price_val = float(params["price"])
+                if price_val <= 0:
                     return {"error": "Invalid price", "code": -1003}
-                params["price"] = format_price(price)
+                params["price"] = format_price(price_val)
             except (ValueError, TypeError):
                 return {"error": "Invalid price", "code": -1003}
         
@@ -738,7 +623,7 @@ class GoldenScalperBot:
                 params["signature"] = self._generate_signature(params)
                 headers = {"X-MBX-APIKEY": self.api_key}
                 url = f"{self.base_url}{endpoint}"
-                
+
                 if method.upper() == "GET":
                     response = requests.get(url, headers=headers, params=params, timeout=10)
                 elif method.upper() == "POST":
@@ -746,773 +631,677 @@ class GoldenScalperBot:
                 elif method.upper() == "DELETE":
                     response = requests.delete(url, headers=headers, params=params, timeout=10)
                 else:
-                    raise ValueError(f"Unsupported method: {method}")
-                
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+
                 try:
                     data = response.json()
                 except ValueError:
                     if attempt < retries - 1:
                         time.sleep(2 ** attempt)
                         continue
-                    return {"error": "Invalid JSON response"}
-                
-                if isinstance(data, dict) and "code" in data:
-                    if data.get("code") in [-1003, -1001, -1016]:
+                    return {"error": "Invalid JSON response", "status_code": response.status_code}
+
+                if isinstance(data, dict) and "code" in data and "msg" in data:
+                    error_code = data.get("code")
+                    if error_code in [-1003, -1001, -1016]:
                         time.sleep(2 ** attempt)
                         continue
-                    if data.get("code") == -2010:
-                        self._update_balance()
-                        return {"error": data.get("msg"), "code": -2010}
-                    return data
+                    if error_code == -2010:
+                        self._update_balances()
+                        return {"error": data.get("msg"), "code": error_code, "insufficient": True}
+                    return {"error": data.get("msg"), "code": error_code}
                 return data
-                
             except Exception as e:
                 if attempt < retries - 1:
                     time.sleep(2 ** attempt)
                     continue
                 return {"error": str(e)}
-        
         return {"error": "Max retries exceeded"}
-    
+
+    def get_order_book_ticker(self) -> Optional[dict]:
+        now = time.time()
+        if now - self._price_cache_time < self._price_cache_ttl:
+            if 'ticker' in self._price_cache:
+                return self._price_cache['ticker']
+        url = f"{self.base_url}/api/v3/ticker/bookTicker"
+        try:
+            resp = requests.get(url, params={"symbol": self.symbol}, timeout=5)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            if "bidPrice" in data and "askPrice" in data:
+                ticker_data = {"bid": float(data["bidPrice"]), "ask": float(data["askPrice"])}
+                self._price_cache = {'ticker': ticker_data}
+                self._price_cache_time = now
+                return ticker_data
+            return None
+        except Exception:
+            return None
+
+    def get_current_price(self) -> Optional[float]:
+        ticker = self.get_order_book_ticker()
+        if not ticker:
+            return None
+        return (ticker["bid"] + ticker["ask"]) / 2
+
     def get_account_balance(self) -> Dict[str, float]:
-        """Get account balances."""
-        if self.test_mode:
-            return {"USDT": self.current_balance}
-            
         resp = self._send_signed_request("GET", "/api/v3/account")
         if "balances" in resp and not resp.get("error"):
             balances = {}
-            for b in resp["balances"]:
-                free = float(b["free"])
+            for balance in resp["balances"]:
+                free = float(balance["free"])
                 if free > 0:
-                    balances[b["asset"]] = free
+                    balances[balance["asset"]] = free
             return balances
-        return {"USDT": 0.0}
-    
-    def _update_balance(self):
-        """Update current balance."""
-        try:
-            balances = self.get_account_balance()
-            if balances.get("USDT", 0) > 0:
-                self.current_balance = balances["USDT"]
-                if self.current_balance > self.peak_balance:
-                    self.peak_balance = self.current_balance
-                self.logger.info(f"Balance updated: ${self.current_balance:.2f}")
-                return True
-            else:
-                self.logger.warning("Balance is zero or could not be fetched")
-                if self.test_mode:
-                    self.logger.info("Test mode: Using simulated balance")
-                    return True
-                return False
-        except Exception as e:
-            self.logger.error(f"Error fetching balance: {e}")
-            if self.test_mode:
-                self.logger.info("Test mode: Using simulated balance")
-                return True
-            return False
-    
-    def _initialize_balance(self):
-        """Initialize starting balance."""
-        if self._update_balance():
-            self.starting_balance = self.current_balance
-            self.peak_balance = self.current_balance
-            self.daily_start_balance = self.current_balance
-            self.weekly_start_balance = self.current_balance
-            self.monthly_start_balance = self.current_balance
-            self.logger.info(f"Starting Balance: ${self.current_balance:.2f}")
-            return True
-        
-        if self.test_mode:
-            self.current_balance = SIMULATED_BALANCE
-            self.starting_balance = SIMULATED_BALANCE
-            self.peak_balance = SIMULATED_BALANCE
-            self.daily_start_balance = SIMULATED_BALANCE
-            self.weekly_start_balance = SIMULATED_BALANCE
-            self.monthly_start_balance = SIMULATED_BALANCE
-            self.logger.info(f"Using simulated balance: ${self.current_balance:.2f}")
-            return True
-        
-        self.logger.error("Could not fetch valid balance")
-        return False
-    
-    # ========================================================================
-    # ORDER MANAGEMENT (SIMPLIFIED FOR TEST MODE)
-    # ========================================================================
-    
-    def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
-        """Place a limit order."""
-        if self.test_mode:
-            return {
-                "orderId": f"TEST_{int(time.time())}",
-                "price": str(price),
-                "origQty": str(quantity),
-                "status": "FILLED",
-                "side": side
-            }
-        
-        if quantity <= 0:
-            return {"error": "Invalid quantity"}
-        
-        # Adjust quantity to min notional
-        if quantity * price < self._min_notional:
-            quantity = round_to_step(self._min_notional / price, self._min_qty)
-        
-        qty = round_to_step(quantity, self._min_qty)
-        if qty < self._min_qty:
-            qty = self._min_qty
-        
-        limit_price = round_to_tick(price, self._tick_size)
-        params = {
-            "symbol": self.symbol,
-            "side": side.upper(),
-            "type": "LIMIT",
-            "quantity": format_quantity(qty),
-            "price": format_price(limit_price),
-            "timeInForce": "GTC"
-        }
-        
-        response = self._send_signed_request("POST", "/api/v3/order", params)
-        if "error" in response:
-            return response
-        
-        return {
-            "orderId": response.get("orderId"),
-            "price": str(limit_price),
-            "origQty": str(qty),
-            "status": response.get("status", "NEW"),
-            "side": side
-        }
-    
-    def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
-        """Place a market order."""
-        if self.test_mode:
-            price = self.get_current_price() or 6.48
-            qty = amount if is_quantity else amount / price
-            return {
-                "orderId": f"TEST_{int(time.time())}",
-                "price": str(price),
-                "executedQty": str(qty),
-                "status": "FILLED",
-                "side": side
-            }
-        
-        ticker = self.get_order_book_ticker()
-        if not ticker:
-            return {"error": "Failed to get market price"}
-        
-        price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
-        if amount <= 0:
-            return {"error": "Invalid amount"}
-        
-        qty = amount if is_quantity else amount / price
-        qty = round_to_step(qty, self._min_qty)
-        if qty < self._min_qty:
-            qty = self._min_qty
-        
-        params = {
-            "symbol": self.symbol,
-            "side": side.upper(),
-            "type": "MARKET",
-            "quantity": format_quantity(qty)
-        }
-        
-        response = self._send_signed_request("POST", "/api/v3/order", params)
-        if "error" in response:
-            return response
-        
-        return {
-            "orderId": response.get("orderId"),
-            "price": str(price),
-            "executedQty": response.get("executedQty", str(qty)),
-            "status": response.get("status", "FILLED"),
-            "side": side
-        }
-    
-    def cancel_order(self, order_id: str) -> dict:
-        """Cancel an order."""
-        if self.test_mode:
-            return {"status": "CANCELED"}
-            
-        if not order_id or order_id == "0":
-            return {"status": "CANCELED"}
-        
-        response = self._send_signed_request("DELETE", "/api/v3/order", 
-                                           {"symbol": self.symbol, "orderId": order_id})
-        if response.get("code") == -2011:
-            return {"status": "CANCELED"}
-        return response
-    
-    def get_order_status(self, order_id: str) -> dict:
-        """Get order status."""
-        if self.test_mode or not order_id or order_id == "0":
-            return {"status": "FILLED"}
-        return self._send_signed_request("GET", "/api/v3/order", 
-                                       {"symbol": self.symbol, "orderId": order_id})
-    
+        return {}
+
     def get_order_fill_price(self, order_id: str) -> Optional[float]:
-        """Get fill price of an order."""
-        if self.test_mode:
-            return self.get_current_price() or 6.48
-            
-        status = self.get_order_status(order_id)
+        status = self._send_signed_request("GET", "/api/v3/order", {
+            "symbol": self.symbol,
+            "orderId": order_id,
+        })
         if status.get("status") == "FILLED":
             cum_quote = float(status.get("cummulativeQuoteQty", 0))
             executed_qty = float(status.get("executedQty", 0))
             if executed_qty > 0 and cum_quote > 0:
                 return cum_quote / executed_qty
         return None
-    
-    # ========================================================================
-    # STRATEGY LOGIC
-    # ========================================================================
-    
-    def check_signal(self) -> Dict:
-        """Check for trading signal using the Golden Strategy."""
-        klines = AdvancedIndicators.get_klines(
-            self.symbol, self.base_url, self.interval, limit=150
-        )
+
+    def get_order_status(self, order_id: str) -> dict:
+        if not order_id or order_id == "0" or "ERR_" in str(order_id):
+            return {"status": "FILLED", "orderId": order_id}
+        params = {"symbol": self.symbol, "orderId": order_id}
+        return self._send_signed_request("GET", "/api/v3/order", params)
+
+    def cancel_order(self, order_id: str) -> dict:
+        if not order_id or order_id == "0" or "ERR_" in str(order_id):
+            return {"status": "CANCELED", "orderId": order_id}
+        params = {"symbol": self.symbol, "orderId": order_id}
+        response = self._send_signed_request("DELETE", "/api/v3/order", params)
+        if response.get("code") == -2011:
+            return {"status": "CANCELED", "orderId": order_id}
+        return response
+
+    def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
+        ticker = self.get_order_book_ticker()
+        if not ticker:
+            return {"error": "Failed to get market price"}
         
-        if not klines or len(klines['closes']) < 100:
-            return {"signal": "NEUTRAL", "reason": "Insufficient data", "current_price": self.get_current_price() or 6.48}
+        price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
         
-        signal = MLEnsembleStrategy.analyze(klines, self.min_signals)
+        if amount <= 0:
+            return {"error": "Invalid amount", "code": -1003}
         
-        # Add price info
-        signal['current_price'] = klines['closes'][-1]
-        signal['timestamp'] = datetime.now().isoformat()
-        
-        # Log signal details
-        if signal['signal'] == "BUY":
-            self.logger.info(f"BUY SIGNAL: {signal['signal_count']}/{signal['total_signals']} signals, "
-                           f"confidence: {signal['confidence']:.2f}, R:R: {signal['rr_ratio']:.2f}")
-            self.logger.info(f"Top signals: {', '.join(signal['signal_names'][:3])}")
+        if is_quantity:
+            qty = amount
         else:
-            self.logger.info(f"NO SIGNAL: {signal.get('reason', 'Neutral')} - {signal['signal_count']}/{signal['total_signals']} signals")
+            qty = amount / price
         
-        return signal
-    
-    def calculate_position_size(self, signal: Dict, balance: float) -> float:
-        """Calculate position size using Kelly + risk management."""
-        # Base risk
-        risk = self.max_risk_per_trade
+        qty = round_to_step(qty, self._min_qty)
+        if qty < self._min_qty:
+            qty = self._min_qty
         
-        # Adjust for win rate
-        if self.win_rate > 0 and self.total_trades > 10:
-            # Kelly fraction
-            avg_win = 0.0226  # From backtest (2.26%)
-            avg_loss = 0.01   # Estimated
-            if avg_loss > 0:
-                kelly = (self.win_rate * avg_win - (1 - self.win_rate) * avg_loss) / avg_win
-                risk = min(self.max_risk_per_trade, max(self.min_risk_per_trade, kelly * 0.5))
+        notional = qty * price
+        if notional < self._min_notional:
+            qty = self._min_notional / price
+            qty = round_to_step(qty, self._min_qty)
         
-        # Adjust for consecutive losses
-        if self.consecutive_losses > 0:
-            risk *= (0.9 ** self.consecutive_losses)
+        qty_str = format_quantity(qty)
+        self.logger.info(f"📊 Placing {side} MARKET order: {qty_str} @ ~${price:.2f}")
         
-        # Adjust for drawdown
-        if self.current_balance < self.peak_balance and self.peak_balance > 0:
-            drawdown = (self.peak_balance - self.current_balance) / self.peak_balance
-            risk *= (1 - drawdown * 2)
+        params = {"symbol": self.symbol, "side": side.upper(), "type": "MARKET", "quantity": qty_str}
+        response = self._send_signed_request("POST", "/api/v3/order", params)
         
-        # Position size
-        position_size = balance * risk
-        position_size = max(10.0, min(position_size, balance * 0.30))
+        if "error" in response:
+            return response
         
-        self.logger.info(f"Position Size: ${position_size:.2f} ({risk*100:.2f}% of balance)")
-        return position_size
-    
-    def check_risk_limits(self) -> bool:
-        """Check if risk limits are exceeded."""
-        # Update daily/weekly/monthly tracking
-        now = datetime.now()
-        
-        # Daily reset
-        if now.day != self.last_day:
-            self.daily_start_balance = self.current_balance
-            self.daily_pnl = 0
-            self.last_day = now.day
-        
-        # Weekly reset
-        week = now.isocalendar()[1]
-        if week != self.last_week:
-            self.weekly_start_balance = self.current_balance
-            self.weekly_pnl = 0
-            self.last_week = week
-        
-        # Monthly reset
-        if now.month != self.last_month:
-            self.monthly_start_balance = self.current_balance
-            self.monthly_pnl = 0
-            self.last_month = now.month
-        
-        # Calculate drawdowns
-        daily_dd = (self.daily_start_balance - self.current_balance) / self.daily_start_balance if self.daily_start_balance > 0 else 0
-        weekly_dd = (self.weekly_start_balance - self.current_balance) / self.weekly_start_balance if self.weekly_start_balance > 0 else 0
-        monthly_dd = (self.monthly_start_balance - self.current_balance) / self.monthly_start_balance if self.monthly_start_balance > 0 else 0
-        
-        # Check limits
-        if daily_dd > self.daily_stop_loss:
-            self.logger.error(f"Daily stop loss hit: {daily_dd*100:.1f}%")
-            return False
-        
-        if weekly_dd > self.weekly_stop_loss:
-            self.logger.error(f"Weekly stop loss hit: {weekly_dd*100:.1f}%")
-            return False
-        
-        if monthly_dd > self.monthly_stop_loss:
-            self.logger.error(f"Monthly stop loss hit: {monthly_dd*100:.1f}%")
-            return False
-        
-        return True
-    
-    # ========================================================================
-    # TRADE EXECUTION
-    # ========================================================================
-    
-    def execute_trade(self, signal: Dict) -> Dict:
-        """Execute a trade based on signal."""
-        # Check if we can take new positions
-        if len(self.active_positions) >= self.max_positions:
-            self.logger.warning(f"Max positions ({self.max_positions}) reached")
-            return {"success": False, "reason": "Max positions"}
-        
-        # Check risk limits
-        if not self.check_risk_limits():
-            return {"success": False, "reason": "Risk limit exceeded"}
-        
-        # Update balance
-        self._update_balance()
-        if self.current_balance <= 0:
-            return {"success": False, "reason": "Insufficient balance"}
-        
-        # Calculate position size
-        position_size = self.calculate_position_size(signal, self.current_balance)
-        
-        # Place BUY order
-        current_price = self.get_current_price()
-        if not current_price:
-            return {"success": False, "reason": "No price data"}
-        
-        # Use limit order slightly below market
-        buy_price = current_price * 0.9995
-        buy_price = round_to_tick(buy_price, self._tick_size)
-        
-        self.logger.info(f"Placing BUY order: ${position_size:.2f} @ ${buy_price:.2f}")
-        buy_order = self.place_limit_order("BUY", position_size / buy_price, buy_price)
-        
-        if "error" in buy_order:
-            self.logger.error(f"Buy order failed: {buy_order}")
-            return {"success": False, "reason": buy_order.get("error", "Buy failed")}
-        
-        # Wait for fill
-        order_id = buy_order.get("orderId")
+        order_id = response.get("orderId")
         if not order_id:
-            return {"success": False, "reason": "No order ID"}
+            return {"error": "No orderId returned"}
         
-        # Get fill price
-        time.sleep(2)
-        fill_price = self.get_order_fill_price(order_id)
-        if not fill_price:
-            # Use market order to fill
-            self.logger.warning("Limit order not filled, using market order")
-            self.cancel_order(order_id)
-            market_buy = self.place_market_order("BUY", position_size)
-            if "error" in market_buy:
-                return {"success": False, "reason": "Market buy failed"}
-            fill_price = float(market_buy.get("price", current_price))
-            quantity = float(market_buy.get("executedQty", 0))
-        else:
-            quantity = float(buy_order.get("origQty", 0))
+        self.logger.info(f"⏳ Waiting for {side} order to fill...")
+        max_wait = 30
+        wait_start = time.time()
         
-        # Store position
-        position = {
-            "entry_price": fill_price,
-            "quantity": quantity,
-            "entry_time": datetime.now(),
-            "entry_date": datetime.now().strftime("%Y-%m-%d"),
-            "stop_price": signal['stop'],
-            "target_price": signal['target'],
-            "highest_price": fill_price,
-            "order_id": order_id,
-            "signal": signal,
-            "status": "OPEN"
-        }
-        self.active_positions.append(position)
+        while time.time() - wait_start < max_wait:
+            status = self.get_order_status(order_id)
+            status_val = status.get("status")
+            
+            if status_val == "FILLED":
+                executed_qty = float(status.get("executedQty", 0))
+                cum_quote = float(status.get("cummulativeQuoteQty", 0))
+                if executed_qty > 0:
+                    fill_price = cum_quote / executed_qty if cum_quote > 0 else price
+                    self.logger.info(f"✅ {side} order FILLED: {executed_qty:.8f} @ ${fill_price:.2f}")
+                    return {
+                        "orderId": order_id,
+                        "price": str(fill_price),
+                        "executedQty": str(executed_qty),
+                        "status": "FILLED",
+                        "side": side,
+                    }
+            
+            if status_val == "CANCELED" or status_val == "EXPIRED":
+                self.logger.error(f"❌ {side} order was {status_val}")
+                return {"error": f"Order {status_val}"}
+            
+            time.sleep(2)
         
-        self.logger.info(f"✅ BUY FILLED: {quantity:.4f} @ ${fill_price:.2f}")
-        
-        return {
-            "success": True,
-            "entry_price": fill_price,
-            "quantity": quantity,
-            "position": position
-        }
-    
-    def check_exit_conditions(self, position: Dict, current_price: float, 
-                              current_low: float, current_high: float) -> Optional[Dict]:
-        """Check if position should be exited."""
-        entry_price = position['entry_price']
-        stop_price = position['stop_price']
-        target_price = position['target_price']
-        
-        # Update highest price for trailing stop
-        if current_price > position['highest_price']:
-            position['highest_price'] = current_price
-        
-        exit_price = None
-        exit_reason = None
-        
-        # Fixed stop loss
-        if current_low <= stop_price:
-            exit_price = stop_price
-            exit_reason = "STOP_LOSS"
-        
-        # Target hit
-        elif current_high >= target_price:
-            exit_price = target_price
-            exit_reason = "TARGET"
-        
-        # Trailing stop (if enabled)
-        if not exit_price and self.trailing_stop:
-            trail_price = position['highest_price'] * (1 - self.trailing_pct * 0.01)
-            if current_low <= trail_price:
-                exit_price = trail_price
-                exit_reason = "TRAILING_STOP"
-        
-        # Time exit
-        if not exit_price:
-            days_held = (datetime.now() - position['entry_time']).days
-            if days_held >= self.max_hold_days:
-                exit_price = current_price
-                exit_reason = "TIME_EXIT"
-        
-        if exit_price:
+        status = self.get_order_status(order_id)
+        executed_qty = float(status.get("executedQty", 0))
+        cum_quote = float(status.get("cummulativeQuoteQty", 0))
+        if executed_qty > 0:
+            fill_price = cum_quote / executed_qty if cum_quote > 0 else price
+            self.logger.info(f"⚠️ Partial fill: {executed_qty:.8f} @ ${fill_price:.2f}")
             return {
-                "exit_price": exit_price,
-                "exit_reason": exit_reason,
-                "pnl_pct": (exit_price - entry_price) / entry_price,
-                "days_held": (datetime.now() - position['entry_time']).days
+                "orderId": order_id,
+                "price": str(fill_price),
+                "executedQty": str(executed_qty),
+                "status": "PARTIALLY_FILLED",
+                "side": side,
             }
         
-        return None
-    
-    def exit_position(self, position: Dict, exit_info: Dict) -> Dict:
-        """Exit a position."""
-        exit_price = exit_info['exit_price']
-        exit_reason = exit_info['exit_reason']
+        return {"error": "Order fill timeout"}
+
+    def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
+        if quantity <= 0:
+            return {"error": "Invalid quantity", "code": -1003}
         
-        # Place SELL order
-        self.logger.info(f"Exiting position: {exit_reason} @ ${exit_price:.2f}")
-        sell_order = self.place_limit_order("SELL", position['quantity'], exit_price)
+        if side.upper() == "SELL":
+            self._update_balances()
+            if self.current_balance_asset < quantity * 0.99:
+                self.logger.error(f"❌ Insufficient {self.base_asset}: {self.current_balance_asset:.8f} (need {quantity:.8f})")
+                return {"error": f"Insufficient {self.base_asset} balance", "code": -2010}
         
-        if "error" in sell_order:
-            self.logger.warning("Limit sell failed, using market order")
-            sell_order = self.place_market_order("SELL", position['quantity'], is_quantity=True)
-            if "error" in sell_order:
-                return {"success": False, "reason": "Sell failed"}
-            exit_price = float(sell_order.get("price", exit_price))
+        qty = round_to_step(quantity, self._min_qty)
+        if qty < self._min_qty:
+            qty = self._min_qty
         
-        # Calculate P&L
-        entry_price = position['entry_price']
-        gross_pnl = (exit_price - entry_price) * position['quantity']
-        net_pnl = gross_pnl - (entry_price * position['quantity'] * self.maker_fee + 
-                              exit_price * position['quantity'] * self.taker_fee)
-        pnl_pct = net_pnl / (entry_price * position['quantity']) if entry_price * position['quantity'] > 0 else 0
+        limit_price = round_to_tick(price, self._tick_size)
+        qty_str = format_quantity(qty)
+        price_str = format_price(limit_price)
         
-        # Update stats
-        self.total_trades += 1
-        self.total_pnl += net_pnl
-        self.current_balance += net_pnl
+        self.logger.info(f"📊 Placing {side} LIMIT order: {qty_str} @ ${price_str}")
         
-        if net_pnl > 0:
-            self.wins += 1
-            self.consecutive_wins += 1
-            self.consecutive_losses = 0
-        else:
-            self.losses += 1
-            self.consecutive_losses += 1
-            self.consecutive_wins = 0
-        
-        self.win_rate = self.wins / self.total_trades if self.total_trades > 0 else 0
-        
-        # Update daily/weekly/monthly P&L
-        self.daily_pnl += net_pnl
-        self.weekly_pnl += net_pnl
-        self.monthly_pnl += net_pnl
-        
-        # Record trade
-        trade_record = {
-            "entry_price": entry_price,
-            "exit_price": exit_price,
-            "quantity": position['quantity'],
-            "gross_pnl": gross_pnl,
-            "net_pnl": net_pnl,
-            "pnl_pct": pnl_pct * 100,
-            "exit_reason": exit_reason,
-            "days_held": exit_info['days_held'],
-            "entry_date": position['entry_date'],
-            "exit_date": datetime.now().strftime("%Y-%m-%d"),
-            "win": net_pnl > 0
+        params = {
+            "symbol": self.symbol,
+            "side": side.upper(),
+            "type": "LIMIT",
+            "quantity": qty_str,
+            "price": price_str,
+            "timeInForce": "GTC",
         }
-        self.trade_history.append(trade_record)
         
-        # Log result
-        emoji = "✅" if net_pnl > 0 else "❌"
-        self.logger.info(f"{emoji} EXIT: {exit_reason} | P&L: ${net_pnl:.2f} ({pnl_pct*100:.2f}%) | "
-                        f"Win Rate: {self.win_rate*100:.1f}%")
+        response = self._send_signed_request("POST", "/api/v3/order", params)
+        if "error" in response:
+            return response
         
         return {
-            "success": True,
-            "exit_price": exit_price,
-            "net_pnl": net_pnl,
-            "pnl_pct": pnl_pct * 100,
-            "exit_reason": exit_reason
+            "orderId": response.get("orderId"),
+            "price": str(response.get("price", limit_price)),
+            "origQty": str(response.get("origQty", qty)),
+            "status": response.get("status", "NEW"),
+            "side": side,
         }
-    
-    def manage_positions(self):
-        """Check and manage all open positions."""
-        if not self.active_positions:
-            return
+
+    def analyze_signal(self) -> Dict:
+        """Get market data and analyze signal."""
+        klines = AdvancedIndicators.get_klines(self.symbol, self.base_url, interval=self.interval, limit=500)
+        if not klines:
+            return {"signal": "NEUTRAL", "error": "No market data"}
         
+        signal = EnsembleVoter.analyze(klines, self.min_votes, self.min_confidence)
+        return signal
+
+    def run_cycle(self, cycle_number: int = 0) -> dict:
+        if self.stopped:
+            return {"success": False, "error": "Bot stopped"}
+        
+        self.logger.info(f"\n{'='*60}")
+        self.logger.info(f"🔄 CYCLE {cycle_number}")
+        self.logger.info(f"{'='*60}")
+
+        # Check if we have an open position
+        if self.has_open_position:
+            # Defensive recompute in case stop/target are 0
+            if self.position_entry_price > 0:
+                if not self.position_stop_price or self.position_stop_price <= 0:
+                    self.position_stop_price = self.position_entry_price * (1 - self.stop_loss_pct)
+                    self.logger.warning(f"🛠️ Stop-loss was $0.00 — recomputed to ${self.position_stop_price:.2f}")
+                if not self.position_target_price or self.position_target_price <= 0:
+                    self.position_target_price = self.position_entry_price * (1 + self.target_profit_pct)
+                    self.logger.warning(f"🛠️ Target was $0.00 — recomputed to ${self.position_target_price:.2f}")
+
+            # Show current price + progress
+            live_price = self.get_current_price()
+            self.logger.info(f"📊 Position is OPEN - monitoring...")
+            self.logger.info(f"   Entry: ${self.position_entry_price:.2f}")
+            self.logger.info(f"   Target: ${self.position_target_price:.2f}")
+            self.logger.info(f"   Stop: ${self.position_stop_price:.2f}")
+            if live_price and self.position_entry_price > 0:
+                unrealized_pct = ((live_price / self.position_entry_price) - 1) * 100
+                self.logger.info(f"   Current: ${live_price:.2f}  ({unrealized_pct:+.2f}% vs entry)")
+            
+            # Check order status
+            if self.position_order_id:
+                status = self.get_order_status(self.position_order_id)
+                if status.get("status") == "FILLED":
+                    # Position closed
+                    self.has_open_position = False
+                    self.logger.info("✅ Position closed! Processing...")
+                    cum_quote = float(status.get("cummulativeQuoteQty", 0))
+                    executed_qty = float(status.get("executedQty", 0))
+                    if executed_qty > 0 and cum_quote > 0:
+                        exit_price = cum_quote / executed_qty
+                        realized_pnl = (exit_price - self.position_entry_price) * self.position_entry_qty
+                        fee_estimate = (self.position_entry_qty * self.position_entry_price * self.maker_fee_rate) + (self.position_entry_qty * exit_price * self.taker_fee_rate)
+                        net_pnl = realized_pnl - fee_estimate
+                        self.total_fees += fee_estimate
+                        self.logger.info(f"💰 P&L: ${realized_pnl:.4f} (net: ${net_pnl:.4f})")
+                        
+                        self.running_pnl += net_pnl
+                        self.current_balance_usdt = max(0, self.starting_balance + self.running_pnl)
+                        self.total_trades += 1
+                        
+                        if net_pnl > 0:
+                            self.win_count += 1
+                            self.consecutive_wins += 1
+                            self.consecutive_losses = 0
+                            if self.current_balance_usdt > self.peak_balance:
+                                self.peak_balance = self.current_balance_usdt
+                        else:
+                            self.loss_count += 1
+                            self.consecutive_losses += 1
+                            self.consecutive_wins = 0
+                        
+                        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
+                        self.logger.info(f"📊 Win Rate: {win_rate:.1f}% ({self.win_count}W/{self.loss_count}L)")
+                        
+                        self._update_balances()
+                        self.logger.info(f"💰 USDT: ${self.current_balance_usdt:.2f}")
+                        
+                        result = {
+                            "success": True,
+                            "cycle": cycle_number,
+                            "entry_price": self.position_entry_price,
+                            "exit_price": exit_price,
+                            "quantity": self.position_entry_qty,
+                            "profit": realized_pnl,
+                            "net_profit": net_pnl,
+                            "fees": fee_estimate,
+                            "stopped_out": False,
+                            "balance_after": self.current_balance_usdt,
+                            "consecutive_wins": self.consecutive_wins,
+                            "consecutive_losses": self.consecutive_losses,
+                            "win_rate": win_rate,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        self.cycle_stats["total_cycles"] += 1
+                        if net_pnl > 0:
+                            self.cycle_stats["successful_cycles"] += 1
+                        else:
+                            self.cycle_stats["failed_cycles"] += 1
+                        self.cycle_stats["net_profit"] += net_pnl
+                        self.cycle_stats["cycle_results"].append(result)
+                        self.trade_history.append(result)
+                        return result
+            
+            # Check if stop-loss should be triggered
+            current_price = live_price if live_price else self.get_current_price()
+            if current_price and self.position_stop_price > 0:
+                if current_price <= self.position_stop_price:
+                    self.logger.warning(f"🛑 STOP-LOSS triggered: ${current_price:.2f}")
+                    if self.position_order_id:
+                        self.cancel_order(self.position_order_id)
+                    exit_res = self.place_market_order(side="SELL", amount=self.position_entry_qty, is_quantity=True)
+                    if "error" not in exit_res:
+                        exit_price = float(exit_res.get("price", current_price))
+                        self.has_open_position = False
+                        realized_pnl = (exit_price - self.position_entry_price) * self.position_entry_qty
+                        fee_estimate = (self.position_entry_qty * self.position_entry_price * self.maker_fee_rate) + (self.position_entry_qty * exit_price * self.taker_fee_rate)
+                        net_pnl = realized_pnl - fee_estimate
+                        self.total_fees += fee_estimate
+                        self.logger.info(f"🛑 Stopped out @ ${exit_price:.2f} | P&L: ${net_pnl:.4f}")
+                        
+                        self.running_pnl += net_pnl
+                        self.current_balance_usdt = max(0, self.starting_balance + self.running_pnl)
+                        self.total_trades += 1
+                        self.loss_count += 1
+                        self.consecutive_losses += 1
+                        self.consecutive_wins = 0
+                        
+                        self._update_balances()
+                        result = {
+                            "success": True,
+                            "cycle": cycle_number,
+                            "entry_price": self.position_entry_price,
+                            "exit_price": exit_price,
+                            "quantity": self.position_entry_qty,
+                            "profit": realized_pnl,
+                            "net_profit": net_pnl,
+                            "fees": fee_estimate,
+                            "stopped_out": True,
+                            "balance_after": self.current_balance_usdt,
+                            "consecutive_wins": self.consecutive_wins,
+                            "consecutive_losses": self.consecutive_losses,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        self.cycle_stats["total_cycles"] += 1
+                        self.cycle_stats["failed_cycles"] += 1
+                        self.cycle_stats["net_profit"] += net_pnl
+                        self.cycle_stats["cycle_results"].append(result)
+                        self.trade_history.append(result)
+                        return result
+            
+            # Position still open - skip this cycle
+            self.skipped_count += 1
+            return {"success": False, "error": "Position open", "skipped": True}
+
+        # No position - check for new signal
+        self._update_balances()
+        
+        self.logger.info(f"💰 USDT: ${self.current_balance_usdt:.2f} | {self.base_asset}: {self.current_balance_asset:.8f}")
+        
+        if self.current_balance_usdt < self.min_order_usdt:
+            self.logger.error(f"❌ Insufficient USDT: ${self.current_balance_usdt:.2f}")
+            self.stopped = True
+            return {"success": False, "error": "Insufficient USDT"}
+        
+        if self.peak_balance > 0:
+            drawdown = (self.peak_balance - self.current_balance_usdt) / self.peak_balance
+            if drawdown > self.max_drawdown_pct:
+                self.logger.error(f"❌ Max drawdown: {drawdown*100:.1f}%")
+                self.stopped = True
+                return {"success": False, "error": "Max drawdown"}
+        
+        if self.consecutive_losses >= self.max_consecutive_losses:
+            self.logger.error(f"❌ Too many losses: {self.consecutive_losses}")
+            self.stopped = True
+            return {"success": False, "error": "Too many losses"}
+
+        # Analyze signal
+        signal = self.analyze_signal()
+        
+        if "error" in signal:
+            self.logger.warning(f"⚠️ Signal error: {signal['error']}")
+            self.skipped_count += 1
+            return {"success": False, "error": signal['error'], "skipped": True}
+        
+        self.logger.info(f"📊 Signal: {signal['signal']} | Confidence: {signal['confidence']:.2f} | Votes: {signal['votes']}")
+        for strategy in signal.get('voting_strategies', []):
+            self.logger.info(f"   ✅ {strategy} voted BUY")
+        
+        if signal['signal'] != "BUY":
+            self.logger.info("⏭️ No signal - skipping")
+            self.skipped_count += 1
+            if self.skipped_count >= self.max_skips_before_pause:
+                self.logger.info(f"⏳ {self.skipped_count} skips - pausing for 5 minutes")
+                time.sleep(300)
+                self.skipped_count = 0
+            return {"success": False, "error": "No signal", "skipped": True}
+        
+        self.skipped_count = 0
+        
+        # Get current price
         current_price = self.get_current_price()
         if not current_price:
-            return
+            return {"success": False, "error": "No price"}
+
+        # Calculate position size
+        position_usdt = min(self.max_order_usdt, self.current_balance_usdt * 0.15)
+        position_usdt = max(self.min_order_usdt, position_usdt)
         
-        # Get OHLC for stop checking
-        klines = AdvancedIndicators.get_klines(
-            self.symbol, self.base_url, self.interval, limit=1
-        )
-        if not klines:
-            # Use current price for both high and low
-            current_high = current_price
-            current_low = current_price
-        else:
-            current_high = klines['highs'][-1] if klines['highs'] else current_price
-            current_low = klines['lows'][-1] if klines['lows'] else current_price
+        self.logger.info(f"📈 Buying ${position_usdt:.2f} worth of {self.base_asset}")
         
-        positions_to_remove = []
+        # BUY
+        buy_order = self.place_market_order(side="BUY", amount=position_usdt, is_quantity=False)
         
-        for idx, position in enumerate(self.active_positions):
-            exit_info = self.check_exit_conditions(position, current_price, current_low, current_high)
-            
-            if exit_info:
-                result = self.exit_position(position, exit_info)
-                if result.get('success'):
-                    positions_to_remove.append(idx)
-                    self.export_trade(trade_record={
-                        **position,
-                        **result,
-                        'exit_reason': exit_info['exit_reason']
-                    })
+        if "error" in buy_order:
+            self.logger.error(f"❌ Buy failed: {buy_order}")
+            return {"success": False, "error": buy_order.get("error", "Buy failed")}
         
-        # Remove closed positions (in reverse order)
-        for idx in sorted(positions_to_remove, reverse=True):
-            self.active_positions.pop(idx)
-    
-    # ========================================================================
-    # MAIN LOOP
-    # ========================================================================
-    
-    def run_cycle(self):
-        """Run one trading cycle."""
-        try:
-            # Check signal
-            signal = self.check_signal()
-            
-            if signal['signal'] == "BUY":
-                # Check if we should enter
-                if len(self.active_positions) < self.max_positions:
-                    result = self.execute_trade(signal)
-                    if result.get('success'):
-                        self.export_position(result['position'])
-                else:
-                    self.logger.info(f"Max positions ({self.max_positions}) reached")
-            
-            # Manage existing positions
-            self.manage_positions()
-            
-            # Update stats
-            self._update_balance()
-            
-            # Export stats
-            self.export_stats()
-            
-        except Exception as e:
-            self.logger.error(f"Error in cycle: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-    
-    def run_forever(self, delay_hours: int = 24):
-        """Run the bot continuously."""
-        self._check_connectivity()
-        self._get_exchange_info()
-        self._initialize_balance()
+        entry_price = float(buy_order.get("price", 0))
+        entry_qty = float(buy_order.get("executedQty", 0))
         
-        self.logger.info(f"\n🚀 Starting Golden Strategy Bot - {self.symbol}")
-        self.logger.info(f"Checking signal every {delay_hours} hours")
-        self.logger.info("Press Ctrl+C to stop\n")
+        if entry_qty <= 0 or entry_price <= 0:
+            self.logger.error(f"❌ Invalid buy: qty={entry_qty}, price={entry_price}")
+            return {"success": False, "error": "Invalid buy"}
         
-        cycle = 1
-        while True:
+        self.logger.info(f"✅ BUY Filled: {entry_qty:.8f} {self.base_asset} @ ${entry_price:.2f}")
+        
+        self._update_balances()
+        self.logger.info(f"💰 After BUY - {self.base_asset}: {self.current_balance_asset:.8f}")
+
+        # Calculate exit levels
+        stop_price = max(entry_price * (1 - self.stop_loss_pct), signal['stop_price'])
+        target_price = min(entry_price * (1 + self.target_profit_pct), signal['target_price'])
+        
+        # Use actual balance for selling
+        sell_qty = min(entry_qty, self.current_balance_asset * 0.995)
+        sell_qty = round_to_step(sell_qty, self._min_qty)
+        
+        if sell_qty <= 0:
+            self.logger.error(f"❌ No {self.base_asset} to sell")
+            return {"success": False, "error": "No asset to sell"}
+        
+        self.logger.info(f"📊 Selling {sell_qty:.8f} {self.base_asset}")
+        self.logger.info(f"🎯 Target: ${target_price:.2f} (+{((target_price/entry_price)-1)*100:.2f}%)")
+        self.logger.info(f"🛑 Stop: ${stop_price:.2f} (-{((1 - stop_price/entry_price))*100:.2f}%)")
+        
+        # Place SELL LIMIT order
+        sell_order = self.place_limit_order(side="SELL", quantity=sell_qty, price=target_price)
+        
+        if "error" in sell_order:
+            self.logger.error(f"❌ Sell limit failed: {sell_order}")
+            self.logger.info("🔄 Trying market sell as fallback...")
+            sell_order = self.place_market_order(side="SELL", amount=sell_qty, is_quantity=True)
+            if "error" in sell_order:
+                self.logger.error(f"❌ Market sell also failed: {sell_order}")
+                return {"success": False, "error": "Sell failed"}
+            exit_price = float(sell_order.get("price", current_price))
+            self.logger.info(f"✅ Market SELL filled @ ${exit_price:.2f}")
+            
+            realized_pnl = (exit_price - entry_price) * sell_qty
+            fee_estimate = (sell_qty * entry_price * self.maker_fee_rate) + (sell_qty * exit_price * self.taker_fee_rate)
+            net_pnl = realized_pnl - fee_estimate
+            self.total_fees += fee_estimate
+            self._update_balances()
+            
+            self.logger.info(f"💰 P&L: ${realized_pnl:.4f} (net: ${net_pnl:.4f})")
+            
+            self.running_pnl += net_pnl
+            self.current_balance_usdt = max(0, self.starting_balance + self.running_pnl)
+            self.total_trades += 1
+            
+            if net_pnl > 0:
+                self.win_count += 1
+                self.consecutive_wins += 1
+                self.consecutive_losses = 0
+                if self.current_balance_usdt > self.peak_balance:
+                    self.peak_balance = self.current_balance_usdt
+            else:
+                self.loss_count += 1
+                self.consecutive_losses += 1
+                self.consecutive_wins = 0
+            
+            win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
+            self.logger.info(f"📊 Win Rate: {win_rate:.1f}% ({self.win_count}W/{self.loss_count}L)")
+            
+            result = {
+                "success": True,
+                "cycle": cycle_number,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "quantity": sell_qty,
+                "profit": realized_pnl,
+                "net_profit": net_pnl,
+                "fees": fee_estimate,
+                "stopped_out": False,
+                "balance_after": self.current_balance_usdt,
+                "consecutive_wins": self.consecutive_wins,
+                "consecutive_losses": self.consecutive_losses,
+                "win_rate": win_rate,
+                "timestamp": datetime.now().isoformat()
+            }
+            self.cycle_stats["total_cycles"] += 1
+            if net_pnl > 0:
+                self.cycle_stats["successful_cycles"] += 1
+            else:
+                self.cycle_stats["failed_cycles"] += 1
+            self.cycle_stats["net_profit"] += net_pnl
+            self.cycle_stats["cycle_results"].append(result)
+            self.trade_history.append(result)
+            return result
+        
+        self.position_order_id = sell_order.get("orderId")
+        if not self.position_order_id:
+            return {"success": False, "error": "No sell orderId"}
+        
+        # Set position tracking
+        self.has_open_position = True
+        self.position_entry_price = entry_price
+        self.position_entry_qty = sell_qty
+        self.position_target_price = target_price
+        self.position_stop_price = stop_price
+        self.position_open_time = datetime.now()
+        
+        self.logger.info(f"✅ SELL LIMIT order placed: {self.position_order_id}")
+        self.logger.info(f"⏳ Position open - waiting for target ${target_price:.2f}")
+        self.logger.info(f"   Stop-loss at ${stop_price:.2f}")
+
+        return {"success": True, "position_open": True, "order_id": self.position_order_id}
+
+    def run_forever(self, delay_between_cycles: int = 600):
+        self.logger.info("\n" + "="*70)
+        self.logger.info("🚀 GOLDEN SCALPER BOT v11.0 - RUNNING")
+        self.logger.info(f"   {self.symbol} {self.interval} - Golden Strategy")
+        self.logger.info("   Press Ctrl+C to stop")
+        self.logger.info("="*70)
+
+        self.cycle_stats["start_time"] = datetime.now()
+        cycle_num = 1
+        
+        while not self.stopped:
             try:
-                self.logger.info(f"\n{'='*70}")
-                self.logger.info(f"CYCLE {cycle} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                self.logger.info(f"{'='*70}")
-                self.logger.info(f"Balance: ${self.current_balance:.2f} | Positions: {len(self.active_positions)}")
-                self.logger.info(f"Win Rate: {self.win_rate*100:.1f}% | Total Trades: {self.total_trades}")
+                result = self.run_cycle(cycle_number=cycle_num)
                 
-                self.run_cycle()
-                
-                cycle += 1
-                
-                # Sleep until next check
-                if not self.active_positions:
-                    self.logger.info(f"Sleeping for {delay_hours} hours until next check")
-                    time.sleep(delay_hours * 3600)
+                if result.get("success", False):
+                    if result.get("position_open", False):
+                        self.logger.info(f"📊 Position opened - monitoring...")
+                    else:
+                        net = result.get('net_profit', 0)
+                        self.logger.info(f"✅ TRADE COMPLETED! Net: ${net:.4f}")
+                elif result.get("skipped", False):
+                    if self.has_open_position:
+                        self.logger.info(f"⏳ Position open - monitoring...")
+                    else:
+                        self.logger.info(f"⏭️ Skipped ({self.skipped_count} skips)")
                 else:
-                    # Check more frequently when in positions
-                    self.logger.info(f"Positions open - checking every hour")
-                    time.sleep(3600)
-                    
+                    self.logger.error(f"⚠️ Failed: {result.get('error', 'Unknown')}")
+                
+                if self.total_trades > 0:
+                    win_rate = (self.win_count / self.total_trades) * 100
+                    self.logger.info(f"📊 STATS: {self.total_trades} trades, {win_rate:.1f}% win, ${self.cycle_stats['net_profit']:.4f}")
+                
+                if self.consecutive_wins >= 7:
+                    self.logger.info("🎉🎉🎉 7 CONSECUTIVE WINS! 🎉🎉🎉")
+                    self.stopped = True
+                    break
+                
+                wait_time = delay_between_cycles + random.uniform(0, 60)
+                if not self.has_open_position:
+                    self.logger.info(f"\n⏳ Waiting {wait_time/60:.1f} minutes...")
+                time.sleep(wait_time)
+                cycle_num += 1
+                
             except KeyboardInterrupt:
-                self.logger.info("\n🛑 Stopped by user")
+                self.logger.info("⚠️ Stopped by user")
                 break
             except Exception as e:
-                self.logger.error(f"Fatal error: {e}")
+                self.logger.error(f"❌ Error: {e}")
                 import traceback
-                self.logger.error(traceback.format_exc())
-                time.sleep(3600)  # Wait an hour before retry
-    
-    # ========================================================================
-    # EXPORT FUNCTIONS
-    # ========================================================================
-    
-    def export_position(self, position: Dict):
-        """Export position to CSV."""
-        filename = f"golden_positions_{datetime.now().strftime('%Y%m%d')}.csv"
-        file_exists = os.path.isfile(filename)
-        
-        with open(filename, 'a', newline='') as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow([
-                    'date', 'symbol', 'entry_price', 'quantity', 
-                    'stop_price', 'target_price', 'signal_count',
-                    'confidence', 'rr_ratio'
-                ])
-            writer.writerow([
-                position['entry_date'],
-                self.symbol,
-                position['entry_price'],
-                position['quantity'],
-                position['stop_price'],
-                position['target_price'],
-                position['signal']['signal_count'],
-                position['signal']['confidence'],
-                position['signal']['rr_ratio']
-            ])
-    
-    def export_trade(self, trade_record: Dict):
-        """Export completed trade to CSV."""
-        filename = f"golden_trades_{datetime.now().strftime('%Y%m%d')}.csv"
-        file_exists = os.path.isfile(filename)
-        
-        with open(filename, 'a', newline='') as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow([
-                    'entry_date', 'exit_date', 'symbol', 'entry_price',
-                    'exit_price', 'quantity', 'pnl_pct', 'net_pnl',
-                    'exit_reason', 'days_held', 'win'
-                ])
-            writer.writerow([
-                trade_record.get('entry_date', ''),
-                trade_record.get('exit_date', ''),
-                self.symbol,
-                trade_record.get('entry_price', 0),
-                trade_record.get('exit_price', 0),
-                trade_record.get('quantity', 0),
-                trade_record.get('pnl_pct', 0),
-                trade_record.get('net_pnl', 0),
-                trade_record.get('exit_reason', ''),
-                trade_record.get('days_held', 0),
-                trade_record.get('win', False)
-            ])
-    
-    def export_stats(self):
-        """Export statistics to CSV."""
-        filename = f"golden_stats_{datetime.now().strftime('%Y%m%d')}.csv"
-        file_exists = os.path.isfile(filename)
-        
-        with open(filename, 'a', newline='') as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow([
-                    'timestamp', 'balance', 'total_pnl', 'win_rate',
-                    'total_trades', 'wins', 'losses', 'consecutive_wins',
-                    'consecutive_losses', 'active_positions'
-                ])
-            writer.writerow([
-                datetime.now().isoformat(),
-                f"{self.current_balance:.2f}",
-                f"{self.total_pnl:.2f}",
-                f"{self.win_rate*100:.1f}%",
-                self.total_trades,
-                self.wins,
-                self.losses,
-                self.consecutive_wins,
-                self.consecutive_losses,
-                len(self.active_positions)
-            ])
+                traceback.print_exc()
+                time.sleep(delay_between_cycles)
+                cycle_num += 1
+
+        self.cycle_stats["end_time"] = datetime.now()
+        self.print_final_summary()
+        self.export_final_report()
+
+    def print_final_summary(self):
+        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
+        self.logger.info("\n" + "="*70)
+        self.logger.info("🏆 GOLDEN STRATEGY - FINAL SUMMARY")
+        self.logger.info("="*70)
+        self.logger.info(f"📊 Trades: {self.total_trades} | Wins: {self.win_count} | Losses: {self.loss_count}")
+        self.logger.info(f"📊 Win Rate: {win_rate:.1f}%")
+        self.logger.info(f"💰 Start: ${self.starting_balance:.2f} | Final: ${self.current_balance_usdt:.2f}")
+        self.logger.info(f"💰 Net Profit: ${self.cycle_stats['net_profit']:.4f}")
+        if self.starting_balance > 0:
+            roi = (self.cycle_stats['net_profit'] / self.starting_balance) * 100
+            self.logger.info(f"📊 ROI: {roi:.1f}%")
+        self.logger.info("="*70)
+
+    def export_final_report(self):
+        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
+        report = {
+            "version": "11.0",
+            "symbol": self.symbol,
+            "interval": self.interval,
+            "starting_balance": self.starting_balance,
+            "final_balance": self.current_balance_usdt,
+            "peak_balance": self.peak_balance,
+            "win_rate": win_rate,
+            "total_trades": self.total_trades,
+            "wins": self.win_count,
+            "losses": self.loss_count,
+            "total_fees": self.total_fees,
+            "net_profit": self.cycle_stats['net_profit'],
+            "summary": self.cycle_stats,
+            "trade_history": self.trade_history[-20:],
+            "parameters": {
+                "min_votes": self.min_votes,
+                "min_confidence": self.min_confidence,
+                "target_profit_pct": self.target_profit_pct,
+                "stop_loss_pct": self.stop_loss_pct,
+            }
+        }
+        filename = f"golden_scalper_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(filename, 'w') as f:
+            json.dump(report, f, indent=2, default=str)
+        self.logger.info(f"📄 Report exported to: {filename}")
 
 # ========================================================================
 # MAIN
 # ========================================================================
 
 if __name__ == "__main__":
-    # Your API keys
     API_KEY = "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn"
     API_SECRET = "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0"
     
     if not API_KEY or not API_SECRET:
-        print("❌ API KEYS NOT FOUND - Please set your API keys")
+        print("❌ API KEYS NOT FOUND!")
         exit(1)
     
-    # Create bot instance with test mode enabled
+    print("="*70)
+    print("🏆 GOLDEN SCALPER BOT v11.0 - ULTIMATE PRODUCTION")
+    print("="*70)
+    print("\n🎯 ETH 4h - Golden Strategy (Validated)")
+    print("   ✅ 4 strategies with ensemble voting")
+    print("   ✅ Single position tracking")
+    print("   ✅ Resume capability on restart")
+    print("   ✅ Stop-loss monitoring")
+    print("   ✅ GTC orders stay active")
+    print("\n🚀 Starting in 3 seconds...")
+    time.sleep(3)
+    
     bot = GoldenScalperBot(
         api_key=API_KEY,
         api_secret=API_SECRET,
-        symbol=SYMBOL,
+        symbol="ETHUSDT",
         exchange_region="us",
         log_level="INFO",
-        test_mode=True  # Set to False for live trading
+        interval="4h"
     )
     
-    # Print strategy info
-    print("\n" + "="*70)
-    print("🚀 GOLDEN STRATEGY SCALPER v5.1 - FIXED")
-    print("="*70)
-    print(f"Symbol: {SYMBOL}")
-    print(f"Interval: {INTERVAL}")
-    print(f"Strategy: ML Ensemble (15+ indicators)")
-    print(f"Min Signals: {MIN_SIGNALS}/15")
-    print(f"Trailing Stop: {TRAILING_STOP} ({TRAILING_PCT}%)")
-    print(f"Max Hold Days: {MAX_HOLD_DAYS}")
-    print(f"Risk per Trade: {MAX_RISK_PER_TRADE*100:.1f}%")
-    print("="*70)
-    print("\n📊 VALIDATED PERFORMANCE:")
-    print(f"  Win Rate: 58.9%")
-    print(f"  Avg Return: 2.26% per trade")
-    print(f"  Profit Factor: 4.16")
-    print(f"  Consistency: 2/3 blocks positive")
-    print("="*70)
-    print("\n⚠️ TEST MODE ACTIVE:")
-    print(f"  Using simulated balance: ${SIMULATED_BALANCE}")
-    print("  No real trades will be executed")
-    print("  Set test_mode=False for live trading")
-    print("="*70)
-    print("\nStarting bot... (Press Ctrl+C to stop)\n")
-    
-    # Run the bot
-    bot.run_forever(delay_hours=24)  # Check daily
+    bot.run_forever(delay_between_cycles=600)
