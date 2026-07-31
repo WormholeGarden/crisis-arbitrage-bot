@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-🚀 GOLDEN SCALPER BOT v10.9 - FAST CYCLE (FIXED)
+🚀 GOLDEN SCALPER BOT v11.0 - DETAILED SIGNAL DEBUG
 ============================================================
-FIXES:
-- Changed from 24-hour wait to 60-second monitoring cycles
-- Using 4h timeframe (more trades than daily)
-- Immediate exit checks while in position
-- Proper stop-loss monitoring every cycle
-- No more waiting 24 hours between checks!
+NEW FEATURES:
+- Shows which signals are passing/failing each cycle
+- Displays all 15 indicator signals with status
+- Clear explanation of why no trade was triggered
+- Visual progress indicators
+- Confidence breakdown
 ============================================================
 """
 
@@ -29,21 +29,20 @@ import math
 from collections import deque
 
 # ========================================================================
-# CONFIGURATION - GOLDEN STRATEGY PARAMETERS
+# CONFIGURATION
 # ========================================================================
 
 GOLDEN_CONFIG = {
-    "symbol": "AVAXUSDT",           # The winning symbol
-    "interval": "4h",               # 4h timeframe (good balance)
-    "min_signals": 6,               # Need 6+ signals out of 15
-    "trailing_pct": 0.3,            # 0.3% trailing stop
-    "max_hold_hours": 72,           # Max 72 hours (18 candles at 4h)
-    "trailing_stop": False,         # No trailing stop (target/stop only)
-    "target_profit_pct": 0.04,      # 4% target
-    "stop_loss_pct": 0.02,          # 2% stop loss
+    "symbol": "AVAXUSDT",
+    "interval": "4h",
+    "min_signals": 6,
+    "trailing_pct": 0.3,
+    "max_hold_hours": 72,
+    "trailing_stop": False,
+    "target_profit_pct": 0.04,
+    "stop_loss_pct": 0.02,
     "min_order_usdt": 10.0,
     "max_order_usdt": 50.0,
-    "cycle_interval_seconds": 60,   # Check every 60 seconds!
 }
 
 # ========================================================================
@@ -294,12 +293,12 @@ class AdvancedIndicators:
         return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di}
 
 # ========================================================================
-# GOLDEN ENSEMBLE STRATEGY
+# GOLDEN ENSEMBLE STRATEGY WITH DETAILED BREAKDOWN
 # ========================================================================
 
 class GoldenEnsembleStrategy:
     @staticmethod
-    def signal(data: Dict, params: Dict = None) -> Dict:
+    def signal(data: Dict, params: Dict = None, verbose: bool = True) -> Dict:
         if params is None:
             params = {'min_signals': 6}
         
@@ -309,118 +308,157 @@ class GoldenEnsembleStrategy:
         volumes = data['volumes']
         current = closes[-1]
         
+        # Calculate all indicators and track individual results
+        signal_results = {}
         signals = []
         weights = []
         signal_names = []
         
-        # 1. EMA Trend (Weight: 1.5)
+        # 1. EMA Trend
         ema_9 = AdvancedIndicators.ema(closes, 9)
         ema_21 = AdvancedIndicators.ema(closes, 21)
         ema_50 = AdvancedIndicators.ema(closes, 50)
         
-        if current > ema_9 > ema_21 > ema_50:
-            signals.append(1); weights.append(1.5); signal_names.append("EMA_Trend")
-        elif current > ema_50:
-            signals.append(1); weights.append(1.0); signal_names.append("EMA_Trend_Mod")
-        else:
-            signals.append(0); weights.append(1.0); signal_names.append("EMA_Trend")
+        ema_trend = 1 if current > ema_9 > ema_21 > ema_50 else 0.5 if current > ema_50 else 0
+        signals.append(ema_trend)
+        weights.append(1.5)
+        signal_names.append("EMA_Trend")
+        signal_results["EMA_Trend"] = {"value": ema_trend, "weight": 1.5, "status": "✅" if ema_trend > 0.5 else "❌"}
         
-        # 2. MACD Bullish (Weight: 1.5)
+        # 2. MACD
         macd = AdvancedIndicators.macd(closes)
-        signals.append(1 if macd['bullish'] else 0)
-        weights.append(1.5); signal_names.append("MACD")
+        macd_val = 1 if macd['bullish'] else 0
+        signals.append(macd_val)
+        weights.append(1.5)
+        signal_names.append("MACD")
+        signal_results["MACD"] = {"value": macd_val, "weight": 1.5, "status": "✅" if macd_val else "❌"}
         
-        # 3. RSI (Weight: 1.2)
+        # 3. RSI
         rsi = AdvancedIndicators.rsi(closes, 14)
         if 30 < rsi < 70:
-            signals.append(1 if rsi < 50 else 0.5)
+            rsi_val = 1 if rsi < 50 else 0.5
         elif rsi < 30:
-            signals.append(1)
+            rsi_val = 1
         else:
-            signals.append(0)
-        weights.append(1.2); signal_names.append("RSI")
+            rsi_val = 0
+        signals.append(rsi_val)
+        weights.append(1.2)
+        signal_names.append("RSI")
+        signal_results["RSI"] = {"value": rsi_val, "weight": 1.2, "status": "✅" if rsi_val > 0.5 else "❌", "raw": f"{rsi:.1f}"}
         
-        # 4. Bollinger (Weight: 1.0)
+        # 4. Bollinger
         bb = AdvancedIndicators.bollinger(closes)
         if current < bb['lower'] * 1.02:
-            signals.append(1)
+            bb_val = 1
         elif current > bb['upper'] * 0.98:
-            signals.append(0)
+            bb_val = 0
         else:
-            signals.append(0.5)
-        weights.append(1.0); signal_names.append("Bollinger")
+            bb_val = 0.5
+        signals.append(bb_val)
+        weights.append(1.0)
+        signal_names.append("Bollinger")
+        signal_results["Bollinger"] = {"value": bb_val, "weight": 1.0, "status": "✅" if bb_val > 0.5 else "❌"}
         
-        # 5. ADX (Weight: 1.3)
+        # 5. ADX
         adx = AdvancedIndicators.adx(highs, lows, closes)
-        signals.append(1 if adx > 25 else 0)
-        weights.append(1.3); signal_names.append("ADX")
+        adx_val = 1 if adx > 25 else 0
+        signals.append(adx_val)
+        weights.append(1.3)
+        signal_names.append("ADX")
+        signal_results["ADX"] = {"value": adx_val, "weight": 1.3, "status": "✅" if adx_val else "❌", "raw": f"{adx:.1f}"}
         
-        # 6. Stochastic (Weight: 0.8)
+        # 6. Stochastic
         stoch = AdvancedIndicators.stochastic(closes, highs, lows)
-        signals.append(1 if stoch < 30 else 0.3 if stoch < 50 else 0)
-        weights.append(0.8); signal_names.append("Stochastic")
+        stoch_val = 1 if stoch < 30 else 0.3 if stoch < 50 else 0
+        signals.append(stoch_val)
+        weights.append(0.8)
+        signal_names.append("Stochastic")
+        signal_results["Stochastic"] = {"value": stoch_val, "weight": 0.8, "status": "✅" if stoch_val > 0.5 else "❌", "raw": f"{stoch:.1f}"}
         
-        # 7. OBV (Weight: 1.0)
+        # 7. OBV
         obv_values = AdvancedIndicators.obv(closes, volumes)
         if len(obv_values) >= 20:
             obv_ema = AdvancedIndicators.ema(obv_values, 10)
-            signals.append(1 if obv_values[-1] > obv_ema else 0)
+            obv_val = 1 if obv_values[-1] > obv_ema else 0
         else:
-            signals.append(0)
-        weights.append(1.0); signal_names.append("OBV")
+            obv_val = 0
+        signals.append(obv_val)
+        weights.append(1.0)
+        signal_names.append("OBV")
+        signal_results["OBV"] = {"value": obv_val, "weight": 1.0, "status": "✅" if obv_val else "❌"}
         
-        # 8. VWAP (Weight: 0.8)
+        # 8. VWAP
         vwap = AdvancedIndicators.vwap(highs, lows, closes, volumes)
-        signals.append(1 if current > vwap else 0)
-        weights.append(0.8); signal_names.append("VWAP")
+        vwap_val = 1 if current > vwap else 0
+        signals.append(vwap_val)
+        weights.append(0.8)
+        signal_names.append("VWAP")
+        signal_results["VWAP"] = {"value": vwap_val, "weight": 0.8, "status": "✅" if vwap_val else "❌"}
         
-        # 9. Choppiness (Weight: 1.0)
+        # 9. Choppiness
         chop = AdvancedIndicators.chop(highs, lows, closes)
-        signals.append(1 if chop < 40 else 0)
-        weights.append(1.0); signal_names.append("Chop")
+        chop_val = 1 if chop < 40 else 0
+        signals.append(chop_val)
+        weights.append(1.0)
+        signal_names.append("Chop")
+        signal_results["Chop"] = {"value": chop_val, "weight": 1.0, "status": "✅" if chop_val else "❌", "raw": f"{chop:.1f}"}
         
-        # 10. Z-Score (Weight: 0.7)
+        # 10. Z-Score
         zscore = AdvancedIndicators.zscore(closes, 20)
-        signals.append(1 if zscore < -1 else 0)
-        weights.append(0.7); signal_names.append("ZScore")
+        zscore_val = 1 if zscore < -1 else 0
+        signals.append(zscore_val)
+        weights.append(0.7)
+        signal_names.append("ZScore")
+        signal_results["ZScore"] = {"value": zscore_val, "weight": 0.7, "status": "✅" if zscore_val else "❌", "raw": f"{zscore:.2f}"}
         
-        # 11. Keltner (Weight: 0.9)
+        # 11. Keltner
         kc = AdvancedIndicators.keltner(highs, lows, closes)
-        signals.append(1 if current < kc['lower'] * 1.01 else 0)
-        weights.append(0.9); signal_names.append("Keltner")
+        kc_val = 1 if current < kc['lower'] * 1.01 else 0
+        signals.append(kc_val)
+        weights.append(0.9)
+        signal_names.append("Keltner")
+        signal_results["Keltner"] = {"value": kc_val, "weight": 0.9, "status": "✅" if kc_val else "❌"}
         
-        # 12. Ichimoku (Weight: 1.2)
+        # 12. Ichimoku
         ichi = AdvancedIndicators.ichimoku(highs, lows, closes)
-        if current > ichi['tenkan'] and current > ichi['kijun']:
-            signals.append(1)
-        else:
-            signals.append(0)
-        weights.append(1.2); signal_names.append("Ichimoku")
+        ichi_val = 1 if current > ichi['tenkan'] and current > ichi['kijun'] else 0
+        signals.append(ichi_val)
+        weights.append(1.2)
+        signal_names.append("Ichimoku")
+        signal_results["Ichimoku"] = {"value": ichi_val, "weight": 1.2, "status": "✅" if ichi_val else "❌"}
         
-        # 13. Vortex (Weight: 0.9)
+        # 13. Vortex
         vortex = AdvancedIndicators.vortex(highs, lows, closes)
-        signals.append(1 if vortex['vi_plus'] > vortex['vi_minus'] else 0)
-        weights.append(0.9); signal_names.append("Vortex")
+        vortex_val = 1 if vortex['vi_plus'] > vortex['vi_minus'] else 0
+        signals.append(vortex_val)
+        weights.append(0.9)
+        signal_names.append("Vortex")
+        signal_results["Vortex"] = {"value": vortex_val, "weight": 0.9, "status": "✅" if vortex_val else "❌"}
         
-        # 14. CCI (Weight: 0.7)
+        # 14. CCI
         cci = AdvancedIndicators.cci(closes, highs, lows)
-        signals.append(1 if cci < -100 else 0)
-        weights.append(0.7); signal_names.append("CCI")
+        cci_val = 1 if cci < -100 else 0
+        signals.append(cci_val)
+        weights.append(0.7)
+        signal_names.append("CCI")
+        signal_results["CCI"] = {"value": cci_val, "weight": 0.7, "status": "✅" if cci_val else "❌", "raw": f"{cci:.1f}"}
         
-        # 15. DMI (Weight: 1.1)
+        # 15. DMI
         dmi = AdvancedIndicators.dmi(highs, lows, closes)
-        if dmi['plus_di'] > dmi['minus_di'] and dmi['adx'] > 20:
-            signals.append(1)
-        else:
-            signals.append(0)
-        weights.append(1.1); signal_names.append("DMI")
+        dmi_val = 1 if dmi['plus_di'] > dmi['minus_di'] and dmi['adx'] > 20 else 0
+        signals.append(dmi_val)
+        weights.append(1.1)
+        signal_names.append("DMI")
+        signal_results["DMI"] = {"value": dmi_val, "weight": 1.1, "status": "✅" if dmi_val else "❌"}
         
+        # Calculate weighted score
         weighted_sum = sum(s * w for s, w in zip(signals, weights))
         total_weight = sum(weights)
         confidence = weighted_sum / total_weight
         signal_count = sum(1 for s in signals if s > 0.5)
         min_signals = params.get('min_signals', 6)
         
+        # Stop and target
         atr = AdvancedIndicators.atr(highs, lows, closes, 14)
         recent_low = min(lows[-20:]) if len(lows) >= 20 else min(lows)
         stop = min(current - atr * 1.5, recent_low * 0.98)
@@ -432,21 +470,60 @@ class GoldenEnsembleStrategy:
         
         buy_signal = signal_count >= min_signals and confidence > 0.3
         
-        return {
+        # Build result
+        result = {
             "signal": "BUY" if buy_signal and rr_ratio > 1.5 else "NEUTRAL",
             "confidence": confidence,
             "signal_count": signal_count,
             "total_signals": len(signals),
+            "min_signals_needed": min_signals,
             "stop": stop,
             "target": target,
             "rr_ratio": rr_ratio,
             "adx": adx,
             "rsi": rsi,
             "signal_names": [name for name, sig in zip(signal_names, signals) if sig > 0.5],
+            "signal_results": signal_results,
+            "weighted_sum": weighted_sum,
+            "total_weight": total_weight,
         }
+        
+        # Print detailed breakdown if verbose
+        if verbose:
+            print("\n" + "="*70)
+            print("📊 SIGNAL BREAKDOWN")
+            print("="*70)
+            print(f"Current Price: ${current:.2f}")
+            print(f"Required Signals: {min_signals}/{len(signals)}")
+            print(f"Current Signals: {signal_count}/{len(signals)}")
+            print(f"Confidence: {confidence:.2%}")
+            print(f"R:R Ratio: {rr_ratio:.2f}")
+            print("-"*70)
+            print("INDIVIDUAL SIGNALS:")
+            for name, data in signal_results.items():
+                status = data['status']
+                raw = f" ({data.get('raw', '')})" if data.get('raw') else ""
+                bar = "█" * int(data['value'] * 10) + "░" * (10 - int(data['value'] * 10))
+                print(f"  {status} {name:12} {bar}  {data['value']:.1f}x{data['weight']:.1f}{raw}")
+            print("-"*70)
+            
+            if buy_signal and rr_ratio > 1.5:
+                print("✅ ✅ ✅ BUY SIGNAL TRIGGERED!")
+                print(f"   Target: ${target:.2f} (+{((target/current)-1)*100:.1f}%)")
+                print(f"   Stop: ${stop:.2f} (-{((1-stop/current))*100:.1f}%)")
+            else:
+                if signal_count < min_signals:
+                    print(f"❌ NOT ENOUGH SIGNALS: {signal_count}/{min_signals} needed")
+                elif rr_ratio <= 1.5:
+                    print(f"❌ POOR RISK/REWARD: {rr_ratio:.2f} (need > 1.5)")
+                else:
+                    print("❌ OTHER CONDITIONS NOT MET")
+            print("="*70)
+        
+        return result
 
 # ========================================================================
-# GOLDEN SCALPER BOT - FAST CYCLE
+# GOLDEN SCALPER BOT WITH DETAILED DEBUG
 # ========================================================================
 
 class GoldenScalperBot:
@@ -464,9 +541,7 @@ class GoldenScalperBot:
         self.base_asset = symbol.replace("USDT", "")
         
         self.min_signals = GOLDEN_CONFIG["min_signals"]
-        self.trailing_pct = GOLDEN_CONFIG["trailing_pct"]
         self.max_hold_hours = GOLDEN_CONFIG["max_hold_hours"]
-        self.trailing_stop = GOLDEN_CONFIG["trailing_stop"]
         
         self.min_order_usdt = GOLDEN_CONFIG["min_order_usdt"]
         self.max_order_usdt = GOLDEN_CONFIG["max_order_usdt"]
@@ -491,7 +566,7 @@ class GoldenScalperBot:
         self._min_notional = 10.0
         self._price_cache = {}
         self._price_cache_time = 0
-        self._price_cache_ttl = 30  # 30 second cache
+        self._price_cache_ttl = 30
         
         # State
         self.has_open_position = False
@@ -501,7 +576,6 @@ class GoldenScalperBot:
         self.position_stop_price = 0.0
         self.position_order_id = None
         self.position_open_time = None
-        self.position_highest_price = 0.0
         
         self.current_balance_usdt = 0.0
         self.current_balance_asset = 0.0
@@ -545,15 +619,13 @@ class GoldenScalperBot:
         self.logger.addHandler(console)
         
         self.logger.info("="*70)
-        self.logger.info("🚀 GOLDEN SCALPER BOT v10.9 - FAST CYCLE")
+        self.logger.info("🚀 GOLDEN SCALPER BOT v11.0 - DETAILED SIGNAL DEBUG")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Interval: {interval}")
         self.logger.info(f"   Min Signals: {self.min_signals}/15")
         self.logger.info(f"   Target: {self.target_profit_pct*100:.1f}%")
         self.logger.info(f"   Stop: {self.stop_loss_pct*100:.1f}%")
-        self.logger.info(f"   Max Hold: {self.max_hold_hours} hours")
-        self.logger.info(f"   Cycle Check: {GOLDEN_CONFIG['cycle_interval_seconds']} seconds")
         self.logger.info("="*70)
         
         self._check_connectivity()
@@ -890,22 +962,13 @@ class GoldenScalperBot:
             "side": side,
         }
 
-    def analyze_signal(self) -> Dict:
+    def analyze_signal(self, verbose: bool = True) -> Dict:
         klines = AdvancedIndicators.get_klines(self.symbol, self.base_url, interval=self.interval, limit=500)
         if not klines:
             return {"signal": "NEUTRAL", "error": "No data"}
         
         params = {'min_signals': self.min_signals}
-        signal = GoldenEnsembleStrategy.signal(klines, params)
-        
-        if signal['signal'] == "BUY":
-            self.logger.info(f"📊 Golden Signal: {signal['signal']}")
-            self.logger.info(f"   Confidence: {signal['confidence']:.2f}")
-            self.logger.info(f"   Signals: {signal['signal_count']}/{signal['total_signals']}")
-            if signal.get('signal_names'):
-                self.logger.info(f"   Active Signals: {', '.join(signal['signal_names'][:5])}...")
-            self.logger.info(f"   R:R Ratio: {signal.get('rr_ratio', 0):.2f}")
-        
+        signal = GoldenEnsembleStrategy.signal(klines, params, verbose=verbose)
         return signal
 
     def run_cycle(self, cycle_number: int = 0) -> dict:
@@ -913,7 +976,7 @@ class GoldenScalperBot:
             return {"success": False, "error": "Bot stopped"}
         
         self.logger.info(f"\n{'='*60}")
-        self.logger.info(f"🔄 CYCLE {cycle_number}")
+        self.logger.info(f"🔄 CYCLE {cycle_number} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         self.logger.info(f"{'='*60}")
 
         # Check if we have an open position
@@ -1037,9 +1100,10 @@ class GoldenScalperBot:
                         self._update_balances()
                         return {"success": True, "stopped_out": False, "net_profit": net_pnl, "time_exit": True}
             
+            self.logger.info("⏳ Position still open - monitoring...")
             return {"success": False, "error": "Position open", "skipped": True}
 
-        # No position - check for new signal
+        # No position - check for new signal with detailed breakdown
         self._update_balances()
         self.logger.info(f"💰 USDT: ${self.current_balance_usdt:.2f} | {self.base_asset}: {self.current_balance_asset:.8f}")
         
@@ -1059,16 +1123,41 @@ class GoldenScalperBot:
             self.stopped = True
             return {"success": False, "error": "Too many losses"}
 
-        signal = self.analyze_signal()
+        # Get detailed signal analysis (verbose = True shows full breakdown)
+        self.logger.info("📊 Analyzing market for entry signal...")
+        signal = self.analyze_signal(verbose=True)  # This prints the full breakdown
         
         if "error" in signal:
             self.logger.warning(f"⚠️ {signal['error']}")
             return {"success": False, "error": signal['error'], "skipped": True}
         
         if signal['signal'] != "BUY":
-            self.logger.info("⏭️ No signal - skipping")
+            # Log why no signal
+            signal_count = signal.get('signal_count', 0)
+            min_signals = signal.get('min_signals_needed', 6)
+            confidence = signal.get('confidence', 0)
+            rr_ratio = signal.get('rr_ratio', 0)
+            
+            if signal_count < min_signals:
+                self.logger.info(f"⏭️ No BUY signal: Only {signal_count}/{min_signals} signals active (need {min_signals})")
+            elif rr_ratio <= 1.5:
+                self.logger.info(f"⏭️ No BUY signal: Risk/Reward {rr_ratio:.2f} (need > 1.5)")
+            elif confidence < 0.3:
+                self.logger.info(f"⏭️ No BUY signal: Confidence {confidence:.2%} (need > 30%)")
+            else:
+                self.logger.info(f"⏭️ No BUY signal: Unknown reason")
+            
+            # Also show which signals are active
+            active_signals = signal.get('signal_names', [])
+            if active_signals:
+                self.logger.info(f"   Active signals: {', '.join(active_signals[:8])}")
+                if len(active_signals) > 8:
+                    self.logger.info(f"   ... and {len(active_signals) - 8} more")
+            
             return {"success": False, "error": "No signal", "skipped": True}
         
+        # BUY SIGNAL! Execute trade
+        self.logger.info("🚀 BUY SIGNAL CONFIRMED! Executing trade...")
         current_price = self.get_current_price()
         if not current_price:
             return {"success": False, "error": "No price"}
@@ -1152,7 +1241,6 @@ class GoldenScalperBot:
                 "profit": realized_pnl,
                 "net_profit": net_pnl,
                 "fees": fee_estimate,
-                "profit_percent": (realized_pnl / (self.buy_price * sell_qty)) * 100 if self.buy_price * sell_qty > 0 else 0,
                 "balance_after": self.current_balance_usdt,
                 "win_rate": win_rate,
             }
@@ -1176,7 +1264,6 @@ class GoldenScalperBot:
         self.position_target_price = target_price
         self.position_stop_price = stop_price
         self.position_open_time = datetime.now()
-        self.position_highest_price = self.buy_price
         
         self.logger.info(f"✅ SELL LIMIT order placed: {self.position_order_id}")
         self.logger.info(f"⏳ Position open - waiting for target ${target_price:.2f}")
@@ -1186,10 +1273,10 @@ class GoldenScalperBot:
         return {"success": True, "position_open": True, "order_id": self.position_order_id}
 
     def run_forever(self):
-        """Main loop - checks every 60 seconds while position is open, every 5 minutes when no position."""
         self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 GOLDEN SCALPER BOT v10.9 - FAST CYCLE")
+        self.logger.info("🚀 GOLDEN SCALPER BOT v11.0 - RUNNING")
         self.logger.info(f"   {self.symbol} {self.interval} - Golden Ensemble Strategy")
+        self.logger.info("   Detailed signal breakdown shown each cycle")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
 
@@ -1224,13 +1311,11 @@ class GoldenScalperBot:
                 
                 # Different wait times based on state
                 if self.has_open_position:
-                    # Check frequently when in position
-                    wait_time = 60  # 60 seconds
-                    self.logger.info(f"⏳ Monitoring position - checking every {wait_time}s...")
+                    wait_time = 60
+                    self.logger.info(f"⏳ Monitoring position - next check in {wait_time}s")
                 else:
-                    # Check less frequently when no position
-                    wait_time = 300  # 5 minutes
-                    self.logger.info(f"⏳ No position - checking every {wait_time//60} minutes...")
+                    wait_time = 300
+                    self.logger.info(f"⏳ No position - next check in {wait_time//60} minutes")
                 
                 time.sleep(wait_time)
                 cycle_num += 1
@@ -1275,15 +1360,14 @@ if __name__ == "__main__":
         exit(1)
     
     print("="*70)
-    print("🚀 GOLDEN SCALPER BOT v10.9 - FAST CYCLE (FIXED)")
+    print("🚀 GOLDEN SCALPER BOT v11.0 - DETAILED SIGNAL DEBUG")
     print("="*70)
     print(f"\n🎯 {GOLDEN_CONFIG['symbol']} {GOLDEN_CONFIG['interval']} - Golden Ensemble Strategy")
-    print(f"   ✅ 15+ indicators with ML-style ensemble voting")
-    print(f"   ✅ Walk-forward validated parameters")
+    print(f"   ✅ Shows ALL 15 signals each cycle")
+    print(f"   ✅ Explains exactly why no trade was triggered")
+    print(f"   ✅ Visual progress bars for each signal")
+    print(f"   ✅ Confidence and R:R ratio displayed")
     print(f"   ✅ Expected win rate: 58.9%")
-    print(f"   ✅ Expected avg return: 2.26%")
-    print(f"   ✅ Profit Factor: 4.16")
-    print(f"   ✅ Checking every {GOLDEN_CONFIG['cycle_interval_seconds']} seconds!")
     print("\n🚀 Starting in 3 seconds...")
     time.sleep(3)
     
