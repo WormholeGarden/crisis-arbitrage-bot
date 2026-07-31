@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-🚀 GOLDEN SCALPER BOT v11.0 - DETAILED SIGNAL DEBUG
+🚀 GOLDEN SCALPER BOT v11.1 - ADAPTIVE SIGNAL MODE
 ============================================================
 NEW FEATURES:
-- Shows which signals are passing/failing each cycle
-- Displays all 15 indicator signals with status
-- Clear explanation of why no trade was triggered
-- Visual progress indicators
-- Confidence breakdown
+- Adaptive min_signals (5 in choppy markets, 6 in trending)
+- Weak signal mode for consolidation periods
+- Shows market regime (trending/choppy)
+- Better position sizing based on signal strength
+- Still shows full signal breakdown
 ============================================================
 """
 
@@ -35,7 +35,8 @@ from collections import deque
 GOLDEN_CONFIG = {
     "symbol": "AVAXUSDT",
     "interval": "4h",
-    "min_signals": 6,
+    "min_signals_strong": 6,      # Strong trend mode
+    "min_signals_weak": 4,        # Weak/choppy mode
     "trailing_pct": 0.3,
     "max_hold_hours": 72,
     "trailing_stop": False,
@@ -293,14 +294,17 @@ class AdvancedIndicators:
         return {"adx": adx, "plus_di": plus_di, "minus_di": minus_di}
 
 # ========================================================================
-# GOLDEN ENSEMBLE STRATEGY WITH DETAILED BREAKDOWN
+# ADAPTIVE GOLDEN STRATEGY
 # ========================================================================
 
-class GoldenEnsembleStrategy:
+class AdaptiveGoldenStrategy:
     @staticmethod
     def signal(data: Dict, params: Dict = None, verbose: bool = True) -> Dict:
         if params is None:
-            params = {'min_signals': 6}
+            params = {
+                'min_signals_strong': 6,
+                'min_signals_weak': 4,
+            }
         
         closes = data['closes']
         highs = data['highs']
@@ -308,7 +312,26 @@ class GoldenEnsembleStrategy:
         volumes = data['volumes']
         current = closes[-1]
         
-        # Calculate all indicators and track individual results
+        # Calculate market regime
+        adx = AdvancedIndicators.adx(highs, lows, closes, 14)
+        chop = AdvancedIndicators.chop(highs, lows, closes, 14)
+        
+        # Determine regime: Trending if ADX > 25 and Chop < 40
+        is_trending = adx > 25 and chop < 40
+        is_choppy = chop > 50 or adx < 20
+        
+        # Adaptive min_signals
+        if is_trending:
+            min_signals = params.get('min_signals_strong', 6)
+            regime = "TRENDING 📈"
+        elif is_choppy:
+            min_signals = params.get('min_signals_weak', 4)
+            regime = "CHOPPY 🔀 (using weak mode)"
+        else:
+            min_signals = params.get('min_signals_strong', 6)
+            regime = "NEUTRAL ⚖️"
+        
+        # Calculate all indicators
         signal_results = {}
         signals = []
         weights = []
@@ -359,8 +382,7 @@ class GoldenEnsembleStrategy:
         signal_names.append("Bollinger")
         signal_results["Bollinger"] = {"value": bb_val, "weight": 1.0, "status": "✅" if bb_val > 0.5 else "❌"}
         
-        # 5. ADX
-        adx = AdvancedIndicators.adx(highs, lows, closes)
+        # 5. ADX (Trend strength)
         adx_val = 1 if adx > 25 else 0
         signals.append(adx_val)
         weights.append(1.3)
@@ -396,7 +418,6 @@ class GoldenEnsembleStrategy:
         signal_results["VWAP"] = {"value": vwap_val, "weight": 0.8, "status": "✅" if vwap_val else "❌"}
         
         # 9. Choppiness
-        chop = AdvancedIndicators.chop(highs, lows, closes)
         chop_val = 1 if chop < 40 else 0
         signals.append(chop_val)
         weights.append(1.0)
@@ -456,7 +477,6 @@ class GoldenEnsembleStrategy:
         total_weight = sum(weights)
         confidence = weighted_sum / total_weight
         signal_count = sum(1 for s in signals if s > 0.5)
-        min_signals = params.get('min_signals', 6)
         
         # Stop and target
         atr = AdvancedIndicators.atr(highs, lows, closes, 14)
@@ -468,19 +488,44 @@ class GoldenEnsembleStrategy:
         reward = target - current
         rr_ratio = reward / risk if risk > 0 else 0
         
-        buy_signal = signal_count >= min_signals and confidence > 0.3
+        # ADAPTIVE: Use different thresholds based on regime
+        buy_signal = False
+        signal_type = "NO SIGNAL"
+        
+        if is_trending:
+            # Strong trend: need 6 signals
+            if signal_count >= min_signals and confidence > 0.3 and rr_ratio > 1.5:
+                buy_signal = True
+                signal_type = "STRONG TREND SIGNAL 🚀"
+        elif is_choppy:
+            # Choppy market: need 4 signals but with higher confidence
+            if signal_count >= min_signals and confidence > 0.4 and rr_ratio > 1.8:
+                buy_signal = True
+                signal_type = "WEAK MODE SIGNAL 📊"
+        else:
+            # Neutral: standard requirements
+            if signal_count >= min_signals and confidence > 0.35 and rr_ratio > 1.5:
+                buy_signal = True
+                signal_type = "STANDARD SIGNAL ✅"
         
         # Build result
         result = {
-            "signal": "BUY" if buy_signal and rr_ratio > 1.5 else "NEUTRAL",
+            "signal": "BUY" if buy_signal else "NEUTRAL",
+            "signal_type": signal_type,
             "confidence": confidence,
             "signal_count": signal_count,
             "total_signals": len(signals),
-            "min_signals_needed": min_signals,
+            "min_signals_used": min_signals,
+            "min_signals_strong": params.get('min_signals_strong', 6),
+            "min_signals_weak": params.get('min_signals_weak', 4),
+            "regime": regime,
+            "is_trending": is_trending,
+            "is_choppy": is_choppy,
+            "adx": adx,
+            "chop": chop,
             "stop": stop,
             "target": target,
             "rr_ratio": rr_ratio,
-            "adx": adx,
             "rsi": rsi,
             "signal_names": [name for name, sig in zip(signal_names, signals) if sig > 0.5],
             "signal_results": signal_results,
@@ -494,7 +539,9 @@ class GoldenEnsembleStrategy:
             print("📊 SIGNAL BREAKDOWN")
             print("="*70)
             print(f"Current Price: ${current:.2f}")
-            print(f"Required Signals: {min_signals}/{len(signals)}")
+            print(f"Market Regime: {regime}")
+            print(f"ADX: {adx:.1f} | Chop: {chop:.1f}")
+            print(f"Required Signals: {min_signals}/{len(signals)} ({'Strong' if is_trending else 'Weak' if is_choppy else 'Standard'} mode)")
             print(f"Current Signals: {signal_count}/{len(signals)}")
             print(f"Confidence: {confidence:.2%}")
             print(f"R:R Ratio: {rr_ratio:.2f}")
@@ -507,23 +554,30 @@ class GoldenEnsembleStrategy:
                 print(f"  {status} {name:12} {bar}  {data['value']:.1f}x{data['weight']:.1f}{raw}")
             print("-"*70)
             
-            if buy_signal and rr_ratio > 1.5:
-                print("✅ ✅ ✅ BUY SIGNAL TRIGGERED!")
+            if buy_signal:
+                print(f"🎯 {signal_type}")
                 print(f"   Target: ${target:.2f} (+{((target/current)-1)*100:.1f}%)")
                 print(f"   Stop: ${stop:.2f} (-{((1-stop/current))*100:.1f}%)")
+                print(f"   Active Signals: {', '.join(result['signal_names'][:8])}")
             else:
                 if signal_count < min_signals:
                     print(f"❌ NOT ENOUGH SIGNALS: {signal_count}/{min_signals} needed")
                 elif rr_ratio <= 1.5:
                     print(f"❌ POOR RISK/REWARD: {rr_ratio:.2f} (need > 1.5)")
+                elif confidence < 0.3:
+                    print(f"❌ LOW CONFIDENCE: {confidence:.2%} (need > 30%)")
                 else:
                     print("❌ OTHER CONDITIONS NOT MET")
+                
+                if signal_count > 0:
+                    print(f"💡 HINT: Need {min_signals - signal_count} more signals")
+                    print(f"   Active: {', '.join(result['signal_names'][:5])}")
             print("="*70)
         
         return result
 
 # ========================================================================
-# GOLDEN SCALPER BOT WITH DETAILED DEBUG
+# GOLDEN SCALPER BOT WITH ADAPTIVE SIGNALS
 # ========================================================================
 
 class GoldenScalperBot:
@@ -540,7 +594,8 @@ class GoldenScalperBot:
         self.interval = interval
         self.base_asset = symbol.replace("USDT", "")
         
-        self.min_signals = GOLDEN_CONFIG["min_signals"]
+        self.min_signals_strong = GOLDEN_CONFIG["min_signals_strong"]
+        self.min_signals_weak = GOLDEN_CONFIG["min_signals_weak"]
         self.max_hold_hours = GOLDEN_CONFIG["max_hold_hours"]
         
         self.min_order_usdt = GOLDEN_CONFIG["min_order_usdt"]
@@ -619,11 +674,12 @@ class GoldenScalperBot:
         self.logger.addHandler(console)
         
         self.logger.info("="*70)
-        self.logger.info("🚀 GOLDEN SCALPER BOT v11.0 - DETAILED SIGNAL DEBUG")
+        self.logger.info("🚀 GOLDEN SCALPER BOT v11.1 - ADAPTIVE SIGNAL MODE")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Interval: {interval}")
-        self.logger.info(f"   Min Signals: {self.min_signals}/15")
+        self.logger.info(f"   Strong Signals: {self.min_signals_strong}/15")
+        self.logger.info(f"   Weak Signals: {self.min_signals_weak}/15 (choppy markets)")
         self.logger.info(f"   Target: {self.target_profit_pct*100:.1f}%")
         self.logger.info(f"   Stop: {self.stop_loss_pct*100:.1f}%")
         self.logger.info("="*70)
@@ -967,8 +1023,11 @@ class GoldenScalperBot:
         if not klines:
             return {"signal": "NEUTRAL", "error": "No data"}
         
-        params = {'min_signals': self.min_signals}
-        signal = GoldenEnsembleStrategy.signal(klines, params, verbose=verbose)
+        params = {
+            'min_signals_strong': self.min_signals_strong,
+            'min_signals_weak': self.min_signals_weak,
+        }
+        signal = AdaptiveGoldenStrategy.signal(klines, params, verbose=verbose)
         return signal
 
     def run_cycle(self, cycle_number: int = 0) -> dict:
@@ -1125,47 +1184,63 @@ class GoldenScalperBot:
 
         # Get detailed signal analysis (verbose = True shows full breakdown)
         self.logger.info("📊 Analyzing market for entry signal...")
-        signal = self.analyze_signal(verbose=True)  # This prints the full breakdown
+        signal = self.analyze_signal(verbose=True)
         
         if "error" in signal:
             self.logger.warning(f"⚠️ {signal['error']}")
             return {"success": False, "error": signal['error'], "skipped": True}
         
         if signal['signal'] != "BUY":
-            # Log why no signal
+            # Log why no signal (with details from breakdown)
             signal_count = signal.get('signal_count', 0)
-            min_signals = signal.get('min_signals_needed', 6)
+            min_signals = signal.get('min_signals_used', 6)
             confidence = signal.get('confidence', 0)
             rr_ratio = signal.get('rr_ratio', 0)
+            regime = signal.get('regime', 'Unknown')
+            
+            self.logger.info(f"⏭️ No BUY signal - Market: {regime}")
             
             if signal_count < min_signals:
-                self.logger.info(f"⏭️ No BUY signal: Only {signal_count}/{min_signals} signals active (need {min_signals})")
+                self.logger.info(f"   ❌ Only {signal_count}/{min_signals} signals active (need {min_signals})")
             elif rr_ratio <= 1.5:
-                self.logger.info(f"⏭️ No BUY signal: Risk/Reward {rr_ratio:.2f} (need > 1.5)")
+                self.logger.info(f"   ❌ Risk/Reward {rr_ratio:.2f} (need > 1.5)")
             elif confidence < 0.3:
-                self.logger.info(f"⏭️ No BUY signal: Confidence {confidence:.2%} (need > 30%)")
+                self.logger.info(f"   ❌ Confidence {confidence:.2%} (need > 30%)")
             else:
-                self.logger.info(f"⏭️ No BUY signal: Unknown reason")
+                self.logger.info(f"   ❌ Other conditions not met")
             
-            # Also show which signals are active
+            # Show active signals summary
             active_signals = signal.get('signal_names', [])
             if active_signals:
-                self.logger.info(f"   Active signals: {', '.join(active_signals[:8])}")
-                if len(active_signals) > 8:
-                    self.logger.info(f"   ... and {len(active_signals) - 8} more")
+                self.logger.info(f"   ✅ Active signals: {', '.join(active_signals)}")
+            
+            # Show what's missing
+            missing_count = min_signals - signal_count
+            if missing_count > 0 and active_signals:
+                self.logger.info(f"   💡 Need {missing_count} more signals to trigger")
             
             return {"success": False, "error": "No signal", "skipped": True}
         
         # BUY SIGNAL! Execute trade
-        self.logger.info("🚀 BUY SIGNAL CONFIRMED! Executing trade...")
+        signal_type = signal.get('signal_type', 'BUY SIGNAL')
+        self.logger.info(f"🚀 {signal_type} CONFIRMED! Executing trade...")
+        
         current_price = self.get_current_price()
         if not current_price:
             return {"success": False, "error": "No price"}
 
-        position_usdt = min(self.max_order_usdt, self.current_balance_usdt * 0.15)
+        # Adaptive position sizing based on signal strength
+        if "STRONG" in signal_type:
+            position_multiplier = 1.0
+        elif "WEAK" in signal_type:
+            position_multiplier = 0.7
+        else:
+            position_multiplier = 0.85
+        
+        position_usdt = min(self.max_order_usdt, self.current_balance_usdt * 0.15 * position_multiplier)
         position_usdt = max(self.min_order_usdt, position_usdt)
         
-        self.logger.info(f"📈 Buying ${position_usdt:.2f} worth of {self.base_asset}")
+        self.logger.info(f"📈 Buying ${position_usdt:.2f} worth of {self.base_asset} (size: {position_multiplier:.0%})")
         buy_order = self.place_market_order(side="BUY", amount=position_usdt, is_quantity=False)
         
         if "error" in buy_order:
@@ -1274,9 +1349,8 @@ class GoldenScalperBot:
 
     def run_forever(self):
         self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 GOLDEN SCALPER BOT v11.0 - RUNNING")
-        self.logger.info(f"   {self.symbol} {self.interval} - Golden Ensemble Strategy")
-        self.logger.info("   Detailed signal breakdown shown each cycle")
+        self.logger.info("🚀 GOLDEN SCALPER BOT v11.1 - ADAPTIVE MODE")
+        self.logger.info(f"   {self.symbol} {self.interval} - Adaptive Golden Strategy")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
 
@@ -1360,13 +1434,13 @@ if __name__ == "__main__":
         exit(1)
     
     print("="*70)
-    print("🚀 GOLDEN SCALPER BOT v11.0 - DETAILED SIGNAL DEBUG")
+    print("🚀 GOLDEN SCALPER BOT v11.1 - ADAPTIVE SIGNAL MODE")
     print("="*70)
-    print(f"\n🎯 {GOLDEN_CONFIG['symbol']} {GOLDEN_CONFIG['interval']} - Golden Ensemble Strategy")
-    print(f"   ✅ Shows ALL 15 signals each cycle")
-    print(f"   ✅ Explains exactly why no trade was triggered")
-    print(f"   ✅ Visual progress bars for each signal")
-    print(f"   ✅ Confidence and R:R ratio displayed")
+    print(f"\n🎯 {GOLDEN_CONFIG['symbol']} {GOLDEN_CONFIG['interval']}")
+    print(f"   ✅ Adaptive signal requirements (6 in trending, 4 in choppy)")
+    print(f"   ✅ Full 15-signal breakdown each cycle")
+    print(f"   ✅ Market regime detection (trending/choppy)")
+    print(f"   ✅ Adaptive position sizing")
     print(f"   ✅ Expected win rate: 58.9%")
     print("\n🚀 Starting in 3 seconds...")
     time.sleep(3)
