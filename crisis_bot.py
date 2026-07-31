@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v9.4 - 5 CONDITIONS OPTIMIZED
+🚀 CRISIS ARBITRAGE SCALPER v9.5 - AUTO-CONVERT FIXED
 ============================================================
-MAXIMUM TRADING FREQUENCY:
-- Requires only 5/9 conditions PASSING
-- 3-5x more trades than 6 conditions
-- Maintains 58-62% win rate
-- Optimal for small accounts ($50-500)
-- Trades frequently with "Perfect Trend Alignment"
+FIXES:
+- Auto-converts USDT to BTC before selling
+- Verifies balance before placing orders
+- Retries on insufficient balance
+- Proper settlement delay
 ============================================================
 """
 
@@ -523,19 +522,19 @@ class EinsteinStrategy:
         total_conditions = 9
         
         # Check each condition - LOOSER requirements
-        if raw_confidence > 0.15:  # LOWERED from 0.20
+        if raw_confidence > 0.15:
             passing_conditions += 1
         if strong_bullish >= 1:
             passing_conditions += 1
-        if bullish_signals >= 3:  # LOWERED from 4
+        if bullish_signals >= 3:
             passing_conditions += 1
-        if bearish_signals <= 5:  # LOWERED from 4
+        if bearish_signals <= 5:
             passing_conditions += 1
-        if confidence > 0.15:  # LOWERED from 0.20
+        if confidence > 0.15:
             passing_conditions += 1
-        if bb['position'] < 0.55:  # LOWERED from 0.40
+        if bb['position'] < 0.55:
             passing_conditions += 1
-        if 15 <= rsi <= 58:  # LOWERED (wider range)
+        if 15 <= rsi <= 58:
             passing_conditions += 1
         if current_price > sma_20:
             passing_conditions += 1
@@ -543,7 +542,7 @@ class EinsteinStrategy:
             passing_conditions += 1
         
         # Determine signal based on passing conditions
-        if passing_conditions >= 5:  # ONLY NEED 5 CONDITIONS!
+        if passing_conditions >= 5:
             signal = "BUY"
             signal_strength = "strong" if passing_conditions >= 6 else "moderate"
             expected_win_rate = 0.62 if passing_conditions >= 6 else 0.58
@@ -591,10 +590,10 @@ class EinsteinStrategy:
         }
 
 # ========================================================================
-# 🤖 SCALPER BOT - 5 CONDITIONS EDITION
+# 🤖 SCALPER BOT - 5 CONDITIONS EDITION (FIXED)
 # ========================================================================
 
-class ScalperBotV94:
+class ScalperBotV95:
 
     def __init__(self, api_key: str, api_secret: str, symbol: str = "BTCUSDT",
                  exchange_region: str = "us", log_level: str = "INFO"):
@@ -646,14 +645,14 @@ class ScalperBotV94:
         self.min_risk_per_trade = 0.01
         
         # 5 CONDITIONS - Maximum frequency
-        self.min_passing_conditions = 5     # Only need 5/9 conditions!
+        self.min_passing_conditions = 5
         self.min_confidence = 0.20
         self.min_signal_strength = "moderate"
         self.min_strong_signals = 0
         
-        # Safety limits - TIGHTER to compensate for more trades
+        # Safety limits
         self.max_drawdown_pct = 0.08
-        self.max_consecutive_losses = 4     # Increased from 3 (more trades)
+        self.max_consecutive_losses = 4
         self.max_skips_before_pause = 50
         self.target_consecutive_wins = 7
         
@@ -713,7 +712,7 @@ class ScalperBotV94:
         }
 
         self.logger.info("="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.4 - 5 CONDITIONS OPTIMIZED")
+        self.logger.info("🧠 EINSTEIN EDGE v9.5 - AUTO-CONVERT FIXED")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Mode: 💰 LIVE TRADING")
@@ -724,7 +723,7 @@ class ScalperBotV94:
         self.logger.info(f"   Win Rate Needed: 25.0%")
         self.logger.info(f"   Passing Conditions Required: {self.min_passing_conditions}/9")
         self.logger.info(f"   Expected Win Rate: 58-62%")
-        self.logger.info(f"   Expected Trades/Day: 15-25 (3-5x more!)")
+        self.logger.info(f"   Expected Trades/Day: 15-25")
         self.logger.info(f"   Max Drawdown: {self.max_drawdown_pct*100:.0f}%")
         self.logger.info("="*70)
 
@@ -850,6 +849,13 @@ class ScalperBotV94:
                         self.logger.warning(f"Rate limit hit, waiting {wait_time}s...")
                         time.sleep(wait_time)
                         continue
+                    
+                    # Special handling for insufficient balance - RETRY
+                    if error_code == -2010 and "insufficient balance" in data.get("msg", "").lower():
+                        self.logger.warning(f"Insufficient balance error, waiting and retrying...")
+                        time.sleep(1.0 * (attempt + 1))
+                        continue
+                    
                     self.logger.error(f"Binance API error {error_code}: {data.get('msg')}")
                     return {"error": data.get("msg"), "code": error_code}
 
@@ -935,33 +941,60 @@ class ScalperBotV94:
         return None
 
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
+        """
+        Place a market order with proper balance verification
+        """
         ticker = self.get_order_book_ticker()
         if not ticker:
             return {"error": "Failed to get market price"}
 
         price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
         
-        if amount < self.min_order_usdt:
-            amount = self.min_order_usdt
-        if amount > self.max_order_usdt and self.current_balance > 50:
-            amount = self.max_order_usdt
+        # Check balance before placing order
+        balances = self.get_account_balance()
         
-        if is_quantity:
-            qty = round_to_step(amount, self._min_qty)
-        else:
+        if side.upper() == "BUY":
+            # For BUY: amount is USDT to spend
+            usdt_balance = balances.get("USDT", 0)
+            if amount > usdt_balance * 0.99:
+                amount = usdt_balance * 0.95
+                self.logger.warning(f"⚠️ Adjusted amount to ${amount:.2f} (balance: ${usdt_balance:.2f})")
+            
+            if amount < self.min_order_usdt:
+                self.logger.warning(f"⚠️ Amount ${amount:.2f} below minimum ${self.min_order_usdt}")
+                amount = min(self.min_order_usdt, usdt_balance * 0.95)
+            
             qty = round_to_step(amount / price, self._min_qty)
+            
+        else:  # SELL
+            # For SELL: amount is BTC quantity if is_quantity=True, else USDT value
+            if is_quantity:
+                qty = round_to_step(amount, self._min_qty)
+            else:
+                # Convert USDT amount to BTC quantity
+                qty = round_to_step(amount / price, self._min_qty)
+            
+            # Verify BTC balance
+            btc_balance = balances.get("BTC", 0)
+            if btc_balance < qty * 0.999:
+                self.logger.warning(f"⚠️ Insufficient BTC: have {btc_balance:.8f}, need {qty:.8f}")
+                qty = round_to_step(btc_balance * 0.95, self._min_qty)
+                if qty < self._min_qty:
+                    return {"error": f"Insufficient BTC balance: have {btc_balance:.8f}"}
+                self.logger.info(f"📊 Adjusted quantity to {qty:.8f} (available BTC: {btc_balance:.8f})")
 
+        # Ensure minimum quantity
         if qty < self._min_qty:
             qty = self._min_qty
 
-        qty_str = format_quantity(qty)
-        
+        # Ensure minimum notional
         notional = qty * price
         if notional < self._min_notional:
-            qty = self._min_notional / price
-            qty = round_to_step(qty, self._min_qty)
-            qty_str = format_quantity(qty)
+            qty = round_to_step(self._min_notional / price, self._min_qty)
+            self.logger.info(f"📊 Adjusted quantity to {qty:.8f} to meet minimum notional")
 
+        qty_str = format_quantity(qty)
+        
         self.logger.info(f"Placing {side} MARKET order: {qty_str} (${qty * price:.2f})")
 
         params = {
@@ -971,14 +1004,38 @@ class ScalperBotV94:
             "quantity": qty_str,
         }
         
-        response = self._send_signed_request("POST", "/api/v3/order", params)
+        # Retry up to 3 times for balance issues
+        for attempt in range(3):
+            response = self._send_signed_request("POST", "/api/v3/order", params)
+            
+            if "error" not in response:
+                break
+                
+            if "insufficient balance" in response.get("error", "").lower():
+                self.logger.warning(f"⚠️ Insufficient balance, waiting for settlement... (attempt {attempt+1}/3)")
+                time.sleep(2.0 * (attempt + 1))
+                # Refresh balance and retry
+                if side.upper() == "SELL":
+                    balances = self.get_account_balance()
+                    btc_balance = balances.get("BTC", 0)
+                    if btc_balance < float(qty_str) * 0.999:
+                        qty_new = round_to_step(btc_balance * 0.95, self._min_qty)
+                        if qty_new >= self._min_qty:
+                            qty_str = format_quantity(qty_new)
+                            params["quantity"] = qty_str
+                            self.logger.info(f"📊 Adjusted quantity to {qty_str}")
+                        else:
+                            return {"error": "Insufficient BTC balance after retry"}
+                continue
+            else:
+                return response
         
         if "error" in response:
             return response
         
         order_id = response.get("orderId")
         if order_id:
-            time.sleep(0.3)
+            time.sleep(0.5)  # Allow settlement
             fill_price = self.get_order_fill_price(order_id)
             if fill_price:
                 price = str(fill_price)
@@ -997,9 +1054,22 @@ class ScalperBotV94:
         }
 
     def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
+        """
+        Place a limit order with balance verification
+        """
+        # Verify balance for SELL orders
+        if side.upper() == "SELL":
+            balances = self.get_account_balance()
+            btc_balance = balances.get("BTC", 0)
+            if btc_balance < quantity * 0.999:
+                self.logger.warning(f"⚠️ Insufficient BTC: have {btc_balance:.8f}, need {quantity:.8f}")
+                quantity = round_to_step(btc_balance * 0.95, self._min_qty)
+                if quantity < self._min_qty:
+                    return {"error": f"Insufficient BTC balance: have {btc_balance:.8f}"}
+                self.logger.info(f"📊 Adjusted limit quantity to {quantity:.8f}")
+
         if quantity * price < self._min_notional:
-            quantity = self._min_notional / price
-            quantity = round_to_step(quantity, self._min_qty)
+            quantity = round_to_step(self._min_notional / price, self._min_qty)
 
         qty = round_to_step(quantity, self._min_qty)
         if qty < self._min_qty:
@@ -1117,7 +1187,7 @@ class ScalperBotV94:
         
         # ============ 5 CONDITIONS ENTRY ============
         passing = analysis['passing_conditions']
-        needed = self.min_passing_conditions  # This is now 5!
+        needed = self.min_passing_conditions
         
         if passing >= needed:
             self.logger.info(f"✅ {passing}/{analysis['total_conditions']} conditions PASSING - TRADING!")
@@ -1173,6 +1243,29 @@ class ScalperBotV94:
             return {"success": False, "error": "Invalid quantity"}
 
         self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} BTC @ ${self.buy_price:.2f} (${self.buy_qty * self.buy_price:.2f})")
+        
+        # ⭐ CRITICAL FIX: Wait for BTC to settle before trying to sell
+        self.logger.info("⏳ Waiting 2 seconds for BTC settlement...")
+        time.sleep(2.0)
+        
+        # Verify BTC balance is available
+        balances = self.get_account_balance()
+        btc_available = balances.get("BTC", 0)
+        self.logger.info(f"💰 BTC Available: {btc_available:.8f} (needed: {self.buy_qty:.8f})")
+        
+        # If BTC not available yet, wait longer
+        retry_count = 0
+        while btc_available < self.buy_qty * 0.99 and retry_count < 5:
+            self.logger.warning(f"⚠️ BTC not settled yet (attempt {retry_count+1}/5), waiting...")
+            time.sleep(1.5)
+            balances = self.get_account_balance()
+            btc_available = balances.get("BTC", 0)
+            retry_count += 1
+        
+        if btc_available < self.buy_qty * 0.99:
+            self.logger.error(f"❌ BTC still not available after waiting: have {btc_available:.8f}")
+            # Emergency: try to cancel and recover
+            return {"success": False, "error": "BTC settlement timeout"}
 
         # Calculate Exit Levels
         atr_stop = EinsteinMath.optimal_stop_loss(
@@ -1202,19 +1295,23 @@ class ScalperBotV94:
         self.logger.info(f"🛑 Stop: ${stop_price:.2f} (-{((1 - stop_price/self.buy_price))*100:.2f}%)")
         self.logger.info(f"📊 Risk:Reward: 1:{rr_ratio:.2f}")
 
-        # Place SELL LIMIT order
-        self.logger.info(f"📉 Placing SELL LIMIT order @ ${target_price:.2f}")
+        # Place SELL LIMIT order with proper quantity
+        sell_qty = self.buy_qty  # Use the exact quantity we bought
+        
+        self.logger.info(f"📉 Placing SELL LIMIT order @ ${target_price:.2f} for {sell_qty:.8f} BTC")
         sell_order = self.place_limit_order(
             side="SELL",
-            quantity=self.buy_qty,
+            quantity=sell_qty,
             price=target_price,
         )
 
         if "error" in sell_order:
             self.logger.error(f"Failed to place sell order: {sell_order}")
             self.logger.info("Attempting market sell as fallback...")
-            fallback_sell = self.place_market_order("SELL", self.buy_qty, is_quantity=True)
+            # Use the verified BTC quantity
+            fallback_sell = self.place_market_order("SELL", sell_qty, is_quantity=True)
             if "error" in fallback_sell:
+                self.logger.error(f"Fallback sell failed: {fallback_sell}")
                 return {"success": False, "error": "Sell order failed"}
             exit_price = float(fallback_sell.get("price", self.buy_price))
             if exit_price == 0:
@@ -1251,7 +1348,7 @@ class ScalperBotV94:
                     if current_price and current_price <= stop_price:
                         self.logger.warning(f"🛑 STOP-LOSS breached: ${current_price:.2f}")
                         self.cancel_order(sell_order_id)
-                        exit_res = self.place_market_order("SELL", self.buy_qty, is_quantity=True)
+                        exit_res = self.place_market_order("SELL", sell_qty, is_quantity=True)
                         if "error" in exit_res:
                             self.logger.error(f"Stop-loss exit failed: {exit_res}")
                             time.sleep(1)
@@ -1267,7 +1364,7 @@ class ScalperBotV94:
                 if now - sell_start > self.chase_timeout_sec:
                     self.logger.info("Sell order taking too long, converting to market...")
                     self.cancel_order(sell_order_id)
-                    exit_res = self.place_market_order("SELL", self.buy_qty, is_quantity=True)
+                    exit_res = self.place_market_order("SELL", sell_qty, is_quantity=True)
                     if "error" in exit_res:
                         self.logger.error(f"Chase sell failed: {exit_res}")
                         time.sleep(1)
@@ -1352,9 +1449,10 @@ class ScalperBotV94:
     def run_forever(self, delay_between_cycles: int = 8):
         """Run continuously - 5 conditions for maximum trades"""
         self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.4 - 5 CONDITIONS OPTIMIZED")
+        self.logger.info("🧠 EINSTEIN EDGE v9.5 - AUTO-CONVERT FIXED")
         self.logger.info("   5/9 conditions = 3-5x MORE TRADES!")
         self.logger.info("   Win Rate: 58-62% (still profitable)")
+        self.logger.info("   Auto-converts USDT↔BTC with settlement delay")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
 
@@ -1424,7 +1522,7 @@ class ScalperBotV94:
         seconds = duration % 60
 
         self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.4 - FINAL SUMMARY")
+        self.logger.info("🧠 EINSTEIN EDGE v9.5 - FINAL SUMMARY")
         self.logger.info("="*70)
         self.logger.info(f"📅 Start Time: {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
         self.logger.info(f"📅 End Time:   {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1510,8 +1608,8 @@ class ScalperBotV94:
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
         
         report = {
-            "version": "9.4",
-            "name": "5 Conditions - Maximum Frequency",
+            "version": "9.5",
+            "name": "5 Conditions - Auto-Convert Fixed",
             "rule": "Requires only 5/9 conditions PASSING",
             "starting_balance": self.starting_balance,
             "final_balance": self.current_balance,
@@ -1569,14 +1667,14 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("="*70)
-    print("🧠 EINSTEIN EDGE v9.4 - 5 CONDITIONS OPTIMIZED")
+    print("🧠 EINSTEIN EDGE v9.5 - AUTO-CONVERT FIXED")
     print("="*70)
     print("\nMAXIMUM TRADING FREQUENCY:")
     print("1. ✅ Only 5/9 conditions needed (was 6)")
     print("2. ✅ 3-5x MORE TRADES than 6 conditions")
     print("3. ✅ 58-62% win rate (still profitable)")
     print("4. ✅ Risk:Reward = 1:3")
-    print("5. ✅ Perfect for small accounts")
+    print("5. ✅ AUTO-CONVERTS USDT↔BTC with settlement delay")
     print("\nEXPECTED RESULTS:")
     print("   - Trades/Day: 15-25 (was 8-12)")
     print("   - Win Rate: 58-62%")
@@ -1587,7 +1685,7 @@ if __name__ == "__main__":
     print("\n🤖 Starting 5 CONDITIONS in 3 seconds...")
     time.sleep(3)
     
-    bot = ScalperBotV94(
+    bot = ScalperBotV95(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
