@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-🚀 INSTANT SCALPING BOT v2.0 - FIXED
+🚀 INSTANT SCALPING BOT v2.1 - FULLY FIXED
 ============================================================
 FIXES:
-- Fixed RSI calculation (was returning 100 incorrectly)
-- Proper volume detection
-- Better momentum calculation
+- Fixed 'self' not defined error in ScalpStrategy
+- Proper RSI calculation
 - Working signal detection
-- Added price movement detection
+- Stable execution
 ============================================================
 """
 
@@ -29,14 +28,14 @@ from decimal import Decimal
 CONFIG = {
     "symbol": "AVAXUSDT",
     "interval": "1m",
-    "target_pct": 0.005,       # 0.5% target (was 0.3%)
-    "stop_pct": 0.003,         # 0.3% stop (was 0.2%)
+    "target_pct": 0.005,       # 0.5% target
+    "stop_pct": 0.003,         # 0.3% stop
     "min_order_usdt": 10.0,
     "max_order_usdt": 30.0,
-    "min_volume_spike": 1.2,   # Volume must be 1.2x average
-    "rsi_oversold": 35,        # RSI below 35
-    "rsi_overbought": 65,      # RSI above 65
-    "min_momentum": 0.1,       # Minimum momentum for entry
+    "min_volume_spike": 1.2,
+    "rsi_oversold": 35,
+    "rsi_overbought": 65,
+    "min_momentum": 0.1,
 }
 
 # ========================================================================
@@ -138,7 +137,7 @@ class BinanceAPI:
                     "volumes": [float(c[5]) for c in data],
                 }
             return None
-        except Exception as e:
+        except Exception:
             return None
     
     def get_ticker(self, symbol: str) -> Optional[dict]:
@@ -240,22 +239,16 @@ class BinanceAPI:
 class ScalpIndicators:
     @staticmethod
     def calculate_rsi(closes: List[float], period: int = 14) -> float:
-        """Proper RSI calculation that doesn't return 100 incorrectly."""
         if len(closes) < period + 1:
             return 50.0
         
-        # Calculate price changes
         deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
-        
-        # Separate gains and losses
         gains = [d if d > 0 else 0 for d in deltas]
         losses = [-d if d < 0 else 0 for d in deltas]
         
-        # Use only the last 'period' values
         gains = gains[-period:]
         losses = losses[-period:]
         
-        # Calculate average gain and loss
         avg_gain = sum(gains) / period if gains else 0
         avg_loss = sum(losses) / period if losses else 0
         
@@ -264,7 +257,6 @@ class ScalpIndicators:
         
         rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
-        
         return min(100, max(0, rsi))
     
     @staticmethod
@@ -282,28 +274,21 @@ class ScalpIndicators:
     def calculate_momentum(closes: List[float], period: int = 5) -> float:
         if len(closes) < period + 1:
             return 0.0
-        
-        # Percentage change over 'period' candles
-        momentum = ((closes[-1] - closes[-period]) / closes[-period]) * 100
-        return momentum
+        return ((closes[-1] - closes[-period]) / closes[-period]) * 100
     
     @staticmethod
     def calculate_volume_ratio(volumes: List[float], period: int = 20) -> float:
         if len(volumes) < period:
             return 1.0
-        
         avg_volume = sum(volumes[-period:]) / period
         if avg_volume == 0:
             return 1.0
-        
         return volumes[-1] / avg_volume
     
     @staticmethod
     def calculate_price_change(closes: List[float], period: int = 3) -> float:
         if len(closes) < period + 1:
             return 0.0
-        
-        # Price change over last 'period' candles
         return ((closes[-1] - closes[-period]) / closes[-period]) * 100
     
     @staticmethod
@@ -316,12 +301,11 @@ class ScalpIndicators:
         std = (sum(squared) / period) ** 0.5
         upper = middle + (std * std_dev)
         lower = middle - (std * std_dev)
-        
         position = (closes[-1] - lower) / (upper - lower) if upper != lower else 0.5
         return {"upper": upper, "middle": middle, "lower": lower, "position": position}
 
 # ========================================================================
-# FIXED SCALPING STRATEGY
+# FIXED SCALPING STRATEGY - NO 'self' ERROR
 # ========================================================================
 
 class ScalpStrategy:
@@ -334,9 +318,22 @@ class ScalpStrategy:
         current = closes[-1]
         
         if len(closes) < 30:
-            return {"signal": "NEUTRAL", "reason": "Insufficient data"}
+            return {
+                "signal": "NEUTRAL",
+                "reason": "Insufficient data",
+                "rsi": 50,
+                "momentum": 0,
+                "volume_ratio": 1,
+                "price_change": 0,
+                "bb_position": 0.5,
+                "above_ema9": False,
+                "target": current,
+                "stop": current,
+                "target_pct": 0,
+                "confidence": 0
+            }
         
-        # Calculate indicators with proper values
+        # Calculate indicators
         rsi = ScalpIndicators.calculate_rsi(closes, 14)
         ema_9 = ScalpIndicators.calculate_ema(closes, 9)
         ema_21 = ScalpIndicators.calculate_ema(closes, 21)
@@ -345,81 +342,66 @@ class ScalpStrategy:
         price_change = ScalpIndicators.calculate_price_change(closes, 3)
         bb = ScalpIndicators.calculate_bollinger(closes, 20, 2)
         
-        # Price vs EMAs
+        # Conditions
         above_ema9 = current > ema_9
         above_ema21 = current > ema_21
-        
-        # Volume conditions
         volume_spike = volume_ratio > CONFIG["min_volume_spike"]
-        
-        # RSI conditions
         oversold = rsi < CONFIG["rsi_oversold"]
         overbought = rsi > CONFIG["rsi_overbought"]
-        
-        # Momentum conditions
         positive_momentum = momentum > CONFIG["min_momentum"]
-        accelerating = momentum > 0.2  # Strong momentum
-        
-        # Bollinger position
         near_lower_band = bb['position'] < 0.3
         
-        # BULLISH SIGNAL - Buy conditions
+        # BULLISH CONDITIONS
         bullish_conditions = 0
         total_bullish = 5
         
-        # 1. RSI oversold or neutral
         if oversold:
             bullish_conditions += 1
         elif rsi < 50:
             bullish_conditions += 0.5
         
-        # 2. Price above EMA9 (short-term momentum)
         if above_ema9:
             bullish_conditions += 1
         
-        # 3. Positive momentum
         if positive_momentum:
             bullish_conditions += 1
         
-        # 4. Volume spike (confirmation)
         if volume_spike:
             bullish_conditions += 1
         
-        # 5. Near lower Bollinger (mean reversion)
         if near_lower_band:
             bullish_conditions += 1
         
         bullish_confidence = min(1.0, bullish_conditions / total_bullish)
         
-        # BEARISH CONDITIONS - For confirmation
+        # BEARISH CONDITIONS
         bearish_conditions = 0
-        
-        # 1. RSI overbought
         if overbought:
             bearish_conditions += 1
-        
-        # 2. Price below EMA9
         if not above_ema9:
             bearish_conditions += 1
-        
-        # 3. Negative momentum
         if momentum < -CONFIG["min_momentum"]:
             bearish_conditions += 1
         
-        # Final signal
-        buy_signal = (bullish_confidence >= 0.5 and 
-                     volume_spike and 
-                     positive_momentum and 
-                     not overbought)
+        # FINAL SIGNAL
+        buy_signal = (bullish_confidence >= 0.5 and volume_spike and positive_momentum and not overbought)
         
         # Calculate target and stop
         atr = (max(highs[-14:]) - min(lows[-14:])) / 14 if len(highs) >= 14 else 0.01
         atr_pct = atr / current if current > 0 else 0.005
-        
-        # Dynamic target based on volatility
         target_pct = max(CONFIG["target_pct"], atr_pct * 0.5)
         target = current * (1 + target_pct)
         stop = current * (1 - CONFIG["stop_pct"])
+        
+        # Generate reason string
+        if bullish_conditions >= 4:
+            reason = f"STRONG SIGNAL (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume_ratio:.2f}x)"
+        elif bullish_conditions >= 3:
+            reason = f"MODERATE SIGNAL (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume_ratio:.2f}x)"
+        elif bullish_conditions >= 2:
+            reason = f"WEAK SIGNAL (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume_ratio:.2f}x)"
+        else:
+            reason = f"NO SIGNAL (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume_ratio:.2f}x)"
         
         return {
             "signal": "BUY" if buy_signal else "NEUTRAL",
@@ -433,22 +415,11 @@ class ScalpStrategy:
             "target": target,
             "stop": stop,
             "target_pct": target_pct * 100,
-            "reason": self._get_reason(bullish_conditions, total_bullish, rsi, momentum, volume_ratio)
+            "reason": reason
         }
-    
-    @staticmethod
-    def _get_reason(conditions: float, total: int, rsi: float, momentum: float, volume: float) -> str:
-        if conditions >= 4:
-            return f"STRONG SIGNAL (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume:.2f}x)"
-        elif conditions >= 3:
-            return f"MODERATE SIGNAL (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume:.2f}x)"
-        elif conditions >= 2:
-            return f"WEAK SIGNAL (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume:.2f}x)"
-        else:
-            return f"NO SIGNAL (RSI:{rsi:.1f}, Mom:{momentum:.2f}%, Vol:{volume:.2f}x)"
 
 # ========================================================================
-# FIXED SCALPING BOT
+# SCALPING BOT
 # ========================================================================
 
 class ScalpingBot:
@@ -478,7 +449,7 @@ class ScalpingBot:
         self.logger = logging.getLogger(__name__)
         
         self.logger.info("="*60)
-        self.logger.info("🚀 INSTANT SCALPING BOT v2.0 - FIXED")
+        self.logger.info("🚀 INSTANT SCALPING BOT v2.1 - FULLY FIXED")
         self.logger.info("="*60)
         self.logger.info(f"Symbol: {self.symbol}")
         self.logger.info(f"Target: {CONFIG['target_pct']*100:.1f}%")
@@ -677,7 +648,7 @@ if __name__ == "__main__":
         exit(1)
     
     print("="*60)
-    print("🚀 INSTANT SCALPING BOT v2.0 - FIXED")
+    print("🚀 INSTANT SCALPING BOT v2.1 - FULLY FIXED")
     print("="*60)
     print("\n⚠️ WARNING:")
     print("   - Makes 0.5% profits in 1-5 minutes")
