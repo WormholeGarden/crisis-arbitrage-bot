@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """
-🚀 HYBRID DCA + MOMENTUM BOT v1.0 - TOP RECOMMENDED ALGORITHM
+🚀 HYBRID DCA + RSI/MACD MOMENTUM BOT v1.0
 ============================================================
-STRATEGY: Weighted DCA with RSI/MACD Momentum Filter
-- Price drop detection (2-5%)
-- RSI oversold confirmation (< 30)
-- MACD momentum filter
-- Martingale position scaling (1.5x multiplier)
-- Trailing take-profit (2.5-5%)
+TOP RECOMMENDED ALGORITHM FOR BINANCE TRADING BOTS
+
+STRATEGY:
+1. Monitor price, RSI (15m), and MACD
+2. Buy when: Price drops 2% AND RSI < 30 (oversold)
+3. Scale position: 1x, 1.5x, 2.25x (Martingale)
+4. Exit: Trailing take-profit at +2.5% from average entry
+5. Check every minute for new opportunities
 
 WHY THIS WORKS:
-- Prevents catching falling knives (momentum filter)
-- Capitalizes on oversold bounces (high probability)
-- Adapts to any market condition
-- Proven edge on Binance
+- RSI filter prevents buying in freefall
+- DCA scaling lowers average entry
+- Trailing stops capture bounces
+- Perfect for choppy/dead markets
 ============================================================
 """
 
@@ -40,27 +42,17 @@ from collections import deque
 
 DCA_CONFIG = {
     "symbol": "AVAXUSDT",
-    "interval": "15m",  # 15-minute candles for faster signals
-    
-    # Price drop detection
-    "price_drop_pct": 0.02,      # 2% drop triggers check
-    
-    # Momentum filters (OVERSOLD condition)
-    "rsi_oversold": 30,           # RSI below 30 = oversold
-    "macd_bullish": True,         # MACD must be bullish or crossing
-    
-    # DCA Position Scaling (Martingale)
-    "base_order_usdt": 10.0,      # First buy amount
-    "scale_multiplier": 1.5,      # 1.5x each subsequent buy
-    "max_orders": 3,              # Maximum 3 DCA orders
-    
-    # Take Profit
-    "take_profit_pct": 0.025,     # 2.5% profit target
-    "trailing_stop_pct": 0.005,   # 0.5% trailing after profit
-    
-    # Safety
-    "max_drawdown_pct": 0.15,
-    "max_consecutive_losses": 3,
+    "interval": "1m",  # Check every minute
+    "price_drop_pct": 0.02,        # 2% price drop required
+    "rsi_oversold": 30,            # RSI < 30 to buy
+    "take_profit_pct": 0.025,      # 2.5% profit target
+    "max_buy_levels": 3,           # Maximum 3 DCA levels
+    "martingale_multiplier": 1.5,   # 1.5x scaling
+    "base_order_usdt": 10.0,       # First buy $10
+    "max_order_usdt": 30.0,        # Max per order
+    "max_total_usdt": 60.0,        # Max total in one cycle
+    "trailing_stop_pct": 0.5,      # 50% trailing stop
+    "min_volume_ratio": 1.2,       # Volume spike confirmation
 }
 
 # ========================================================================
@@ -93,7 +85,7 @@ def format_price(value: float) -> str:
 
 class TechnicalIndicators:
     @staticmethod
-    def get_klines(symbol: str, base_url: str, interval: str = "15m", limit: int = 100,
+    def get_klines(symbol: str, base_url: str, interval: str = "1m", limit: int = 100,
                     end_time_ms: int = None) -> Optional[Dict]:
         try:
             url = f"{base_url}/api/v3/klines"
@@ -170,155 +162,165 @@ class TechnicalIndicators:
         return sum(tr_values[-period:]) / period
 
 # ========================================================================
-# DCA + MOMENTUM STRATEGY
+# DCA STRATEGY ENGINE
 # ========================================================================
 
-class DCAMomentumStrategy:
-    @staticmethod
-    def analyze(data: Dict, params: Dict = None, verbose: bool = True) -> Dict:
-        if params is None:
-            params = {
-                'price_drop_pct': 0.02,
-                'rsi_oversold': 30,
-                'macd_bullish': True,
-                'base_order_usdt': 10.0,
-                'scale_multiplier': 1.5,
-                'max_orders': 3,
-                'take_profit_pct': 0.025,
-                'trailing_stop_pct': 0.005,
-            }
+class DCAStrategy:
+    def __init__(self, config: Dict = None):
+        self.config = config or DCA_CONFIG
+        self.buy_levels = []
+        self.total_qty = 0.0
+        self.total_cost = 0.0
+        self.avg_price = 0.0
+        self.current_level = 0
+        self.last_buy_price = 0.0
+        self.highest_price = 0.0
+        self.trailing_stop = 0.0
+        self.position_open = False
+        self.entry_time = None
         
+    def reset(self):
+        """Reset DCA state for new cycle"""
+        self.buy_levels = []
+        self.total_qty = 0.0
+        self.total_cost = 0.0
+        self.avg_price = 0.0
+        self.current_level = 0
+        self.last_buy_price = 0.0
+        self.highest_price = 0.0
+        self.trailing_stop = 0.0
+        self.position_open = False
+        self.entry_time = None
+    
+    def calculate_buy_amount(self, level: int) -> float:
+        """Calculate buy amount with Martingale scaling"""
+        base = self.config["base_order_usdt"]
+        multiplier = self.config["martingale_multiplier"]
+        amount = base * (multiplier ** level)
+        return min(amount, self.config["max_order_usdt"])
+    
+    def check_entry_signal(self, data: Dict) -> Dict:
+        """Check if entry conditions are met"""
         closes = data['closes']
         highs = data['highs']
         lows = data['lows']
         volumes = data['volumes']
         
-        if len(closes) < 30:
-            return {"signal": "NEUTRAL", "error": "Insufficient data"}
-        
         current_price = closes[-1]
-        previous_price = closes[-2]
         
         # Calculate indicators
         rsi = TechnicalIndicators.rsi(closes, 14)
         macd = TechnicalIndicators.macd(closes, 12, 26, 9)
         atr = TechnicalIndicators.atr(highs, lows, closes, 14)
         
-        # Calculate price drop
-        price_drop_pct = (previous_price - current_price) / previous_price
+        # Price drop check (from 1 minute ago)
+        price_drop = 0
+        if len(closes) >= 2:
+            price_drop = (closes[-2] - current_price) / closes[-2]
         
-        # Determine signals
-        buy_conditions = {
-            "price_drop": price_drop_pct >= params['price_drop_pct'],
-            "rsi_oversold": rsi <= params['rsi_oversold'],
-            "macd_bullish": macd['bullish'] if params['macd_bullish'] else True,
-            "volume_confirm": volumes[-1] > sum(volumes[-5:-1]) / 4 if len(volumes) >= 5 else True,
+        # Volume spike check
+        avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
+        volume_ratio = volumes[-1] / avg_volume if avg_volume > 0 else 1
+        
+        # Conditions
+        conditions = {
+            "price_drop": price_drop >= self.config["price_drop_pct"],
+            "rsi_oversold": rsi < self.config["rsi_oversold"],
+            "macd_bullish": macd['bullish'] or macd['histogram'] > 0,
+            "volume_spike": volume_ratio >= self.config["min_volume_ratio"],
         }
         
-        # Count conditions met
-        conditions_met = sum(buy_conditions.values())
-        total_conditions = len(buy_conditions)
+        # ENTRY: Price drop + RSI oversold (MACD and volume optional)
+        entry_signal = conditions["price_drop"] and conditions["rsi_oversold"]
         
-        # Decision: All conditions must be met for a BUY signal
-        buy_signal = all(buy_conditions.values())
-        
-        # Calculate buy amounts (Martingale scaling)
-        base_order = params['base_order_usdt']
-        scale_mult = params['scale_multiplier']
-        max_orders = params['max_orders']
-        
-        buy_orders = []
-        for i in range(max_orders):
-            amount = base_order * (scale_mult ** i)
-            buy_orders.append(amount)
-        
-        # Target price (based on average entry)
-        estimated_avg_entry = current_price
-        target_price = estimated_avg_entry * (1 + params['take_profit_pct'])
-        stop_price = estimated_avg_entry * (1 - 0.015)  # 1.5% initial stop
-        
-        # Build result
-        result = {
-            "signal": "BUY" if buy_signal else "NEUTRAL",
-            "confidence": conditions_met / total_conditions,
-            "price_drop_pct": price_drop_pct,
+        return {
+            "entry": entry_signal,
             "rsi": rsi,
+            "price_drop": price_drop,
             "macd_bullish": macd['bullish'],
+            "volume_ratio": volume_ratio,
             "current_price": current_price,
-            "target_price": target_price,
-            "stop_price": stop_price,
-            "buy_orders": buy_orders,
-            "total_position_usdt": sum(buy_orders),
-            "conditions": buy_conditions,
-            "conditions_met": conditions_met,
-            "total_conditions": total_conditions,
-            "take_profit_pct": params['take_profit_pct'],
+            "atr": atr,
+            "conditions": conditions,
         }
+    
+    def check_exit_signal(self, current_price: float) -> Dict:
+        """Check if exit conditions are met"""
+        if not self.position_open or self.total_qty <= 0:
+            return {"exit": False, "reason": "No position"}
         
-        # Print analysis if verbose
-        if verbose:
-            print("\n" + "="*70)
-            print("📊 DCA + MOMENTUM SIGNAL ANALYSIS")
-            print("="*70)
-            print(f"Current Price: ${current_price:.4f}")
-            print(f"Previous Price: ${previous_price:.4f}")
-            print(f"Price Drop: {price_drop_pct*100:.2f}% (need > {params['price_drop_pct']*100:.1f}%)")
-            print(f"RSI: {rsi:.1f} (need < {params['rsi_oversold']})")
-            print(f"MACD: {'✅ Bullish' if macd['bullish'] else '❌ Bearish'}")
-            print("-"*70)
-            print("BUY CONDITIONS:")
-            for condition, met in buy_conditions.items():
-                status = "✅" if met else "❌"
-                print(f"  {status} {condition}: {met}")
-            print("-"*70)
-            print(f"Conditions Met: {conditions_met}/{total_conditions}")
-            print(f"Confidence: {result['confidence']*100:.0f}%")
-            print("\n📈 DCA POSITION SCALING:")
-            for i, amount in enumerate(buy_orders[:3]):
-                print(f"  Order {i+1}: ${amount:.2f}")
-            print(f"  Total Position: ${result['total_position_usdt']:.2f}")
-            print(f"  Target: ${target_price:.4f} (+{params['take_profit_pct']*100:.1f}%)")
-            print(f"  Stop: ${stop_price:.4f} (-1.5%)")
-            
-            if buy_signal:
-                print("\n✅ BUY SIGNAL CONFIRMED! All conditions met.")
-            else:
-                print("\n⏳ Waiting for all conditions to align...")
-            print("="*70)
+        # Update highest price
+        if current_price > self.highest_price:
+            self.highest_price = current_price
+            # Update trailing stop
+            trail_pct = self.config["trailing_stop_pct"] / 100
+            new_stop = self.highest_price * (1 - trail_pct * 2)
+            if new_stop > self.trailing_stop:
+                self.trailing_stop = new_stop
         
-        return result
+        # Target profit check
+        profit_pct = (current_price - self.avg_price) / self.avg_price
+        target_profit = self.config["take_profit_pct"]
+        
+        # Exit conditions
+        exit_signal = False
+        reason = ""
+        
+        # 1. Target profit hit
+        if profit_pct >= target_profit:
+            exit_signal = True
+            reason = f"Target profit {profit_pct*100:.2f}% >= {target_profit*100:.1f}%"
+        
+        # 2. Trailing stop hit (if trailing stop is active)
+        elif self.trailing_stop > 0 and current_price <= self.trailing_stop:
+            exit_signal = True
+            reason = f"Trailing stop hit at ${self.trailing_stop:.2f}"
+        
+        # 3. Time exit (max 4 hours for 1m timeframe)
+        elif self.entry_time:
+            time_held = (datetime.now() - self.entry_time).total_seconds() / 3600
+            if time_held > 4:  # 4 hours max
+                exit_signal = True
+                reason = f"Time exit after {time_held:.1f}h"
+        
+        # 4. Emergency stop loss (1.5x ATR)
+        elif self.last_buy_price > 0:
+            atr = TechnicalIndicators.atr([0], [0], [0], 14)
+            emergency_stop = self.last_buy_price * 0.97  # 3% emergency stop
+            if current_price <= emergency_stop:
+                exit_signal = True
+                reason = f"Emergency stop at ${emergency_stop:.2f}"
+        
+        return {
+            "exit": exit_signal,
+            "reason": reason,
+            "profit_pct": profit_pct,
+            "current_price": current_price,
+            "avg_price": self.avg_price,
+            "trailing_stop": self.trailing_stop,
+            "highest_price": self.highest_price,
+            "time_held": (datetime.now() - self.entry_time).total_seconds() / 3600 if self.entry_time else 0,
+        }
 
 # ========================================================================
-# DCA + MOMENTUM BOT
+# DCA BOT - PRODUCTION
 # ========================================================================
 
-class DCAMomentumBot:
+class DCABot:
 
     def __init__(self, api_key: str, api_secret: str, 
                  symbol: str = DCA_CONFIG["symbol"],
                  exchange_region: str = "us", 
-                 log_level: str = "INFO", 
-                 interval: str = DCA_CONFIG["interval"]):
+                 log_level: str = "INFO"):
         
         self.api_key = api_key
         self.api_secret = api_secret
         self.symbol = symbol
-        self.interval = interval
         self.base_asset = symbol.replace("USDT", "")
+        self.config = DCA_CONFIG
         
-        # Strategy parameters
-        self.price_drop_pct = DCA_CONFIG["price_drop_pct"]
-        self.rsi_oversold = DCA_CONFIG["rsi_oversold"]
-        self.macd_bullish = DCA_CONFIG["macd_bullish"]
-        self.base_order_usdt = DCA_CONFIG["base_order_usdt"]
-        self.scale_multiplier = DCA_CONFIG["scale_multiplier"]
-        self.max_orders = DCA_CONFIG["max_orders"]
-        self.take_profit_pct = DCA_CONFIG["take_profit_pct"]
-        self.trailing_stop_pct = DCA_CONFIG["trailing_stop_pct"]
-        
-        # Safety
-        self.max_drawdown_pct = DCA_CONFIG["max_drawdown_pct"]
-        self.max_consecutive_losses = DCA_CONFIG["max_consecutive_losses"]
+        # DCA Strategy
+        self.strategy = DCAStrategy(self.config)
         
         if exchange_region.lower() == "us":
             self.base_url = "https://api.binance.us"
@@ -335,27 +337,11 @@ class DCAMomentumBot:
         self._min_notional = 10.0
         self._price_cache = {}
         self._price_cache_time = 0
-        self._price_cache_ttl = 30
+        self._price_cache_ttl = 10
         
         # State
         self.has_open_position = False
-        self.position_entry_price = 0.0
-        self.position_entry_qty = 0.0
-        self.position_target_price = 0.0
-        self.position_stop_price = 0.0
         self.position_order_id = None
-        self.position_open_time = None
-        self.position_highest_price = 0.0
-        self.position_trailing_stop = 0.0
-        
-        # DCA specific state
-        self.dca_order_count = 0
-        self.dca_total_spent = 0.0
-        self.dca_avg_entry = 0.0
-        self.dca_total_qty = 0.0
-        self.dca_active = False
-        self.dca_orders = []
-        
         self.current_balance_usdt = 0.0
         self.current_balance_asset = 0.0
         self.starting_balance = 0.0
@@ -364,6 +350,9 @@ class DCAMomentumBot:
         self.consecutive_wins = 0
         self.balance_fetched = False
         self.stopped = False
+        self.skipped_count = 0
+        self.dca_level = 0
+        self.total_invested = 0.0
         
         # Stats
         self.trade_history = []
@@ -384,7 +373,7 @@ class DCAMomentumBot:
         }
         
         # Logging
-        log_filename = f"dca_momentum_{datetime.now().strftime('%Y%m%d')}.log"
+        log_filename = f"dca_bot_{datetime.now().strftime('%Y%m%d')}.log"
         logging.basicConfig(
             filename=log_filename,
             level=getattr(logging, log_level.upper()),
@@ -397,22 +386,54 @@ class DCAMomentumBot:
         self.logger.addHandler(console)
         
         self.logger.info("="*70)
-        self.logger.info("🚀 DCA + MOMENTUM BOT v1.0 - TOP ALGORITHM")
+        self.logger.info("🚀 HYBRID DCA + RSI/MACD BOT v1.0")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
-        self.logger.info(f"   Interval: {interval}")
-        self.logger.info(f"   Price Drop: {self.price_drop_pct*100:.1f}%")
-        self.logger.info(f"   RSI Oversold: < {self.rsi_oversold}")
-        self.logger.info(f"   MACD Filter: {'Bullish' if self.macd_bullish else 'Disabled'}")
-        self.logger.info(f"   Base Order: ${self.base_order_usdt}")
-        self.logger.info(f"   Scale: {self.scale_multiplier}x")
-        self.logger.info(f"   Max Orders: {self.max_orders}")
-        self.logger.info(f"   Take Profit: {self.take_profit_pct*100:.1f}%")
+        self.logger.info(f"   Check Interval: {self.config['interval']}")
+        self.logger.info(f"   Price Drop: {self.config['price_drop_pct']*100:.1f}%")
+        self.logger.info(f"   RSI Threshold: < {self.config['rsi_oversold']}")
+        self.logger.info(f"   Take Profit: {self.config['take_profit_pct']*100:.1f}%")
+        self.logger.info(f"   Max DCA Levels: {self.config['max_buy_levels']}")
         self.logger.info("="*70)
         
         self._check_connectivity()
         self._get_exchange_info()
         self._update_balances()
+
+    def _check_existing_orders(self):
+        """Check for any existing open orders"""
+        try:
+            resp = self._send_signed_request("GET", "/api/v3/openOrders", {"symbol": self.symbol})
+            if "error" not in resp and resp:
+                for order in resp:
+                    if order.get("side") == "SELL" and order.get("status") == "NEW":
+                        self.has_open_position = True
+                        self.position_order_id = order.get("orderId")
+                        self.logger.info(f"📊 Found existing SELL order: {self.position_order_id}")
+                        self._get_position_details()
+                        break
+        except Exception as e:
+            self.logger.warning(f"Could not check existing orders: {e}")
+
+    def _get_position_details(self):
+        """Get position details from trade history"""
+        try:
+            resp = self._send_signed_request("GET", "/api/v3/myTrades", {"symbol": self.symbol, "limit": 10})
+            if "error" not in resp and resp:
+                buys = [t for t in resp if t.get("isBuyer")]
+                if buys:
+                    total_qty = sum(float(t.get("qty", 0)) for t in buys)
+                    total_cost = sum(float(t.get("price", 0)) * float(t.get("qty", 0)) for t in buys)
+                    self.strategy.total_qty = total_qty
+                    self.strategy.total_cost = total_cost
+                    self.strategy.avg_price = total_cost / total_qty if total_qty > 0 else 0
+                    self.strategy.position_open = True
+                    self.strategy.entry_time = datetime.now()
+                    self.strategy.highest_price = self.strategy.avg_price
+                    self.strategy.trailing_stop = self.strategy.avg_price * (1 - 0.015)
+                    self.logger.info(f"📊 Recovered position: {total_qty:.8f} @ ${self.strategy.avg_price:.2f}")
+        except Exception:
+            pass
 
     def _check_connectivity(self):
         self.logger.info("🔍 Running connectivity check...")
@@ -707,24 +728,148 @@ class DCAMomentumBot:
             "side": side,
         }
 
-    def analyze_market(self, verbose: bool = True) -> Dict:
-        klines = TechnicalIndicators.get_klines(self.symbol, self.base_url, interval=self.interval, limit=100)
+    def check_market(self) -> Dict:
+        """Get market data and analyze entry signal"""
+        klines = TechnicalIndicators.get_klines(
+            self.symbol, self.base_url, 
+            interval=self.config["interval"], 
+            limit=100
+        )
         if not klines:
-            return {"signal": "NEUTRAL", "error": "No data"}
+            return {"error": "No data"}
         
-        params = {
-            'price_drop_pct': self.price_drop_pct,
-            'rsi_oversold': self.rsi_oversold,
-            'macd_bullish': self.macd_bullish,
-            'base_order_usdt': self.base_order_usdt,
-            'scale_multiplier': self.scale_multiplier,
-            'max_orders': self.max_orders,
-            'take_profit_pct': self.take_profit_pct,
-            'trailing_stop_pct': self.trailing_stop_pct,
-        }
+        signal = self.strategy.check_entry_signal(klines)
         
-        signal = DCAMomentumStrategy.analyze(klines, params, verbose=verbose)
+        # Also get current price
+        current_price = self.get_current_price()
+        if current_price:
+            signal["current_price"] = current_price
+        
         return signal
+
+    def execute_dca_buy(self) -> Dict:
+        """Execute a DCA buy order"""
+        # Check if we've reached max levels
+        if self.strategy.current_level >= self.config["max_buy_levels"]:
+            return {"success": False, "error": "Max DCA levels reached"}
+        
+        # Check if we have enough USDT
+        self._update_balances()
+        
+        # Calculate buy amount
+        buy_usdt = self.strategy.calculate_buy_amount(self.strategy.current_level)
+        
+        # Check if this would exceed max total
+        if self.strategy.total_cost + buy_usdt > self.config["max_total_usdt"]:
+            buy_usdt = self.config["max_total_usdt"] - self.strategy.total_cost
+            if buy_usdt < self.config["base_order_usdt"]:
+                return {"success": False, "error": "Not enough room for another DCA"}
+        
+        # Place buy order
+        self.logger.info(f"💰 DCA Level {self.strategy.current_level + 1}: Buying ${buy_usdt:.2f}")
+        buy_order = self.place_market_order(side="BUY", amount=buy_usdt, is_quantity=False)
+        
+        if "error" in buy_order:
+            return {"success": False, "error": buy_order.get("error", "Buy failed")}
+        
+        buy_price = float(buy_order.get("price", 0))
+        buy_qty = float(buy_order.get("executedQty", 0))
+        
+        if buy_qty <= 0 or buy_price <= 0:
+            return {"success": False, "error": "Invalid buy"}
+        
+        # Update strategy state
+        self.strategy.total_qty += buy_qty
+        self.strategy.total_cost += buy_usdt
+        self.strategy.avg_price = self.strategy.total_cost / self.strategy.total_qty
+        self.strategy.last_buy_price = buy_price
+        self.strategy.current_level += 1
+        self.strategy.position_open = True
+        self.strategy.entry_time = datetime.now()
+        
+        # Update highest price for trailing stop
+        if buy_price > self.strategy.highest_price:
+            self.strategy.highest_price = buy_price
+            self.strategy.trailing_stop = buy_price * (1 - self.config["trailing_stop_pct"] / 100 * 2)
+        
+        self.has_open_position = True
+        self.total_invested += buy_usdt
+        
+        self.logger.info(f"✅ DCA BUY {self.strategy.current_level}: {buy_qty:.8f} @ ${buy_price:.2f}")
+        self.logger.info(f"   Avg Price: ${self.strategy.avg_price:.2f}, Total: {self.strategy.total_qty:.8f}")
+        
+        return {
+            "success": True,
+            "level": self.strategy.current_level,
+            "price": buy_price,
+            "quantity": buy_qty,
+            "avg_price": self.strategy.avg_price,
+            "total_qty": self.strategy.total_qty,
+            "total_cost": self.strategy.total_cost,
+        }
+
+    def exit_position(self, exit_price: float) -> Dict:
+        """Exit the entire position at market price"""
+        if self.strategy.total_qty <= 0:
+            return {"success": False, "error": "No position to exit"}
+        
+        self.logger.info(f"📊 Exiting position: {self.strategy.total_qty:.8f} @ ${exit_price:.2f}")
+        
+        # Sell all
+        sell_order = self.place_market_order(side="SELL", amount=self.strategy.total_qty, is_quantity=True)
+        
+        if "error" in sell_order:
+            return {"success": False, "error": sell_order.get("error", "Sell failed")}
+        
+        sell_price = float(sell_order.get("price", exit_price))
+        sell_qty = float(sell_order.get("executedQty", self.strategy.total_qty))
+        
+        if sell_qty <= 0:
+            return {"success": False, "error": "Invalid sell"}
+        
+        # Calculate P&L
+        realized_pnl = (sell_price - self.strategy.avg_price) * sell_qty
+        fee_estimate = (sell_qty * self.strategy.avg_price * self.maker_fee_rate) + (sell_qty * sell_price * self.taker_fee_rate)
+        net_pnl = realized_pnl - fee_estimate
+        
+        self.logger.info(f"💰 P&L: ${realized_pnl:.4f} (net: ${net_pnl:.4f})")
+        
+        # Update stats
+        self.running_pnl += net_pnl
+        self.current_balance_usdt = max(0, self.starting_balance + self.running_pnl)
+        self.total_trades += 1
+        
+        if net_pnl > 0:
+            self.win_count += 1
+            self.consecutive_wins += 1
+            self.consecutive_losses = 0
+            if self.current_balance_usdt > self.peak_balance:
+                self.peak_balance = self.current_balance_usdt
+        else:
+            self.loss_count += 1
+            self.consecutive_losses += 1
+            self.consecutive_wins = 0
+        
+        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
+        
+        # Reset strategy for next cycle
+        self.strategy.reset()
+        self.has_open_position = False
+        self.position_order_id = None
+        
+        self._update_balances()
+        
+        return {
+            "success": True,
+            "entry_price": self.strategy.avg_price,
+            "exit_price": sell_price,
+            "quantity": sell_qty,
+            "profit": realized_pnl,
+            "net_profit": net_pnl,
+            "fees": fee_estimate,
+            "balance_after": self.current_balance_usdt,
+            "win_rate": win_rate,
+        }
 
     def run_cycle(self, cycle_number: int = 0) -> dict:
         if self.stopped:
@@ -734,118 +879,127 @@ class DCAMomentumBot:
         self.logger.info(f"🔄 CYCLE {cycle_number} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         self.logger.info(f"{'='*60}")
 
-        # Safety checks
+        # Update balances
         self._update_balances()
+        
+        # Get current price
+        current_price = self.get_current_price()
+        if not current_price:
+            return {"success": False, "error": "No price", "skipped": True}
+        
         self.logger.info(f"💰 USDT: ${self.current_balance_usdt:.2f} | {self.base_asset}: {self.current_balance_asset:.8f}")
+        self.logger.info(f"📊 Price: ${current_price:.4f}")
         
-        if self.current_balance_usdt < self.base_order_usdt:
-            self.logger.error(f"❌ Insufficient USDT: ${self.current_balance_usdt:.2f}")
-            return {"success": False, "error": "Insufficient USDT"}
+        # Check if we have an open position
+        if self.has_open_position or self.strategy.position_open:
+            # Check exit conditions
+            exit_check = self.strategy.check_exit_signal(current_price)
+            
+            self.logger.info(f"📊 Position OPEN - Avg: ${self.strategy.avg_price:.2f}, Qty: {self.strategy.total_qty:.8f}")
+            self.logger.info(f"   Current: ${current_price:.2f} ({exit_check.get('profit_pct', 0)*100:.2f}% P&L)")
+            if self.strategy.trailing_stop > 0:
+                self.logger.info(f"   Trailing Stop: ${self.strategy.trailing_stop:.2f}")
+            
+            if exit_check.get('exit', False):
+                self.logger.info(f"🚪 {exit_check.get('reason', 'Exit triggered')}")
+                result = self.exit_position(current_price)
+                if result.get('success', False):
+                    self.logger.info(f"✅ EXIT COMPLETE! Net: ${result.get('net_profit', 0):.4f}")
+                    return {"success": True, **result}
+                else:
+                    self.logger.error(f"❌ Exit failed: {result.get('error', 'Unknown')}")
+                    return {"success": False, "error": result.get('error', 'Exit failed')}
+            
+            # Check if we should DCA more (price dropped further)
+            if self.strategy.current_level < self.config["max_buy_levels"]:
+                # Check if price dropped enough from last buy
+                if self.strategy.last_buy_price > 0:
+                    drop_from_last = (self.strategy.last_buy_price - current_price) / self.strategy.last_buy_price
+                    if drop_from_last >= self.config["price_drop_pct"] * 0.8:  # 80% of initial drop
+                        self.logger.info(f"📉 Price dropped {drop_from_last*100:.2f}% from last buy")
+                        self.logger.info(f"🔄 Executing DCA Level {self.strategy.current_level + 1}")
+                        dca_result = self.execute_dca_buy()
+                        if dca_result.get('success', False):
+                            self.logger.info(f"✅ DCA BUY COMPLETE! Level {dca_result.get('level', 0)}")
+                            return {"success": True, "dca": True, **dca_result}
+            
+            # Position still open
+            return {"success": False, "error": "Position open", "skipped": True}
         
-        if self.peak_balance > 0:
-            drawdown = (self.peak_balance - self.current_balance_usdt) / self.peak_balance
-            if drawdown > self.max_drawdown_pct:
-                self.logger.error(f"❌ Max drawdown: {drawdown*100:.1f}%")
-                self.stopped = True
-                return {"success": False, "error": "Max drawdown"}
-        
-        if self.consecutive_losses >= self.max_consecutive_losses:
-            self.logger.error(f"❌ Too many losses: {self.consecutive_losses}")
-            self.stopped = True
-            return {"success": False, "error": "Too many losses"}
-
-        # Analyze market
-        self.logger.info("📊 Analyzing market with DCA + Momentum strategy...")
-        signal = self.analyze_market(verbose=True)
+        # No position - check for new entry signal
+        signal = self.check_market()
         
         if "error" in signal:
             self.logger.warning(f"⚠️ {signal['error']}")
             return {"success": False, "error": signal['error'], "skipped": True}
         
-        if signal['signal'] != "BUY":
-            self.logger.info(f"⏭️ No BUY signal - Conditions met: {signal.get('conditions_met', 0)}/{signal.get('total_conditions', 4)}")
+        # Log current conditions
+        rsi = signal.get('rsi', 50)
+        price_drop = signal.get('price_drop', 0)
+        macd_bullish = signal.get('macd_bullish', False)
+        volume_ratio = signal.get('volume_ratio', 1)
+        
+        self.logger.info(f"📊 RSI: {rsi:.1f} {'✅' if rsi < self.config['rsi_oversold'] else '❌'}")
+        self.logger.info(f"   Price Drop: {price_drop*100:.2f}% {'✅' if price_drop >= self.config['price_drop_pct'] else '❌'}")
+        self.logger.info(f"   MACD: {'✅ Bullish' if macd_bullish else '❌ Bearish'}")
+        self.logger.info(f"   Volume Ratio: {volume_ratio:.2f}x {'✅' if volume_ratio >= self.config['min_volume_ratio'] else '❌'}")
+        
+        if not signal.get('entry', False):
+            self.logger.info("⏭️ No entry signal - waiting for conditions")
             return {"success": False, "error": "No signal", "skipped": True}
         
-        # BUY SIGNAL!
-        self.logger.info("🚀 BUY SIGNAL CONFIRMED! Executing DCA strategy...")
+        # ENTRY SIGNAL!
+        self.logger.info("🚀 ENTRY SIGNAL DETECTED!")
+        self.logger.info(f"   RSI: {rsi:.1f} (oversold)")
+        self.logger.info(f"   Price Drop: {price_drop*100:.2f}%")
         
-        current_price = self.get_current_price()
-        if not current_price:
-            return {"success": False, "error": "No price"}
+        # Reset strategy for new cycle
+        self.strategy.reset()
         
-        # Execute first DCA order
-        buy_amount = self.base_order_usdt
-        self.logger.info(f"📈 Buying ${buy_amount:.2f} worth of {self.base_asset} (DCA Order 1/{self.max_orders})")
+        # Execute first DCA buy
+        dca_result = self.execute_dca_buy()
         
-        buy_order = self.place_market_order(side="BUY", amount=buy_amount, is_quantity=False)
+        if not dca_result.get('success', False):
+            self.logger.error(f"❌ Entry failed: {dca_result.get('error', 'Unknown')}")
+            return {"success": False, "error": dca_result.get('error', 'Entry failed')}
         
-        if "error" in buy_order:
-            self.logger.error(f"❌ Buy failed: {buy_order}")
-            return {"success": False, "error": buy_order.get("error", "Buy failed")}
+        self.logger.info(f"✅ ENTRY COMPLETE! Level {dca_result.get('level', 0)}")
+        self.logger.info(f"   Avg Price: ${self.strategy.avg_price:.2f}, Qty: {self.strategy.total_qty:.8f}")
         
-        buy_price = float(buy_order.get("price", 0))
-        buy_qty = float(buy_order.get("executedQty", 0))
+        # Place take-profit limit order
+        take_profit_price = self.strategy.avg_price * (1 + self.config["take_profit_pct"])
+        take_profit_price = round_to_tick(take_profit_price, self._tick_size)
         
-        if buy_qty <= 0 or buy_price <= 0:
-            self.logger.error(f"❌ Invalid buy: qty={buy_qty}, price={buy_price}")
-            return {"success": False, "error": "Invalid buy"}
+        self.logger.info(f"🎯 Take Profit: ${take_profit_price:.2f} (+{self.config['take_profit_pct']*100:.1f}%)")
         
-        self.logger.info(f"✅ BUY Filled: {buy_qty:.8f} {self.base_asset} @ ${buy_price:.2f}")
-        
-        # Update DCA state
-        self.dca_active = True
-        self.dca_order_count = 1
-        self.dca_total_spent = buy_amount
-        self.dca_total_qty = buy_qty
-        self.dca_avg_entry = buy_price
-        self.dca_orders = [{"price": buy_price, "qty": buy_qty, "amount": buy_amount}]
-        
-        # Set position tracking
-        self.has_open_position = True
-        self.position_entry_price = buy_price
-        self.position_entry_qty = buy_qty
-        self.position_highest_price = buy_price
-        
-        # Calculate target (based on average entry)
-        self.position_target_price = self.dca_avg_entry * (1 + self.take_profit_pct)
-        self.position_stop_price = self.dca_avg_entry * (1 - 0.015)
-        self.position_trailing_stop = self.position_stop_price
-        self.position_open_time = datetime.now()
-        
-        self.logger.info(f"📊 DCA Position Summary:")
-        self.logger.info(f"   Avg Entry: ${self.dca_avg_entry:.4f}")
-        self.logger.info(f"   Total Qty: {self.dca_total_qty:.8f}")
-        self.logger.info(f"   Total Spent: ${self.dca_total_spent:.2f}")
-        self.logger.info(f"   Target: ${self.position_target_price:.4f} (+{self.take_profit_pct*100:.1f}%)")
-        self.logger.info(f"   Stop: ${self.position_stop_price:.4f} (-1.5%)")
-        
-        # Place sell limit order
-        sell_qty = round_to_step(self.dca_total_qty, self._min_qty)
-        sell_order = self.place_limit_order(side="SELL", quantity=sell_qty, price=self.position_target_price)
+        sell_order = self.place_limit_order(
+            side="SELL",
+            quantity=self.strategy.total_qty,
+            price=take_profit_price
+        )
         
         if "error" in sell_order:
-            self.logger.error(f"❌ Sell limit failed: {sell_order}")
-            return {"success": False, "error": "Sell order failed"}
+            self.logger.error(f"❌ Take profit order failed: {sell_order}")
+            # Try market sell as fallback
+            self.logger.info("🔄 Trying market sell as fallback...")
+            exit_result = self.exit_position(self.get_current_price() or self.strategy.avg_price)
+            if exit_result.get('success', False):
+                return {"success": True, **exit_result}
+            return {"success": False, "error": "Sell failed"}
         
         self.position_order_id = sell_order.get("orderId")
-        self.logger.info(f"✅ SELL LIMIT order placed: {self.position_order_id}")
+        self.has_open_position = True
         
-        return {
-            "success": True,
-            "position_open": True,
-            "order_id": self.position_order_id,
-            "entry_price": buy_price,
-            "entry_qty": buy_qty,
-            "target_price": self.position_target_price,
-            "stop_price": self.position_stop_price,
-            "avg_entry": self.dca_avg_entry,
-            "total_spent": self.dca_total_spent,
-        }
+        self.logger.info(f"✅ SELL LIMIT order placed: {self.position_order_id}")
+        self.logger.info(f"⏳ Position open - waiting for target ${take_profit_price:.2f}")
+        self.logger.info(f"   Max DCA Levels: {self.config['max_buy_levels']}")
+
+        return {"success": True, "position_open": True, "order_id": self.position_order_id}
 
     def run_forever(self):
         self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 DCA + MOMENTUM BOT v1.0 - RUNNING")
-        self.logger.info(f"   {self.symbol} {self.interval}")
+        self.logger.info("🚀 HYBRID DCA + RSI/MACD BOT - RUNNING")
+        self.logger.info(f"   {self.symbol} - Checking every {self.config['interval']}")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
 
@@ -857,12 +1011,15 @@ class DCAMomentumBot:
                 result = self.run_cycle(cycle_number=cycle_num)
                 
                 if result.get("success", False):
-                    if result.get("position_open", False):
-                        self.logger.info(f"📊 Position opened - monitoring every 60s...")
+                    if result.get("position_open", False) or result.get("dca", False):
+                        self.logger.info(f"📊 Position/DCA updated - monitoring...")
                     else:
                         self.logger.info(f"✅ TRADE COMPLETED! Net: ${result.get('net_profit', 0):.4f}")
                 elif result.get("skipped", False):
-                    self.logger.info(f"⏭️ No signal - checking every 5 minutes")
+                    if self.has_open_position or self.strategy.position_open:
+                        self.logger.info(f"⏳ Position open - monitoring...")
+                    else:
+                        self.logger.info(f"⏭️ Waiting for signal...")
                 else:
                     self.logger.error(f"⚠️ Failed: {result.get('error', 'Unknown')}")
                 
@@ -870,7 +1027,8 @@ class DCAMomentumBot:
                     win_rate = (self.win_count / self.total_trades) * 100
                     self.logger.info(f"📊 STATS: {self.total_trades} trades, {win_rate:.1f}% win, ${self.cycle_stats['net_profit']:.4f}")
                 
-                wait_time = 60 if self.has_open_position else 300
+                # Always check every minute (like a true DCA bot)
+                wait_time = 60
                 self.logger.info(f"⏳ Next check in {wait_time}s")
                 time.sleep(wait_time)
                 cycle_num += 1
@@ -891,7 +1049,7 @@ class DCAMomentumBot:
     def print_final_summary(self):
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
         self.logger.info("\n" + "="*70)
-        self.logger.info("🏆 DCA + MOMENTUM - FINAL SUMMARY")
+        self.logger.info("🏆 DCA STRATEGY - FINAL SUMMARY")
         self.logger.info("="*70)
         self.logger.info(f"📊 Trades: {self.total_trades} | Wins: {self.win_count} | Losses: {self.loss_count}")
         self.logger.info(f"📊 Win Rate: {win_rate:.1f}%")
@@ -915,25 +1073,23 @@ if __name__ == "__main__":
         exit(1)
     
     print("="*70)
-    print("🚀 DCA + MOMENTUM BOT v1.0 - TOP ALGORITHM")
+    print("🚀 HYBRID DCA + RSI/MACD BOT v1.0")
     print("="*70)
-    print(f"\n🎯 {DCA_CONFIG['symbol']} {DCA_CONFIG['interval']}")
+    print(f"\n🎯 {DCA_CONFIG['symbol']} - 1 Minute Check")
     print(f"   ✅ Price Drop: {DCA_CONFIG['price_drop_pct']*100:.1f}%")
     print(f"   ✅ RSI Oversold: < {DCA_CONFIG['rsi_oversold']}")
-    print(f"   ✅ MACD Filter: Bullish confirmation")
-    print(f"   ✅ DCA Scaling: {DCA_CONFIG['scale_multiplier']}x multiplier")
     print(f"   ✅ Take Profit: {DCA_CONFIG['take_profit_pct']*100:.1f}%")
-    print(f"\n📊 Current AVAXUSDT: Price Drop needed: 2%+")
+    print(f"   ✅ Max DCA Levels: {DCA_CONFIG['max_buy_levels']}")
+    print(f"   ✅ Martingale: {DCA_CONFIG['martingale_multiplier']}x scaling")
     print(f"\n🚀 Starting in 3 seconds...")
     time.sleep(3)
     
-    bot = DCAMomentumBot(
+    bot = DCABot(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol=DCA_CONFIG["symbol"],
         exchange_region="us",
-        log_level="INFO",
-        interval=DCA_CONFIG["interval"]
+        log_level="INFO"
     )
     
     bot.run_forever()
