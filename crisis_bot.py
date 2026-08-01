@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v9.6 - MINIMAL CAPITAL EDITION
+🚀 CRISIS ARBITRAGE SCALPER v9.7 - SIGNATURE FIXED EDITION
 ============================================================
-MINIMUM REQUIREMENTS:
-- Only $10 USDT needed to start
-- Trades as low as $10 per order
-- Optimized for micro-accounts
-- Same 58-62% win rate
+FIXES:
+- Fixed API signature generation
+- Better error handling for -1022 errors
+- Proper URL encoding
+- Clean API key handling
+- All previous features included
 ============================================================
 """
 
@@ -578,18 +579,18 @@ class EinsteinStrategy:
         }
 
 # ========================================================================
-# 🤖 SCALPER BOT - MINIMAL CAPITAL EDITION
+# 🤖 SCALPER BOT - SIGNATURE FIXED EDITION
 # ========================================================================
 
-class ScalperBotV96:
+class ScalperBotV97:
 
     def __init__(self, api_key: str, api_secret: str, symbol: str = "BTCUSDT",
                  exchange_region: str = "us", log_level: str = "INFO"):
         """
-        MINIMAL CAPITAL EDITION - Only $10 USDT needed
+        SIGNATURE FIXED EDITION - All API issues resolved
         """
-        self.api_key = api_key
-        self.api_secret = api_secret
+        self.api_key = api_key.strip()  # Remove any whitespace
+        self.api_secret = api_secret.strip()  # Remove any whitespace
         self.symbol = symbol
         self.test_mode = False
 
@@ -616,18 +617,29 @@ class ScalperBotV96:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 MINIMAL CAPITAL SETTINGS
-        self.total_balance_usdt = 10.0  # Minimum $10
+        # Validate API keys
+        if not self.api_key or not self.api_secret:
+            self.logger.error("❌ API keys are empty! Please check your .env file")
+            raise ValueError("API keys cannot be empty")
         
-        # MINIMUM ORDER SIZE - $10 (Binance minimum)
+        if len(self.api_key) < 30 or len(self.api_secret) < 30:
+            self.logger.error("❌ API keys appear to be invalid (too short)")
+            self.logger.error(f"   API Key length: {len(self.api_key)}")
+            self.logger.error(f"   API Secret length: {len(self.api_secret)}")
+            raise ValueError("API keys appear invalid")
+
+        # 💰 MINIMAL CAPITAL SETTINGS
+        self.total_balance_usdt = 10.0
+        
+        # MINIMUM ORDER SIZE
         self.min_order_usdt = 10.0
-        self.max_order_usdt = 10.0  # Always trade exactly $10
+        self.max_order_usdt = 10.0
         
         # RISK:REWARD = 1:3
         self.stop_loss_pct = 0.005
         self.target_profit_pct = 0.015
         
-        # Position sizing - FIXED $10
+        # Position sizing
         self.base_risk_per_trade = 0.02
         self.max_risk_per_trade = 0.05
         self.min_risk_per_trade = 0.01
@@ -638,9 +650,9 @@ class ScalperBotV96:
         self.min_signal_strength = "moderate"
         self.min_strong_signals = 0
         
-        # Safety limits - TIGHTER for small account
-        self.max_drawdown_pct = 0.10  # 10% max drawdown
-        self.max_consecutive_losses = 3  # Stop after 3 losses
+        # Safety limits
+        self.max_drawdown_pct = 0.10
+        self.max_consecutive_losses = 3
         self.max_skips_before_pause = 50
         self.target_consecutive_wins = 7
         
@@ -701,7 +713,7 @@ class ScalperBotV96:
         }
 
         self.logger.info("="*70)
-        self.logger.info("🚀 CRISIS ARBITRAGE SCALPER v9.6 - MINIMAL CAPITAL")
+        self.logger.info("🚀 CRISIS ARBITRAGE SCALPER v9.7 - SIGNATURE FIXED")
         self.logger.info("="*70)
         self.logger.info(f"   Symbol: {symbol}")
         self.logger.info(f"   Mode: 💰 LIVE TRADING")
@@ -730,7 +742,6 @@ class ScalperBotV96:
                 self.balance_fetched = True
                 self.initialized = True
                 
-                # Update order sizes based on actual balance
                 if self.current_balance < 10:
                     self.logger.warning(f"⚠️ Balance ${self.current_balance:.2f} is below $10 minimum!")
                     self.logger.warning("⚠️ You need at least $10 USDT to trade")
@@ -759,7 +770,6 @@ class ScalperBotV96:
                 if self.peak_balance == 0 or self.current_balance > self.peak_balance:
                     self.peak_balance = self.current_balance
                 
-                # Check if balance is still sufficient
                 if self.current_balance < 10:
                     self.logger.warning(f"⚠️ Balance ${self.current_balance:.2f} below $10 minimum!")
                     self.stopped = True
@@ -802,16 +812,28 @@ class ScalperBotV96:
             self.logger.warning(f"Could not fetch exchange info: {e}")
 
     def _generate_signature(self, params: dict) -> str:
-        query_string = urllib.parse.urlencode(params)
-        return hmac.new(
-            self.api_secret.encode("utf-8"),
-            query_string.encode("utf-8"),
-            hashlib.sha256,
+        """
+        FIXED: Proper signature generation
+        """
+        # Sort params alphabetically
+        sorted_params = dict(sorted(params.items()))
+        query_string = urllib.parse.urlencode(sorted_params)
+        
+        # Create signature using HMAC-SHA256
+        signature = hmac.new(
+            self.api_secret.encode('utf-8'),
+            query_string.encode('utf-8'),
+            hashlib.sha256
         ).hexdigest()
+        
+        return signature
 
     def _send_signed_request(self, method: str, endpoint: str, params: dict = None, retries: int = 3) -> dict:
         if params is None:
             params = {}
+        
+        # Clean up params - remove None values
+        params = {k: v for k, v in params.items() if v is not None}
         
         if "quantity" in params:
             try:
@@ -835,7 +857,10 @@ class ScalperBotV96:
         
         for attempt in range(retries):
             try:
+                # Add timestamp
                 params["timestamp"] = int(time.time() * 1000)
+                
+                # Generate signature
                 params["signature"] = self._generate_signature(params)
 
                 headers = {"X-MBX-APIKEY": self.api_key}
@@ -859,19 +884,36 @@ class ScalperBotV96:
                         continue
                     return {"error": "Invalid JSON response", "status_code": response.status_code}
 
-                if isinstance(data, dict) and "code" in data and "msg" in data:
+                # Check for API errors
+                if isinstance(data, dict) and "code" in data:
                     error_code = data.get("code")
+                    
+                    # Rate limit errors - retry
                     if error_code in [-1003, -1001, -1016]:
                         wait_time = 2 ** attempt
                         self.logger.warning(f"Rate limit hit, waiting {wait_time}s...")
                         time.sleep(wait_time)
                         continue
+                    
+                    # Signature error - check API keys
+                    if error_code == -1022:
+                        self.logger.error("❌ SIGNATURE ERROR -1022: Invalid API Key or Secret")
+                        self.logger.error("   Please check:")
+                        self.logger.error("   1. API Key and Secret are correct")
+                        self.logger.error("   2. No extra spaces in keys")
+                        self.logger.error("   3. API has spot trading permissions")
+                        self.logger.error("   4. Keys are for the correct exchange (binance.com vs binance.us)")
+                        return {"error": data.get("msg"), "code": error_code}
+                    
+                    # Insufficient balance
                     if error_code == -2010:
                         self.logger.error(f"Insufficient balance: {data.get('msg')}")
                         self._update_balance()
                         return {"error": data.get("msg"), "code": error_code, "insufficient": True}
-                    self.logger.error(f"Binance API error {error_code}: {data.get('msg')}")
-                    return {"error": data.get("msg"), "code": error_code}
+                    
+                    if error_code != 0:
+                        self.logger.error(f"Binance API error {error_code}: {data.get('msg')}")
+                        return {"error": data.get("msg"), "code": error_code}
 
                 return data
                 
@@ -955,35 +997,29 @@ class ScalperBotV96:
         return None
 
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
-        """Place a MARKET order - MINIMAL CAPITAL version"""
+        """Place a MARKET order - FIXED with proper validation"""
         ticker = self.get_order_book_ticker()
         if not ticker:
             return {"error": "Failed to get market price"}
 
         price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
         
-        # MINIMAL CAPITAL: Always use $10
         if amount <= 0:
             amount = self.min_order_usdt
         
-        # Cap at $10 for minimal capital
         if amount > self.min_order_usdt:
             amount = self.min_order_usdt
         
-        # Calculate quantity
         if is_quantity:
             qty = amount
         else:
             qty = amount / price
         
-        # Round to step
         qty = round_to_step(qty, self._min_qty)
         
-        # Ensure minimum quantity
         if qty < self._min_qty:
             qty = self._min_qty
         
-        # Ensure notional value
         notional = qty * price
         if notional < self._min_notional:
             qty = self._min_notional / price
@@ -1005,7 +1041,6 @@ class ScalperBotV96:
         
         if "error" in response:
             if response.get("insufficient"):
-                # Try with 90% of quantity
                 reduced_qty = qty * 0.9
                 reduced_qty = round_to_step(reduced_qty, self._min_qty)
                 if reduced_qty >= self._min_qty:
@@ -1038,12 +1073,11 @@ class ScalperBotV96:
         }
 
     def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
-        """Place a LIMIT order - MINIMAL CAPITAL version"""
+        """Place a LIMIT order"""
         if quantity <= 0:
             self.logger.error(f"❌ Invalid quantity: {quantity}")
             return {"error": "Invalid quantity", "code": -1003}
         
-        # Ensure minimum notional
         if quantity * price < self._min_notional:
             quantity = self._min_notional / price
             quantity = round_to_step(quantity, self._min_qty)
@@ -1105,7 +1139,6 @@ class ScalperBotV96:
         return self._send_signed_request("GET", "/api/v3/order", params)
 
     def calculate_position_size(self, analysis: Dict) -> float:
-        """Always use $10 for minimal capital"""
         return self.min_order_usdt
 
     def run_cycle(self, cycle_number: int = 0) -> dict:
@@ -1148,7 +1181,6 @@ class ScalperBotV96:
             self.skipped_count += 1
             return {"success": False, "error": "No market data", "skipped": True}
         
-        # Analyze with 5 conditions strategy
         analysis = EinsteinStrategy.analyze_market(klines)
         
         self.logger.info(f"📊 MARKET ANALYSIS:")
@@ -1161,7 +1193,6 @@ class ScalperBotV96:
         for reason in analysis['reasons'][:5]:
             self.logger.info(f"   → {reason}")
         
-        # Check conditions
         passing = analysis['passing_conditions']
         needed = self.min_passing_conditions
         
@@ -1180,12 +1211,10 @@ class ScalperBotV96:
             
             return {"success": False, "error": "Not enough conditions passing", "skipped": True}
 
-        # Get current price
         current_price = self.get_current_price()
         if not current_price:
             return {"success": False, "error": "No price data"}
 
-        # MINIMAL CAPITAL: Always trade $10
         buy_amount = self.min_order_usdt
         
         self.logger.info(f"📈 Placing BUY MARKET order for ${buy_amount:.2f}")
@@ -1222,7 +1251,6 @@ class ScalperBotV96:
 
         self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} BTC @ ${self.buy_price:.2f} (${self.buy_qty * self.buy_price:.2f})")
 
-        # Calculate Exit Levels
         atr_stop = EinsteinMath.optimal_stop_loss(
             analysis['atr'], 
             analysis['volatility'], 
@@ -1250,7 +1278,6 @@ class ScalperBotV96:
         self.logger.info(f"🛑 Stop: ${stop_price:.2f} (-{((1 - stop_price/self.buy_price))*100:.2f}%)")
         self.logger.info(f"📊 Risk:Reward: 1:{rr_ratio:.2f}")
 
-        # Place SELL LIMIT order
         sell_qty = self.buy_qty
         self.logger.info(f"📉 Placing SELL LIMIT order @ ${target_price:.2f} for {sell_qty:.8f} BTC")
         
@@ -1296,7 +1323,6 @@ class ScalperBotV96:
                     self.logger.info(f"✅ SELL Filled @ ${exit_price:.2f}")
                     break
                 
-                # Check stop-loss
                 if now - sell_start > 2:
                     current_price = self.get_current_price()
                     if current_price and current_price <= stop_price:
@@ -1315,7 +1341,6 @@ class ScalperBotV96:
                         self.logger.info(f"🛑 Stopped out @ ${exit_price:.2f}")
                         break
                 
-                # Chase if taking too long
                 if now - sell_start > self.chase_timeout_sec:
                     self.logger.info("Sell order taking too long, converting to market...")
                     self.cancel_order(sell_order_id)
@@ -1333,7 +1358,6 @@ class ScalperBotV96:
                 
                 time.sleep(1)
 
-        # Calculate P&L
         realized_pnl = (exit_price - self.buy_price) * self.buy_qty
         fee_estimate = (self.buy_qty * self.buy_price * 0.001) + (self.buy_qty * exit_price * 0.001)
         net_pnl = realized_pnl - fee_estimate
@@ -1342,7 +1366,6 @@ class ScalperBotV96:
         self.logger.info(f"💰 P&L: ${realized_pnl:.4f} (net: ${net_pnl:.4f})" + (" (stop-loss exit)" if stopped_out else ""))
         self.logger.info(f"📊 Fees: ${fee_estimate:.4f}")
         
-        # Update metrics
         self.running_pnl += net_pnl
         self.current_balance = max(0, self.total_balance_usdt + self.running_pnl)
         self.total_trades += 1
@@ -1397,9 +1420,9 @@ class ScalperBotV96:
         return result
 
     def run_forever(self, delay_between_cycles: int = 8):
-        """Run continuously - MINIMAL CAPITAL"""
+        """Run continuously"""
         self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 CRISIS ARBITRAGE SCALPER v9.6 - MINIMAL CAPITAL")
+        self.logger.info("🚀 CRISIS ARBITRAGE SCALPER v9.7 - SIGNATURE FIXED")
         self.logger.info("   MINIMUM: $10 USDT ONLY!")
         self.logger.info("   Press Ctrl+C to stop")
         self.logger.info("="*70)
@@ -1470,7 +1493,7 @@ class ScalperBotV96:
         seconds = duration % 60
 
         self.logger.info("\n" + "="*70)
-        self.logger.info("🚀 FINAL SUMMARY - MINIMAL CAPITAL")
+        self.logger.info("🚀 FINAL SUMMARY")
         self.logger.info("="*70)
         self.logger.info(f"📅 Start Time: {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
         self.logger.info(f"📅 End Time:   {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1554,8 +1577,8 @@ class ScalperBotV96:
         win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
         
         report = {
-            "version": "9.6",
-            "name": "Minimal Capital Edition",
+            "version": "9.7",
+            "name": "Signature Fixed Edition",
             "minimum_requirement": "$10 USDT",
             "starting_balance": self.starting_balance,
             "final_balance": self.current_balance,
@@ -1607,29 +1630,31 @@ if __name__ == "__main__":
         print("\nCreate a .env file with:")
         print("BINANCE_API_KEY=your_api_key")
         print("BINANCE_API_SECRET=your_api_secret")
+        print("\n⚠️  Make sure:")
+        print("   - No spaces around the = sign")
+        print("   - No quotes around the values")
+        print("   - Keys are for the correct exchange")
         print("="*70)
         sys.exit(1)
     
+    # Clean up API keys
+    API_KEY = API_KEY.strip()
+    API_SECRET = API_SECRET.strip()
+    
     print("="*70)
-    print("🚀 CRISIS ARBITRAGE SCALPER v9.6 - MINIMAL CAPITAL")
+    print("🚀 CRISIS ARBITRAGE SCALPER v9.7 - SIGNATURE FIXED")
     print("="*70)
     print("\nMINIMUM REQUIREMENTS:")
     print("1. ✅ ONLY $10 USDT needed to start")
-    print("2. ✅ Trades exactly $10 per trade")
-    print("3. ✅ Same 58-62% win rate")
-    print("4. ✅ All fixes included")
-    print("\nEXPECTED RESULTS:")
-    print("   - Starting Balance: $10")
-    print("   - Profit/Trade: ~$0.15")
-    print("   - Trades/Day: 15-25")
-    print("   - Daily Profit: ~$2.25")
-    print("   - Monthly Growth: 20-30%")
+    print("2. ✅ Signature generation fixed")
+    print("3. ✅ All error handling improved")
+    print("4. ✅ Proper API key validation")
     print("="*70)
     
-    print("\n🤖 Starting MINIMAL CAPITAL version in 3 seconds...")
+    print("\n🤖 Starting SIGNATURE FIXED version in 3 seconds...")
     time.sleep(3)
     
-    bot = ScalperBotV96(
+    bot = ScalperBotV97(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
