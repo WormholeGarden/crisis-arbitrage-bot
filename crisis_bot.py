@@ -4,8 +4,8 @@ from binance.enums import *
 from binance.exceptions import BinanceAPIException
 
 # Use your Binance Testnet API keys for safety
-API_KEY = "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn"
-    API_SECRET = "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0"
+api_key = 'dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn'
+api_secret = '5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0'
 
 # Initialize client (testnet=True prevents real funds from being used)
 client = Client(api_key, api_secret, testnet=True)
