@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """
-🚀 CRISIS ARBITRAGE SCALPER v9.2 - THE FIXED EDITION
-============================================================
-CRITICAL FIX: Only trades when conditions are GOOD
-- Requires 6+ conditions PASSING (not failing)
-- Stricter entry requirements
-- Proper risk management
-- No more trading when things are wrong!
-============================================================
+🚀 CRISIS ARBITRAGE SCALPER v4.3 - FIXED DRAWDOWN CALCULATION
+- Fixed peak balance initialization to match actual balance
+- Better balance handling for small accounts
+- Improved error handling for drawdown checks
 """
 
 import hashlib
@@ -20,11 +16,61 @@ import csv
 import json
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import requests
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
-import statistics
-import math
+
+# ========================================================================
+# 📊 FSI 2024 DATA (179 COUNTRIES)
+# ========================================================================
+
+FSI_2024 = {
+    "SOM": {"name": "Somalia", "flag": "🇸🇴", "fsi_score": 111.3, "rank": 1, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.20},
+    "SDN": {"name": "Sudan", "flag": "🇸🇩", "fsi_score": 109.3, "rank": 2, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.22},
+    "SSD": {"name": "South Sudan", "flag": "🇸🇸", "fsi_score": 109.0, "rank": 3, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.18},
+    "SYR": {"name": "Syria", "flag": "🇸🇾", "fsi_score": 108.1, "rank": 4, "region": "middleeast", "wst_class": "Periphery", "recovery_rate": 0.20},
+    "COD": {"name": "Congo-Kinshasa", "flag": "🇨🇩", "fsi_score": 106.7, "rank": 5, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.20},
+    "YEM": {"name": "Yemen", "flag": "🇾🇪", "fsi_score": 106.6, "rank": 6, "region": "middleeast", "wst_class": "Periphery", "recovery_rate": 0.18},
+    "AFG": {"name": "Afghanistan", "flag": "🇦🇫", "fsi_score": 103.9, "rank": 7, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.20},
+    "CAF": {"name": "Central African Rep.", "flag": "🇨🇫", "fsi_score": 103.9, "rank": 8, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.18},
+    "HTI": {"name": "Haiti", "flag": "🇭🇹", "fsi_score": 103.5, "rank": 9, "region": "americas", "wst_class": "Periphery", "recovery_rate": 0.22},
+    "TCD": {"name": "Chad", "flag": "🇹🇩", "fsi_score": 102.7, "rank": 10, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.25},
+    "UKR": {"name": "Ukraine", "flag": "🇺🇦", "fsi_score": 93.1, "rank": 22, "region": "europe", "wst_class": "Semi", "recovery_rate": 0.35},
+    "LBN": {"name": "Lebanon", "flag": "🇱🇧", "fsi_score": 92.7, "rank": 23, "region": "middleeast", "wst_class": "Periphery", "recovery_rate": 0.18},
+    "TUR": {"name": "Turkey", "flag": "🇹🇷", "fsi_score": 84.0, "rank": 41, "region": "europe", "wst_class": "Semi", "recovery_rate": 0.42},
+    "RUS": {"name": "Russia", "flag": "🇷🇺", "fsi_score": 81.6, "rank": 48, "region": "europe", "wst_class": "Semi", "recovery_rate": 0.50},
+    "BRA": {"name": "Brazil", "flag": "🇧🇷", "fsi_score": 70.3, "rank": 78, "region": "americas", "wst_class": "Semi", "recovery_rate": 0.50},
+    "IND": {"name": "India", "flag": "🇮🇳", "fsi_score": 72.3, "rank": 75, "region": "asia", "wst_class": "Semi", "recovery_rate": 0.48},
+    "CHN": {"name": "China", "flag": "🇨🇳", "fsi_score": 64.4, "rank": 99, "region": "asia", "wst_class": "Semi", "recovery_rate": 0.55},
+    "USA": {"name": "United States", "flag": "🇺🇸", "fsi_score": 44.5, "rank": 141, "region": "americas", "wst_class": "Core", "recovery_rate": 0.85},
+    "GBR": {"name": "United Kingdom", "flag": "🇬🇧", "fsi_score": 40.8, "rank": 148, "region": "europe", "wst_class": "Core", "recovery_rate": 0.80},
+    "DEU": {"name": "Germany", "flag": "🇩🇪", "fsi_score": 24.0, "rank": 166, "region": "europe", "wst_class": "Core", "recovery_rate": 0.82},
+    "JPN": {"name": "Japan", "flag": "🇯🇵", "fsi_score": 30.2, "rank": 160, "region": "asia", "wst_class": "Core", "recovery_rate": 0.75},
+    "FRA": {"name": "France", "flag": "🇫🇷", "fsi_score": 28.3, "rank": 162, "region": "europe", "wst_class": "Core", "recovery_rate": 0.78},
+    "CAN": {"name": "Canada", "flag": "🇨🇦", "fsi_score": 18.6, "rank": 172, "region": "americas", "wst_class": "Core", "recovery_rate": 0.82},
+    "AUS": {"name": "Australia", "flag": "🇦🇺", "fsi_score": 19.6, "rank": 169, "region": "oceania", "wst_class": "Core", "recovery_rate": 0.80},
+    "CHE": {"name": "Switzerland", "flag": "🇨🇭", "fsi_score": 16.2, "rank": 174, "region": "europe", "wst_class": "Core", "recovery_rate": 0.88},
+    "NOR": {"name": "Norway", "flag": "🇳🇴", "fsi_score": 12.7, "rank": 179, "region": "europe", "wst_class": "Core", "recovery_rate": 0.90},
+    "SGP": {"name": "Singapore", "flag": "🇸🇬", "fsi_score": 25.4, "rank": 165, "region": "asia", "wst_class": "Core", "recovery_rate": 0.75},
+    "MMR": {"name": "Myanmar", "flag": "🇲🇲", "fsi_score": 100.0, "rank": 11, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.26},
+    "ETH": {"name": "Ethiopia", "flag": "🇪🇹", "fsi_score": 98.1, "rank": 12, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.28},
+    "MLI": {"name": "Mali", "flag": "🇲🇱", "fsi_score": 97.3, "rank": 14, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.26},
+    "NGA": {"name": "Nigeria", "flag": "🇳🇬", "fsi_score": 96.6, "rank": 15, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.30},
+    "LBY": {"name": "Libya", "flag": "🇱🇾", "fsi_score": 96.5, "rank": 16, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.26},
+    "ZWE": {"name": "Zimbabwe", "flag": "🇿🇼", "fsi_score": 95.7, "rank": 18, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.22},
+    "NER": {"name": "Niger", "flag": "🇳🇪", "fsi_score": 95.2, "rank": 19, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.24},
+    "CMR": {"name": "Cameroon", "flag": "🇨🇲", "fsi_score": 94.3, "rank": 20, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.28},
+    "BFA": {"name": "Burkina Faso", "flag": "🇧🇫", "fsi_score": 94.2, "rank": 21, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.26},
+    "PAK": {"name": "Pakistan", "flag": "🇵🇰", "fsi_score": 91.7, "rank": 27, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.26},
+    "UGA": {"name": "Uganda", "flag": "🇺🇬", "fsi_score": 91.1, "rank": 28, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.28},
+    "VEN": {"name": "Venezuela", "flag": "🇻🇪", "fsi_score": 89.0, "rank": 30, "region": "americas", "wst_class": "Periphery", "recovery_rate": 0.18},
+    "IRQ": {"name": "Iraq", "flag": "🇮🇶", "fsi_score": 88.6, "rank": 31, "region": "middleeast", "wst_class": "Periphery", "recovery_rate": 0.28},
+    "LKA": {"name": "Sri Lanka", "flag": "🇱🇰", "fsi_score": 88.2, "rank": 33, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.24},
+    "KEN": {"name": "Kenya", "flag": "🇰🇪", "fsi_score": 86.5, "rank": 36, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.32},
+    "BGD": {"name": "Bangladesh", "flag": "🇧🇩", "fsi_score": 85.9, "rank": 37, "region": "asia", "wst_class": "Periphery", "recovery_rate": 0.30},
+    "EGY": {"name": "Egypt", "flag": "🇪🇬", "fsi_score": 82.8, "rank": 44, "region": "africa", "wst_class": "Periphery", "recovery_rate": 0.28},
+    "IRN": {"name": "Iran", "flag": "🇮🇷", "fsi_score": 82.9, "rank": 43, "region": "middleeast", "wst_class": "Periphery", "recovery_rate": 0.30},
+}
 
 # ========================================================================
 # 🔧 DECIMAL HELPERS
@@ -50,560 +96,64 @@ def format_price(value: float) -> str:
     return f"{Decimal(str(value)):.2f}"
 
 # ========================================================================
-# 🧠 EINSTEIN-LEVEL MATHEMATICAL ANALYSIS
+# 🧠 CRISIS SCORING ENGINE
 # ========================================================================
 
-class EinsteinMath:
-    """Pure mathematical edge - no emotion, just numbers"""
-    
+class CrisisScoringEngine:
     @staticmethod
-    def kelly_criterion(win_rate: float, avg_win: float, avg_loss: float) -> float:
-        if avg_loss == 0:
-            return 0.02
-        b = avg_win / avg_loss
-        q = 1 - win_rate
-        kelly = (win_rate * b - q) / b
-        half_kelly = max(0.01, min(0.10, kelly * 0.5))
-        return half_kelly
-    
+    def get_crisis_score(iso: str) -> Dict:
+        if iso in FSI_2024:
+            return FSI_2024[iso]
+        return None
+
     @staticmethod
-    def sharpe_ratio(returns: List[float], risk_free_rate: float = 0.0) -> float:
-        if not returns or len(returns) < 2:
+    def score_opportunity(iso: str) -> float:
+        data = CrisisScoringEngine.get_crisis_score(iso)
+        if not data:
             return 0.0
-        avg_return = sum(returns) / len(returns)
-        std_dev = statistics.stdev(returns) if len(returns) > 1 else 0.001
-        if std_dev == 0:
-            return 0.0
-        sharpe = (avg_return - risk_free_rate) / std_dev
-        return sharpe
-    
+        fsi = data["fsi_score"]
+        recovery = data["recovery_rate"]
+        wst_class = data["wst_class"]
+        fsi_score = min(1.0, fsi / 120)
+        recovery_score = 1 - recovery
+        wst_bonus = 0.2 if wst_class == "Periphery" else 0.1 if wst_class == "Semi" else 0
+        score = (fsi_score * 0.5) + (recovery_score * 0.3) + (wst_bonus * 0.2)
+        return min(1.0, max(0.0, score))
+
     @staticmethod
-    def risk_of_ruin(win_rate: float, risk_per_trade: float, account_size: float, max_loss: float) -> float:
-        if win_rate >= 0.5:
-            q = 1 - win_rate
-            p = win_rate
-            if p == q:
-                return 1.0
-            advantage = p - q
-            ruin_prob = math.exp(-2 * advantage * (account_size / max_loss))
-            return max(0, min(1, ruin_prob))
-        else:
-            return 1.0
-    
-    @staticmethod
-    def optimal_stop_loss(atr: float, volatility: float, confidence: float) -> float:
-        base_stop = atr * 1.5
-        vol_multiplier = 1 + (volatility * 10)
-        confidence_adjust = 1 - (confidence * 0.3)
-        optimal_stop = base_stop * vol_multiplier * confidence_adjust
-        return min(max(optimal_stop, atr * 0.5), atr * 3.0)
-    
-    @staticmethod
-    def expected_value(win_rate: float, avg_win: float, avg_loss: float) -> float:
-        ev = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
-        return ev
-    
-    @staticmethod
-    def compound_growth(balance: float, daily_return: float, days: int) -> float:
-        if daily_return <= 0:
-            return balance
-        growth = balance * ((1 + daily_return) ** days)
-        return growth
+    def get_top_opportunities(limit: int = 5) -> List[Dict]:
+        opportunities = []
+        for iso, data in FSI_2024.items():
+            score = CrisisScoringEngine.score_opportunity(iso)
+            opportunities.append({
+                "iso": iso,
+                "name": data["name"],
+                "flag": data["flag"],
+                "fsi_score": data["fsi_score"],
+                "wst_class": data["wst_class"],
+                "recovery_rate": data["recovery_rate"],
+                "opportunity_score": score,
+            })
+        opportunities.sort(key=lambda x: x["opportunity_score"], reverse=True)
+        return opportunities[:limit]
 
 # ========================================================================
-# 📊 ADVANCED TECHNICAL ANALYSIS
+# 🤖 SCALPER BOT - FIXED DRAWDOWN
 # ========================================================================
 
-class AdvancedTA:
-    """Multi-timeframe analysis with 8+ indicators"""
-    
-    @staticmethod
-    def get_klines(symbol: str, base_url: str, interval: str = "1m", limit: int = 300) -> Optional[Dict]:
-        try:
-            url = f"{base_url}/api/v3/klines"
-            params = {
-                "symbol": symbol,
-                "interval": interval,
-                "limit": limit
-            }
-            resp = requests.get(url, params=params, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                return {
-                    "timestamps": [candle[0] for candle in data],
-                    "opens": [float(candle[1]) for candle in data],
-                    "highs": [float(candle[2]) for candle in data],
-                    "lows": [float(candle[3]) for candle in data],
-                    "closes": [float(candle[4]) for candle in data],
-                    "volumes": [float(candle[5]) for candle in data],
-                }
-            return None
-        except Exception as e:
-            return None
-    
-    @staticmethod
-    def calculate_rsi(closes: List[float], period: int = 14) -> float:
-        if len(closes) < period + 1:
-            return 50.0
-        
-        gains = []
-        losses = []
-        for i in range(1, len(closes)):
-            diff = closes[i] - closes[i-1]
-            if diff > 0:
-                gains.append(diff)
-                losses.append(0)
-            else:
-                gains.append(0)
-                losses.append(abs(diff))
-        
-        gains = gains[-period:] if len(gains) >= period else gains
-        losses = losses[-period:] if len(losses) >= period else losses
-        
-        avg_gain = sum(gains) / len(gains) if gains else 0
-        avg_loss = sum(losses) / len(losses) if losses else 1
-        
-        if avg_loss == 0:
-            return 100.0
-        
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi
-    
-    @staticmethod
-    def calculate_macd(closes: List[float]) -> Dict:
-        if len(closes) < 26:
-            return {"macd": 0, "signal": 0, "histogram": 0}
-        
-        ema_12 = AdvancedTA.calculate_ema(closes, 12)
-        ema_26 = AdvancedTA.calculate_ema(closes, 26)
-        macd_line = ema_12 - ema_26
-        
-        signal_line = AdvancedTA.calculate_ema([macd_line], 9)
-        histogram = macd_line - signal_line
-        
-        if len(closes) >= 30:
-            ema_12_prev = AdvancedTA.calculate_ema(closes[:-1], 12)
-            ema_26_prev = AdvancedTA.calculate_ema(closes[:-1], 26)
-            macd_prev = ema_12_prev - ema_26_prev
-            signal_prev = AdvancedTA.calculate_ema([macd_prev], 9)
-            
-            bullish_cross = macd_line > signal_line and macd_prev <= signal_prev
-            bearish_cross = macd_line < signal_line and macd_prev >= signal_prev
-        else:
-            bullish_cross = False
-            bearish_cross = False
-        
-        return {
-            "macd": macd_line,
-            "signal": signal_line,
-            "histogram": histogram,
-            "bullish_cross": bullish_cross,
-            "bearish_cross": bearish_cross
-        }
-    
-    @staticmethod
-    def calculate_ema(closes: List[float], period: int) -> float:
-        if not closes:
-            return 0
-        if len(closes) < period:
-            return sum(closes) / len(closes)
-        
-        multiplier = 2 / (period + 1)
-        ema = sum(closes[:period]) / period
-        
-        for price in closes[period:]:
-            ema = (price * multiplier) + (ema * (1 - multiplier))
-        
-        return ema
-    
-    @staticmethod
-    def calculate_bollinger_bands(closes: List[float], period: int = 20, std_dev: float = 2) -> Dict:
-        if len(closes) < period:
-            return {"upper": closes[-1] if closes else 0, "middle": closes[-1] if closes else 0, "lower": closes[-1] if closes else 0}
-        
-        middle = sum(closes[-period:]) / period
-        squared_deviations = [(x - middle) ** 2 for x in closes[-period:]]
-        std = (sum(squared_deviations) / period) ** 0.5
-        
-        upper = middle + (std * std_dev)
-        lower = middle - (std * std_dev)
-        
-        position = (closes[-1] - lower) / (upper - lower) if upper != lower else 0.5
-        width = (upper - lower) / middle
-        
-        return {
-            "upper": upper,
-            "middle": middle,
-            "lower": lower,
-            "position": position,
-            "width": width,
-            "squeeze": width < 0.02
-        }
-    
-    @staticmethod
-    def calculate_atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
-        if len(closes) < period:
-            return (max(highs) - min(lows)) if highs and lows else 0
-        
-        tr_values = []
-        for i in range(1, len(closes)):
-            high_low = highs[i] - lows[i]
-            high_close = abs(highs[i] - closes[i-1])
-            low_close = abs(lows[i] - closes[i-1])
-            tr = max(high_low, high_close, low_close)
-            tr_values.append(tr)
-        
-        atr = sum(tr_values[-period:]) / period
-        return atr
-    
-    @staticmethod
-    def calculate_vwap(highs: List[float], lows: List[float], closes: List[float], volumes: List[float]) -> float:
-        if not volumes:
-            return closes[-1] if closes else 0
-        
-        typical_prices = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
-        
-        start = max(0, len(typical_prices) - 50)
-        typical_prices = typical_prices[start:]
-        volumes_used = volumes[start:]
-        
-        if not volumes_used or sum(volumes_used) == 0:
-            return closes[-1] if closes else 0
-        
-        vwap = sum(tp * v for tp, v in zip(typical_prices, volumes_used)) / sum(volumes_used)
-        return vwap
-    
-    @staticmethod
-    def calculate_support_resistance(highs: List[float], lows: List[float], closes: List[float]) -> Dict:
-        if len(closes) < 20:
-            return {"support": min(lows), "resistance": max(highs)}
-        
-        lookback = 10
-        supports = []
-        resistances = []
-        
-        for i in range(lookback, len(closes) - lookback):
-            if lows[i] < min(lows[i-lookback:i] + lows[i+1:i+lookback+1]):
-                supports.append(lows[i])
-            if highs[i] > max(highs[i-lookback:i] + highs[i+1:i+lookback+1]):
-                resistances.append(highs[i])
-        
-        recent_support = supports[-1] if supports else min(lows)
-        recent_resistance = resistances[-1] if resistances else max(highs)
-        
-        current_price = closes[-1]
-        near_support = abs(current_price - recent_support) / current_price < 0.001
-        near_resistance = abs(current_price - recent_resistance) / current_price < 0.001
-        
-        support_strength = len([s for s in supports if abs(s - recent_support) / recent_support < 0.001])
-        resistance_strength = len([r for r in resistances if abs(r - recent_resistance) / recent_resistance < 0.001])
-        
-        return {
-            "support": recent_support,
-            "resistance": recent_resistance,
-            "near_support": near_support,
-            "near_resistance": near_resistance,
-            "support_strength": min(5, support_strength),
-            "resistance_strength": min(5, resistance_strength)
-        }
-    
-    @staticmethod
-    def calculate_stochastic(closes: List[float], highs: List[float], lows: List[float], period: int = 14) -> float:
-        if len(closes) < period:
-            return 50.0
-        
-        highest_high = max(highs[-period:])
-        lowest_low = min(lows[-period:])
-        
-        if highest_high == lowest_low:
-            return 50.0
-        
-        stochastic = ((closes[-1] - lowest_low) / (highest_high - lowest_low)) * 100
-        return stochastic
-    
-    @staticmethod
-    def calculate_volume_profile(volumes: List[float]) -> Dict:
-        if not volumes:
-            return {"trend": "neutral", "strength": 0}
-        
-        avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
-        current_volume = volumes[-1]
-        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
-        
-        if len(volumes) >= 10:
-            recent_volume_avg = sum(volumes[-10:]) / 10
-            older_volume_avg = sum(volumes[-20:-10]) / 10 if len(volumes) >= 20 else recent_volume_avg
-            volume_trend = recent_volume_avg / older_volume_avg if older_volume_avg > 0 else 1
-        else:
-            volume_trend = 1
-        
-        return {
-            "ratio": volume_ratio,
-            "trend": volume_trend,
-            "spike": volume_ratio > 2.0,
-            "strength": min(1.0, volume_ratio / 3.0)
-        }
-
-# ========================================================================
-# 📊 FIXED STRATEGY ENGINE - ONLY TRADES WHEN CONDITIONS ARE GOOD
-# ========================================================================
-
-class EinsteinStrategy:
-    """FIXED: Only trades when conditions are GOOD, not when they're bad"""
-    
-    @staticmethod
-    def analyze_market(klines: Dict) -> Dict:
-        if not klines or len(klines['closes']) < 50:
-            return {"signal": "neutral", "confidence": 0, "reason": "Insufficient data"}
-        
-        closes = klines['closes']
-        highs = klines['highs']
-        lows = klines['lows']
-        volumes = klines['volumes']
-        current_price = closes[-1]
-        
-        # Calculate ALL indicators
-        rsi = AdvancedTA.calculate_rsi(closes)
-        macd = AdvancedTA.calculate_macd(closes)
-        bb = AdvancedTA.calculate_bollinger_bands(closes)
-        atr = AdvancedTA.calculate_atr(highs, lows, closes)
-        vwap = AdvancedTA.calculate_vwap(highs, lows, closes, volumes)
-        sr = AdvancedTA.calculate_support_resistance(highs, lows, closes)
-        stochastic = AdvancedTA.calculate_stochastic(closes, highs, lows)
-        volume_profile = AdvancedTA.calculate_volume_profile(volumes)
-        
-        # Multi-timeframe moving averages
-        sma_5 = sum(closes[-5:]) / 5
-        sma_10 = sum(closes[-10:]) / 10
-        sma_20 = sum(closes[-20:]) / 20
-        sma_50 = sum(closes[-50:]) / 50 if len(closes) >= 50 else sma_20
-        
-        # Momentum
-        momentum_5 = (closes[-1] - closes[-5]) / closes[-5] if len(closes) >= 5 else 0
-        momentum_10 = (closes[-1] - closes[-10]) / closes[-10] if len(closes) >= 10 else 0
-        
-        # Volatility
-        returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-        volatility = statistics.stdev(returns[-30:]) if len(returns) >= 30 else 0.001
-        
-        # ============ BUILD SIGNAL ============
-        bullish_signals = 0
-        bearish_signals = 0
-        strong_bullish = 0
-        signal_reasons = []
-        
-        # Signal 1: RSI
-        if rsi < 25 and current_price < sma_20:
-            bullish_signals += 2
-            strong_bullish += 1
-            signal_reasons.append(f"🔥 RSI EXTREME OVERSOLD ({rsi:.1f})")
-        elif rsi < 30 and current_price < sma_20:
-            bullish_signals += 2
-            signal_reasons.append(f"📊 RSI oversold ({rsi:.1f}) - BUY")
-        elif rsi < 35:
-            bullish_signals += 1
-            signal_reasons.append(f"RSI low ({rsi:.1f}) - Good")
-        elif rsi > 70:
-            bearish_signals += 1
-            signal_reasons.append(f"RSI high ({rsi:.1f}) - Not ideal")
-        else:
-            signal_reasons.append(f"RSI neutral ({rsi:.1f})")
-        
-        # Signal 2: MACD
-        if macd['bullish_cross']:
-            bullish_signals += 2
-            strong_bullish += 1
-            signal_reasons.append("🔥 MACD BULLISH CROSSOVER")
-        elif macd['histogram'] > 0 and closes[-1] > closes[-2]:
-            bullish_signals += 1
-            signal_reasons.append("MACD positive - Good momentum")
-        else:
-            bearish_signals += 1
-            signal_reasons.append("MACD negative")
-        
-        # Signal 3: Bollinger Bands
-        if bb['position'] < 0.15 and current_price < sma_20:
-            bullish_signals += 2
-            strong_bullish += 1
-            signal_reasons.append(f"🔥 AT LOWER BB ({bb['position']:.2f})")
-        elif bb['position'] < 0.25:
-            bullish_signals += 1
-            signal_reasons.append(f"Near lower BB ({bb['position']:.2f})")
-        elif bb['position'] > 0.80:
-            bearish_signals += 1
-            signal_reasons.append(f"⚠️ Near upper BB ({bb['position']:.2f})")
-        else:
-            signal_reasons.append(f"BB neutral ({bb['position']:.2f})")
-        
-        # Signal 4: Moving Averages
-        if current_price > sma_5 > sma_10 > sma_20 > sma_50:
-            bullish_signals += 2
-            strong_bullish += 1
-            signal_reasons.append("🔥 PERFECT TREND ALIGNMENT")
-        elif current_price > sma_20 and current_price > sma_50:
-            bullish_signals += 1
-            signal_reasons.append("Uptrend confirmed")
-        elif current_price < sma_20:
-            bearish_signals += 1
-            signal_reasons.append("Downtrend - Skip")
-        else:
-            signal_reasons.append("MA mixed")
-        
-        # Signal 5: Support/Resistance
-        if sr['near_support'] and sr['support_strength'] >= 2:
-            bullish_signals += 2
-            strong_bullish += 1
-            signal_reasons.append(f"🔥 STRONG SUPPORT (${sr['support']:.2f})")
-        elif sr['near_support']:
-            bullish_signals += 1
-            signal_reasons.append(f"Near support (${sr['support']:.2f})")
-        elif sr['near_resistance']:
-            bearish_signals += 1
-            signal_reasons.append(f"⚠️ Near resistance (${sr['resistance']:.2f})")
-        
-        # Signal 6: VWAP
-        if current_price > vwap * 1.002:
-            bullish_signals += 1
-            signal_reasons.append("Above VWAP - Institutional support")
-        elif current_price < vwap * 0.998:
-            bearish_signals += 1
-            signal_reasons.append("Below VWAP - Institutional pressure")
-        else:
-            signal_reasons.append("At VWAP level")
-        
-        # Signal 7: Stochastic
-        if stochastic < 20 and current_price < sma_20:
-            bullish_signals += 1
-            strong_bullish += 1
-            signal_reasons.append(f"🔥 STOCHASTIC OVERSOLD ({stochastic:.1f})")
-        elif stochastic > 80:
-            bearish_signals += 1
-            signal_reasons.append(f"Stochastic overbought ({stochastic:.1f})")
-        else:
-            signal_reasons.append(f"Stochastic neutral ({stochastic:.1f})")
-        
-        # Signal 8: Volume
-        if volume_profile['spike'] and current_price > sma_20:
-            bullish_signals += 1
-            signal_reasons.append("Volume spike confirmation")
-        
-        # Signal 9: Momentum
-        if momentum_5 > 0.002 and momentum_10 > 0:
-            bullish_signals += 1
-            signal_reasons.append("Strong momentum - GOOD")
-        elif momentum_5 > 0.001:
-            bullish_signals += 1
-            signal_reasons.append("Positive momentum")
-        elif momentum_5 < -0.002:
-            bearish_signals += 1
-            signal_reasons.append("Negative momentum - Bad")
-        
-        # Signal 10: Volatility
-        atr_pct = atr / current_price if current_price > 0 else 0
-        if atr_pct < 0.004:
-            bullish_signals += 1
-            signal_reasons.append(f"Low volatility ({atr_pct*100:.2f}%) - Safe")
-        elif atr_pct > 0.015:
-            bearish_signals += 1
-            signal_reasons.append(f"High volatility ({atr_pct*100:.2f}%) - Risky")
-        
-        # ============ FIXED DECISION - TRADE ONLY WHEN GOOD ============
-        total_signals = bullish_signals + bearish_signals
-        if total_signals > 0:
-            raw_confidence = (bullish_signals - bearish_signals) / total_signals
-        else:
-            raw_confidence = 0
-        
-        confidence = max(-1, min(1, raw_confidence))
-        
-        # Calculate how many conditions are PASSING (not failing)
-        passing_conditions = 0
-        total_conditions = 9
-        
-        # Check each condition
-        if raw_confidence > 0.30:
-            passing_conditions += 1
-        if strong_bullish >= 1:
-            passing_conditions += 1
-        if bullish_signals >= 5:
-            passing_conditions += 1
-        if bearish_signals <= 3:
-            passing_conditions += 1
-        if confidence > 0.30:
-            passing_conditions += 1
-        if bb['position'] < 0.35:
-            passing_conditions += 1
-        if 20 <= rsi <= 45:
-            passing_conditions += 1
-        if current_price > sma_20:
-            passing_conditions += 1
-        if current_price > vwap:
-            passing_conditions += 1
-        
-        # Determine signal based on passing conditions
-        if passing_conditions >= 7:  # Need 7+ conditions PASSING
-            signal = "BUY"
-            signal_strength = "strong" if passing_conditions >= 8 else "moderate"
-            expected_win_rate = 0.72 if passing_conditions >= 8 else 0.65
-        elif passing_conditions >= 5:
-            signal = "CONSIDER"
-            signal_strength = "weak"
-            expected_win_rate = 0.55
-        else:
-            signal = "NEUTRAL"
-            signal_strength = "weak"
-            expected_win_rate = 0.45
-        
-        # Calculate Kelly fraction
-        if signal == "BUY":
-            kelly_fraction = EinsteinMath.kelly_criterion(expected_win_rate, 0.02, 0.008)
-        else:
-            kelly_fraction = 0.01
-        
-        return {
-            "signal": signal,
-            "strength": signal_strength,
-            "confidence": abs(confidence),
-            "premium": passing_conditions >= 7,
-            "passing_conditions": passing_conditions,
-            "total_conditions": total_conditions,
-            "bullish_signals": bullish_signals,
-            "bearish_signals": bearish_signals,
-            "strong_bullish": strong_bullish,
-            "reasons": signal_reasons,
-            "expected_win_rate": expected_win_rate,
-            "kelly_fraction": kelly_fraction,
-            "rsi": rsi,
-            "macd": macd,
-            "bb": bb,
-            "atr": atr,
-            "atr_pct": atr_pct,
-            "vwap": vwap,
-            "sr": sr,
-            "stochastic": stochastic,
-            "current_price": current_price,
-            "sma_20": sma_20,
-            "sma_50": sma_50,
-            "volatility": volatility,
-            "momentum_5": momentum_5,
-        }
-
-# ========================================================================
-# 🤖 SCALPER BOT - FIXED EDITION
-# ========================================================================
-
-class ScalperBotV92:
+class ScalperBotV40:
 
     def __init__(self, api_key: str, api_secret: str, symbol: str = "BTCUSDT",
-                 exchange_region: str = "us", log_level: str = "INFO"):
+                 test_mode: bool = True, exchange_region: str = "us",
+                 log_level: str = "INFO"):
         """
-        FIXED EDITION - Only trades when conditions are GOOD
+        exchange_region: "us" -> api.binance.us, "global" -> api.binance.com
+        Optimized for small accounts with high volatility tolerance
         """
         self.api_key = api_key
         self.api_secret = api_secret
         self.symbol = symbol
-        self.test_mode = False
+        self.test_mode = test_mode
 
         # Setup logging
         log_filename = f"crisis_scalper_{datetime.now().strftime('%Y%m%d')}.log"
@@ -615,6 +165,7 @@ class ScalperBotV92:
         )
         self.logger = logging.getLogger(__name__)
         
+        # Also log to console
         console = logging.StreamHandler()
         console.setLevel(logging.INFO)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -628,81 +179,52 @@ class ScalperBotV92:
         else:
             raise ValueError('exchange_region must be "us" or "global"')
 
-        # 💰 FIXED PARAMETERS
-        self.total_balance_usdt = 50.0
+        # 💰 OPTIMIZED FOR SMALL ACCOUNTS
+        self.total_balance_usdt = 50.0  # Will be updated when balance is fetched
+        self.max_risk_per_trade = 0.10
+        self.trade_amount_usdt = 5.00
         
-        # MINIMUM ORDER SIZE
-        self.min_order_usdt = 10.0
-        self.max_order_usdt = 25.0
+        # Conservative risk parameters
+        self.target_profit_pct = 0.008  # 0.8% profit target
+        self.stop_loss_pct = 0.005      # 0.5% stop loss
+        self.max_drawdown_pct = 0.65    # 65% max drawdown
         
-        # RISK:REWARD = 1:3
-        self.stop_loss_pct = 0.005          # 0.5% stop loss
-        self.target_profit_pct = 0.015      # 1.5% target
-        
-        # Position sizing
-        self.base_risk_per_trade = 0.02
-        self.max_risk_per_trade = 0.05
-        self.min_risk_per_trade = 0.01
-        
-        # FIXED: Stricter entry - Need 7+ conditions PASSING
-        self.min_passing_conditions = 7     # Must have 7+ conditions passing
-        self.min_confidence = 0.35
-        self.min_signal_strength = "moderate"
-        self.min_strong_signals = 1
-        
-        # Safety limits
-        self.max_drawdown_pct = 0.08
-        self.max_consecutive_losses = 3
-        self.max_skips_before_pause = 50
-        self.target_consecutive_wins = 7
-        
-        # Trade management
-        self.chase_timeout_sec = 60
+        self.max_chase_attempts = 3
+        self.chase_timeout_sec = 30
         self.stop_loss_poll_sec = 2
         self.maker_fee_rate = 0.001
         
         # Price cache
         self._price_cache = {}
         self._price_cache_time = 0
-        self._price_cache_ttl = 1
+        self._price_cache_ttl = 2
 
         # Exchange info cache
         self._min_qty = 0.00001
         self._tick_size = 0.01
-        self._min_notional = 10.0
 
         # Internal state
         self.active_order_id = None
         self.buy_price = None
         self.buy_qty = None
+        self.crisis_engine = CrisisScoringEngine()
         
-        # Track running P&L
+        # Track running P&L - FIX: Initialize properly
         self.running_pnl = 0.0
-        self.current_balance = 0.0
-        self.peak_balance = 0.0
-        self.starting_balance = 0.0
+        self.current_balance = 0.0  # Will be set when balance is fetched
+        self.peak_balance = 0.0     # Will be set when balance is fetched
+        self.starting_balance = 0.0 # Store the actual starting balance
         self.consecutive_losses = 0
-        self.consecutive_wins = 0
+        self.max_consecutive_losses = 7
         self.balance_fetched = False
         self.stopped = False
         self.initialized = False
-        self.skipped_count = 0
-        
-        # Advanced performance metrics
-        self.trade_history = []
-        self.returns = []
-        self.win_count = 0
-        self.loss_count = 0
-        self.total_trades = 0
-        self.skipped_trades = 0
-        self.total_fees = 0.0
-        
+
         # Statistics tracking
         self.cycle_stats = {
             "total_cycles": 0,
             "successful_cycles": 0,
             "failed_cycles": 0,
-            "skipped_cycles": 0,
             "total_profit": 0.0,
             "total_loss": 0.0,
             "net_profit": 0.0,
@@ -711,39 +233,50 @@ class ScalperBotV92:
             "cycle_results": []
         }
 
-        self.logger.info("="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.2 - THE FIXED EDITION")
-        self.logger.info("="*70)
+        self.country_performance = {}
+
+        self.logger.info(f"🚀 CRISIS ARBITRAGE SCALPER v4.3 - FIXED DRAWDOWN")
         self.logger.info(f"   Symbol: {symbol}")
-        self.logger.info(f"   Mode: 💰 LIVE TRADING")
-        self.logger.info(f"   Min Order: ${self.min_order_usdt:.2f}")
+        self.logger.info(f"   Exchange: {self.base_url}")
+        self.logger.info(f"   Mode: {'🧪 PAPER TRADING' if test_mode else '💰 LIVE TRADING'}")
+        self.logger.info(f"   Target Balance: ${self.total_balance_usdt:.2f}")
+        self.logger.info(f"   Trade Amount: ${self.trade_amount_usdt:.2f}")
         self.logger.info(f"   Target Profit: {self.target_profit_pct*100:.1f}%")
         self.logger.info(f"   Stop Loss: {self.stop_loss_pct*100:.1f}%")
-        self.logger.info(f"   Risk:Reward: 1:{self.target_profit_pct/self.stop_loss_pct:.1f}")
-        self.logger.info(f"   Win Rate Needed: 25.0%")
-        self.logger.info(f"   Passing Conditions Required: {self.min_passing_conditions}/9")
         self.logger.info(f"   Max Drawdown: {self.max_drawdown_pct*100:.0f}%")
-        self.logger.info("="*70)
+        self.logger.info("="*60)
 
-        # Auto-initialize
-        self._check_connectivity()
-        self._get_exchange_info()
-        self._initialize_balance()
+        if not test_mode:
+            self._check_connectivity()
+            self._get_exchange_info()
+            self._initialize_balance()  # NEW: Initialize balance before starting
 
     def _initialize_balance(self):
+        """Initialize balance and peak balance from exchange"""
         try:
             balances = self.get_account_balance()
             if "USDT" in balances and balances["USDT"] > 0:
                 self.current_balance = balances["USDT"]
                 self.starting_balance = self.current_balance
-                self.peak_balance = self.current_balance
+                self.peak_balance = self.current_balance  # CRITICAL FIX: Set peak to actual balance
                 self.total_balance_usdt = self.current_balance
                 self.balance_fetched = True
                 self.initialized = True
-                self.logger.info(f"💰 Starting Balance: ${self.current_balance:.2f}")
+                
+                # Update trade amount based on current balance
+                self.trade_amount_usdt = min(
+                    self.current_balance * self.max_risk_per_trade,
+                    self.trade_amount_usdt
+                )
+                if self.trade_amount_usdt < 2.0:
+                    self.trade_amount_usdt = 2.0
+                    
+                self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
+                self.logger.info(f"💰 Peak Balance: ${self.peak_balance:.2f}")
+                self.logger.info(f"💰 Trade Amount: ${self.trade_amount_usdt:.2f}")
                 return True
             else:
-                self.logger.warning("⚠️ Could not fetch valid balance")
+                self.logger.warning("⚠️ Could not fetch valid balance, using default values")
                 self.balance_fetched = False
                 return False
         except Exception as e:
@@ -752,31 +285,54 @@ class ScalperBotV92:
             return False
 
     def _update_balance(self):
+        """Update current balance from exchange with fallbacks"""
+        if self.test_mode:
+            self.balance_fetched = True
+            return
+        
         try:
             balances = self.get_account_balance()
             if "USDT" in balances and balances["USDT"] > 0:
                 self.current_balance = balances["USDT"]
                 self.total_balance_usdt = self.current_balance
                 self.balance_fetched = True
+                
+                # Update peak balance if this is the first time or if balance is higher
                 if self.peak_balance == 0 or self.current_balance > self.peak_balance:
                     self.peak_balance = self.current_balance
+                
+                # Update trade amount based on current balance
+                self.trade_amount_usdt = min(
+                    self.current_balance * self.max_risk_per_trade,
+                    self.trade_amount_usdt
+                )
+                if self.trade_amount_usdt < 2.0:
+                    self.trade_amount_usdt = 2.0
+                    
                 self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
+                self.logger.info(f"💰 Peak Balance: ${self.peak_balance:.2f}")
+                self.logger.info(f"💰 Trade Amount: ${self.trade_amount_usdt:.2f}")
             else:
-                self.logger.warning("⚠️ Could not fetch valid balance")
+                self.logger.warning("⚠️ Could not fetch valid balance, using default values")
                 self.balance_fetched = False
         except Exception as e:
             self.logger.error(f"Error fetching balance: {e}")
             self.balance_fetched = False
 
     def _check_connectivity(self):
+        """Fail loudly at startup"""
         self.logger.info("🔍 Running startup connectivity check...")
         ticker = self.get_order_book_ticker()
         if not ticker:
-            self.logger.error("❌ STARTUP CHECK FAILED")
+            self.logger.error("❌ STARTUP CHECK FAILED: could not fetch a ticker")
             raise SystemExit("Aborting: fix connectivity before running live cycles.")
-        self.logger.info(f"✅ Connectivity OK.")
+        self.logger.info(f"✅ Connectivity OK. {self.symbol} bid={ticker['bid']} ask={ticker['ask']}")
 
     def _get_exchange_info(self):
+        """Get exchange info for symbol validation"""
+        if self.test_mode:
+            return
+        
         try:
             resp = requests.get(f"{self.base_url}/api/v3/exchangeInfo", timeout=5)
             if resp.status_code == 200:
@@ -788,11 +344,7 @@ class ScalperBotV92:
                                 self._min_qty = float(filter_data.get("minQty", 0.00001))
                             if filter_data["filterType"] == "PRICE_FILTER":
                                 self._tick_size = float(filter_data.get("tickSize", 0.01))
-                            if filter_data["filterType"] == "MIN_NOTIONAL":
-                                self._min_notional = float(filter_data.get("minNotional", 10.0))
-                        self.logger.info(f"✅ Exchange info loaded")
-                        self.logger.info(f"   Min Qty: {self._min_qty}")
-                        self.logger.info(f"   Min Notional: ${self._min_notional:.2f}")
+                        self.logger.info(f"✅ Exchange info loaded: min_qty={self._min_qty}, tick_size={self._tick_size}")
                         break
         except Exception as e:
             self.logger.warning(f"Could not fetch exchange info: {e}")
@@ -809,6 +361,7 @@ class ScalperBotV92:
         if params is None:
             params = {}
         
+        # Format quantities properly before sending
         if "quantity" in params:
             params["quantity"] = format_quantity(float(params["quantity"]))
         if "price" in params:
@@ -834,7 +387,7 @@ class ScalperBotV92:
                 try:
                     data = response.json()
                 except ValueError:
-                    self.logger.error(f"Failed to decode JSON (status {response.status_code})")
+                    self.logger.error(f"Failed to decode JSON (status {response.status_code}): {response.text[:300]}")
                     if attempt < retries - 1:
                         time.sleep(2 ** attempt)
                         continue
@@ -844,7 +397,7 @@ class ScalperBotV92:
                     error_code = data.get("code")
                     if error_code in [-1003, -1001, -1016]:
                         wait_time = 2 ** attempt
-                        self.logger.warning(f"Rate limit hit, waiting {wait_time}s...")
+                        self.logger.warning(f"Rate limit hit (code {error_code}), waiting {wait_time}s...")
                         time.sleep(wait_time)
                         continue
                     self.logger.error(f"Binance API error {error_code}: {data.get('msg')}")
@@ -877,6 +430,7 @@ class ScalperBotV92:
         try:
             resp = requests.get(url, params={"symbol": self.symbol}, timeout=5)
             if resp.status_code != 200:
+                self.logger.error(f"Ticker request failed (status {resp.status_code}): {resp.text[:300]}")
                 return None
             
             data = resp.json()
@@ -888,8 +442,12 @@ class ScalperBotV92:
                 self._price_cache = {'ticker': ticker_data, 'time': now}
                 self._price_cache_time = now
                 return ticker_data
+            
+            self.logger.error(f"Unexpected ticker response: {data}")
             return None
+            
         except Exception as e:
+            self.logger.error(f"Error fetching ticker: {e}")
             return None
 
     def get_current_price(self) -> Optional[float]:
@@ -908,6 +466,9 @@ class ScalperBotV92:
         return mid
 
     def get_account_balance(self) -> Dict[str, float]:
+        if self.test_mode:
+            return {"USDT": self.total_balance_usdt, "BTC": 0.0}
+        
         resp = self._send_signed_request("GET", "/api/v3/account")
         if "balances" in resp and not resp.get("error"):
             balances = {}
@@ -920,46 +481,61 @@ class ScalperBotV92:
         return {"USDT": 0.0}
 
     def get_order_fill_price(self, order_id: str) -> Optional[float]:
+        """Get the actual fill price of a completed order"""
+        if self.test_mode:
+            return 64000.0
+        
         status = self._send_signed_request("GET", "/api/v3/order", {
             "symbol": self.symbol,
             "orderId": order_id,
         })
+        
         if status.get("status") == "FILLED":
+            # Get average fill price
             cum_quote = float(status.get("cummulativeQuoteQty", 0))
             executed_qty = float(status.get("executedQty", 0))
             if executed_qty > 0 and cum_quote > 0:
                 return cum_quote / executed_qty
+        
         return None
 
     def place_market_order(self, side: str, amount: float, is_quantity: bool = False) -> dict:
+        """Place a MARKET order for immediate execution"""
+        if self.test_mode:
+            simulated_id = f"SIM_MKT_{int(time.time() * 1000)}"
+            price = 64000.0 + random.uniform(-500, 500)
+            qty = amount if is_quantity else amount / price
+            if qty < self._min_qty:
+                qty = self._min_qty
+            self.logger.info(f"[TEST MODE] {side} MARKET | Qty: {qty:.8f} @ ~${price:.2f}")
+            return {
+                "orderId": simulated_id,
+                "price": str(price),
+                "executedQty": str(qty),
+                "origQty": str(qty),
+                "status": "FILLED",
+                "side": side,
+            }
+
+        # Get current price
         ticker = self.get_order_book_ticker()
         if not ticker:
             return {"error": "Failed to get market price"}
 
-        price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
-        
-        if amount < self.min_order_usdt:
-            amount = self.min_order_usdt
-        if amount > self.max_order_usdt and self.current_balance > 50:
-            amount = self.max_order_usdt
-        
+        # Calculate quantity
         if is_quantity:
             qty = round_to_step(amount, self._min_qty)
         else:
+            price = ticker["ask"] if side.upper() == "BUY" else ticker["bid"]
             qty = round_to_step(amount / price, self._min_qty)
 
         if qty < self._min_qty:
             qty = self._min_qty
+            self.logger.info(f"Quantity adjusted to minimum: {qty:.8f}")
 
         qty_str = format_quantity(qty)
-        
-        notional = qty * price
-        if notional < self._min_notional:
-            qty = self._min_notional / price
-            qty = round_to_step(qty, self._min_qty)
-            qty_str = format_quantity(qty)
 
-        self.logger.info(f"Placing {side} MARKET order: {qty_str} (${qty * price:.2f})")
+        self.logger.info(f"Placing {side} MARKET order: {qty_str}")
 
         params = {
             "symbol": self.symbol,
@@ -973,13 +549,16 @@ class ScalperBotV92:
         if "error" in response:
             return response
         
+        # Get the order ID and fetch the actual fill price
         order_id = response.get("orderId")
         if order_id:
-            time.sleep(0.3)
+            # Wait a moment for the order to be fully processed
+            time.sleep(0.5)
             fill_price = self.get_order_fill_price(order_id)
             if fill_price:
                 price = str(fill_price)
             else:
+                # Fallback: use market price
                 price = str(ticker["ask"] if side.upper() == "BUY" else ticker["bid"])
         else:
             price = "0"
@@ -994,9 +573,18 @@ class ScalperBotV92:
         }
 
     def place_limit_order(self, side: str, quantity: float, price: float) -> dict:
-        if quantity * price < self._min_notional:
-            quantity = self._min_notional / price
-            quantity = round_to_step(quantity, self._min_qty)
+        """Place a LIMIT order for better fill probability"""
+        if self.test_mode:
+            simulated_id = f"SIM_LIMIT_{int(time.time() * 1000)}"
+            self.logger.info(f"[TEST MODE] {side} LIMIT @ ${price:.2f} | Qty: {quantity:.8f}")
+            return {
+                "orderId": simulated_id,
+                "price": str(price),
+                "origQty": str(quantity),
+                "executedQty": str(quantity),
+                "status": "FILLED",
+                "side": side,
+            }
 
         qty = round_to_step(quantity, self._min_qty)
         if qty < self._min_qty:
@@ -1006,7 +594,7 @@ class ScalperBotV92:
         qty_str = format_quantity(qty)
         price_str = format_price(limit_price)
 
-        self.logger.info(f"Placing {side} LIMIT order: {qty_str} @ ${price_str} (${qty * limit_price:.2f})")
+        self.logger.info(f"Placing {side} LIMIT order: {qty_str} @ ${price_str}")
 
         params = {
             "symbol": self.symbol,
@@ -1032,114 +620,95 @@ class ScalperBotV92:
         }
 
     def cancel_order(self, order_id: str) -> dict:
+        if self.test_mode:
+            self.logger.info(f"[TEST MODE] Cancelled Order ID: {order_id}")
+            return {"status": "CANCELED", "orderId": order_id}
+
         params = {"symbol": self.symbol, "orderId": order_id}
         return self._send_signed_request("DELETE", "/api/v3/order", params)
 
     def get_order_status(self, order_id: str) -> dict:
+        """Get current order status"""
+        if self.test_mode:
+            return {"status": "FILLED", "orderId": order_id}
+        
         params = {"symbol": self.symbol, "orderId": order_id}
         return self._send_signed_request("GET", "/api/v3/order", params)
 
-    def calculate_position_size(self, analysis: Dict) -> float:
-        kelly_fraction = analysis.get('kelly_fraction', 0.02)
-        risk_pct = max(self.min_risk_per_trade, min(self.max_risk_per_trade, kelly_fraction))
-        
-        loss_penalty = max(0.5, 1.0 - (self.consecutive_losses * 0.15))
-        risk_pct = risk_pct * loss_penalty
-        
-        win_bonus = min(1.3, 1.0 + (self.consecutive_wins * 0.05))
-        risk_pct = min(self.max_risk_per_trade, risk_pct * win_bonus)
-        
-        position_size = self.current_balance * risk_pct
-        position_size = max(self.min_order_usdt, position_size)
-        position_size = min(self.max_order_usdt, position_size)
-        
-        self.logger.info(f"📊 Position Size: ${position_size:.2f} ({risk_pct*100:.2f}% of balance)")
-        return position_size
-
-    def run_cycle(self, cycle_number: int = 0) -> dict:
+    def run_cycle(self, iso: str = None, cycle_number: int = 0) -> dict:
         if self.stopped:
             return {"success": False, "error": "Bot stopped"}
             
         self.logger.info(f"\n{'='*60}")
-        self.logger.info(f"🔄 CYCLE {cycle_number}")
+        self.logger.info(f"🔄 CYCLE {cycle_number}/100")
         self.logger.info(f"{'='*60}")
 
-        self._update_balance()
-        
-        if not self.balance_fetched or self.current_balance <= 0:
-            self.logger.error("❌ Invalid balance")
-            self.stopped = True
-            return {"success": False, "error": "Invalid balance"}
-        
-        if self.peak_balance > 0:
-            drawdown = (self.peak_balance - self.current_balance) / self.peak_balance
-            if drawdown > self.max_drawdown_pct:
-                self.logger.error(f"❌ Max drawdown exceeded: {drawdown*100:.1f}%")
+        # Check balance and risk limits
+        if not self.test_mode:
+            # Ensure balance is initialized
+            if not self.initialized:
+                self._initialize_balance()
+                if not self.initialized:
+                    self.logger.error("❌ Failed to initialize balance, cannot trade")
+                    self.stopped = True
+                    return {"success": False, "error": "Balance initialization failed"}
+            
+            self._update_balance()
+            
+            # Check if balance is valid
+            if not self.balance_fetched or self.current_balance <= 0:
+                self.logger.error("❌ Invalid or zero balance, cannot trade")
                 self.stopped = True
-                return {"success": False, "error": "Max drawdown exceeded"}
-        
-        if self.consecutive_losses >= self.max_consecutive_losses:
-            self.logger.error(f"❌ Too many consecutive losses: {self.consecutive_losses}")
-            self.stopped = True
-            return {"success": False, "error": "Too many consecutive losses"}
-        
-        if self.current_balance < self.min_order_usdt:
-            self.logger.error(f"❌ Balance too low: ${self.current_balance:.2f}")
-            self.stopped = True
-            return {"success": False, "error": "Balance too low"}
+                return {"success": False, "error": "Invalid balance"}
+            
+            # Check drawdown - FIXED: Use peak_balance which is properly initialized
+            if self.peak_balance > 0:
+                drawdown = (self.peak_balance - self.current_balance) / self.peak_balance
+                if drawdown > self.max_drawdown_pct:
+                    self.logger.error(f"❌ Max drawdown exceeded: {drawdown*100:.1f}% > {self.max_drawdown_pct*100:.0f}%")
+                    self.logger.error(f"   Peak: ${self.peak_balance:.2f}, Current: ${self.current_balance:.2f}")
+                    self.stopped = True
+                    return {"success": False, "error": "Max drawdown exceeded"}
+            
+            # Check consecutive losses
+            if self.consecutive_losses >= self.max_consecutive_losses:
+                self.logger.error(f"❌ Too many consecutive losses: {self.consecutive_losses}")
+                self.stopped = True
+                return {"success": False, "error": "Too many consecutive losses"}
+            
+            # Check minimum balance
+            if self.current_balance < 3.0:
+                self.logger.error(f"❌ Balance too low: ${self.current_balance:.2f} < $3.00")
+                self.stopped = True
+                return {"success": False, "error": "Balance too low"}
 
-        # Get market data
-        klines = AdvancedTA.get_klines(self.symbol, self.base_url, interval="1m", limit=300)
-        if not klines:
-            self.logger.warning("⚠️ Could not fetch market data - skipping")
-            self.skipped_trades += 1
-            self.skipped_count += 1
-            return {"success": False, "error": "No market data", "skipped": True}
-        
-        # Analyze with fixed strategy
-        analysis = EinsteinStrategy.analyze_market(klines)
-        
-        self.logger.info(f"📊 FIXED MARKET ANALYSIS:")
-        self.logger.info(f"   Signal: {analysis['signal']} ({analysis['strength']})")
-        self.logger.info(f"   Passing Conditions: {analysis['passing_conditions']}/{analysis['total_conditions']}")
-        self.logger.info(f"   Confidence: {analysis['confidence']:.2f}")
-        self.logger.info(f"   Bullish/Bearish: {analysis['bullish_signals']}/{analysis['bearish_signals']}")
-        self.logger.info(f"   Strong Bullish: {analysis['strong_bullish']}")
-        self.logger.info(f"   RSI: {analysis['rsi']:.1f}")
-        self.logger.info(f"   BB Position: {analysis['bb']['position']:.2f}")
-        self.logger.info(f"   Expected Win Rate: {analysis['expected_win_rate']*100:.0f}%")
-        
-        for reason in analysis['reasons'][:8]:
-            self.logger.info(f"   → {reason}")
-        
-        # ============ FIXED ENTRY CONDITIONS - ONLY TRADE WHEN GOOD ============
-        passing = analysis['passing_conditions']
-        needed = self.min_passing_conditions
-        
-        if passing >= needed:
-            self.logger.info(f"✅ {passing}/{analysis['total_conditions']} conditions PASSING - TRADING!")
-            self.skipped_count = 0
+        # Select country
+        if iso:
+            country = CrisisScoringEngine.get_crisis_score(iso)
+            if not country:
+                self.logger.error(f"Country {iso} not found in FSI data")
+                return {"success": False, "error": "Country not found"}
+            opp_score = CrisisScoringEngine.score_opportunity(iso)
+            self.logger.info(f"🎯 Trading: {country['flag']} {country['name']} (FSI: {country['fsi_score']}, WST: {country['wst_class']})")
+            self.logger.info(f"   Opportunity Score: {opp_score:.2f}")
         else:
-            self.logger.info(f"⏭️ Only {passing}/{analysis['total_conditions']} passing (need {needed}) - SKIPPING")
-            self.skipped_trades += 1
-            self.skipped_count += 1
-            
-            if self.skipped_count >= self.max_skips_before_pause:
-                self.logger.warning(f"⚠️ {self.skipped_count} consecutive skips - taking a break...")
-                time.sleep(60)
-                self.skipped_count = 0
-            
-            return {"success": False, "error": "Not enough conditions passing", "skipped": True}
+            top_opportunities = CrisisScoringEngine.get_top_opportunities(20)
+            if not top_opportunities:
+                self.logger.error("No opportunities found")
+                return {"success": False, "error": "No opportunities"}
+            idx = (cycle_number - 1) % len(top_opportunities)
+            country = top_opportunities[idx]
+            iso = country["iso"]
+            self.logger.info(f"🎯 Trading: {country['flag']} {country['name']} (FSI: {country['fsi_score']}, WST: {country['wst_class']})")
+            self.logger.info(f"   Opportunity Score: {country['opportunity_score']:.2f}")
 
-        # Get current price
+        # Get current price for reference
         current_price = self.get_current_price()
-        if not current_price:
-            return {"success": False, "error": "No price data"}
+        if current_price:
+            self.logger.info(f"💰 Current Price: ${current_price:.2f}")
 
-        # Calculate position size
-        position_size = self.calculate_position_size(analysis)
-        buy_amount = min(position_size, self.current_balance * 0.40)
-        
+        # Place BUY MARKET order for immediate fill
+        buy_amount = min(self.trade_amount_usdt, self.current_balance * 0.85)
         self.logger.info(f"📈 Placing BUY MARKET order for ~${buy_amount:.2f}")
         
         buy_order = self.place_market_order(
@@ -1154,52 +723,40 @@ class ScalperBotV92:
 
         order_id = buy_order.get("orderId")
         if not order_id:
+            self.logger.error(f"Missing orderId in response: {buy_order}")
             return {"success": False, "error": "Missing orderId"}
 
+        # Get fill details - handle price=0 case
         self.buy_price = float(buy_order.get("price", 0))
         self.buy_qty = float(buy_order.get("executedQty", buy_order.get("origQty", 0)))
         
-        if self.buy_price == 0 and order_id:
+        # If price is 0, try to get the actual fill price from the order
+        if self.buy_price == 0 and order_id and not self.test_mode:
+            self.logger.info("Fetching actual fill price from order...")
             fill_price = self.get_order_fill_price(order_id)
             if fill_price:
                 self.buy_price = fill_price
+                self.logger.info(f"✅ Actual fill price: ${self.buy_price:.2f}")
             else:
+                # Fallback: use current market price
                 self.buy_price = self.get_current_price() or 64000.0
+                self.logger.info(f"⚠️ Using fallback price: ${self.buy_price:.2f}")
         
         if self.buy_qty == 0:
+            self.logger.error(f"Invalid quantity: {buy_order}")
             return {"success": False, "error": "Invalid quantity"}
 
-        self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} BTC @ ${self.buy_price:.2f} (${self.buy_qty * self.buy_price:.2f})")
+        self.logger.info(f"✅ BUY Filled: {self.buy_qty:.8f} BTC @ ${self.buy_price:.2f}")
 
         # Calculate Exit Levels
-        atr_stop = EinsteinMath.optimal_stop_loss(
-            analysis['atr'], 
-            analysis['volatility'], 
-            analysis['confidence']
-        )
-        
-        stop_price = self.buy_price - atr_stop
-        target_price = self.buy_price * (1 + self.target_profit_pct)
-        
-        min_stop = self.buy_price * (1 - self.stop_loss_pct)
-        max_stop = self.buy_price * (1 - 0.015)
-        stop_price = max(min_stop, min(max_stop, stop_price))
-        
-        if analysis['sr']['near_resistance']:
-            resistance = analysis['sr']['resistance']
-            if resistance < target_price:
-                target_price = min(target_price, resistance * 0.998)
-                self.logger.info(f"📊 Adjusted target due to resistance: ${target_price:.2f}")
-        
-        actual_risk = self.buy_price - stop_price
-        actual_reward = target_price - self.buy_price
-        rr_ratio = actual_reward / actual_risk if actual_risk > 0 else 0
-        
-        self.logger.info(f"🎯 Target: ${target_price:.2f} (+{((target_price/self.buy_price)-1)*100:.2f}%)")
-        self.logger.info(f"🛑 Stop: ${stop_price:.2f} (-{((1 - stop_price/self.buy_price))*100:.2f}%)")
-        self.logger.info(f"📊 Risk:Reward: 1:{rr_ratio:.2f}")
+        target_profit_pct = self.target_profit_pct * (1 + random.uniform(-0.1, 0.1))
+        target_price = self.buy_price * (1 + target_profit_pct)
+        stop_price = self.buy_price * (1 - self.stop_loss_pct)
 
-        # Place SELL LIMIT order
+        self.logger.info(f"🎯 Target: ${target_price:.2f} (+{target_profit_pct*100:.1f}%)")
+        self.logger.info(f"🛑 Stop:   ${stop_price:.2f} (-{self.stop_loss_pct*100:.1f}%)")
+
+        # Place SELL LIMIT order at target
         self.logger.info(f"📉 Placing SELL LIMIT order @ ${target_price:.2f}")
         sell_order = self.place_limit_order(
             side="SELL",
@@ -1209,6 +766,7 @@ class ScalperBotV92:
 
         if "error" in sell_order:
             self.logger.error(f"Failed to place sell order: {sell_order}")
+            # Try market sell as fallback
             self.logger.info("Attempting market sell as fallback...")
             fallback_sell = self.place_market_order("SELL", self.buy_qty, is_quantity=True)
             if "error" in fallback_sell:
@@ -1221,8 +779,10 @@ class ScalperBotV92:
         else:
             sell_order_id = sell_order.get("orderId")
             if not sell_order_id:
+                self.logger.error(f"Missing orderId in sell response: {sell_order}")
                 return {"success": False, "error": "Missing sell orderId"}
 
+            # Monitor sell order
             sell_filled = False
             sell_start = time.time()
             exit_price = target_price
@@ -1231,9 +791,11 @@ class ScalperBotV92:
             while not sell_filled:
                 now = time.time()
                 
+                # Check if order filled
                 status = self.get_order_status(sell_order_id)
                 if status.get("status") == "FILLED":
                     sell_filled = True
+                    # Get actual fill price
                     cum_quote = float(status.get("cummulativeQuoteQty", 0))
                     executed_qty = float(status.get("executedQty", 0))
                     if executed_qty > 0 and cum_quote > 0:
@@ -1243,10 +805,11 @@ class ScalperBotV92:
                     self.logger.info(f"✅ SELL Filled @ ${exit_price:.2f}")
                     break
                 
+                # Check stop-loss
                 if now - sell_start > 2:
                     current_price = self.get_current_price()
                     if current_price and current_price <= stop_price:
-                        self.logger.warning(f"🛑 STOP-LOSS breached: ${current_price:.2f}")
+                        self.logger.warning(f"🛑 STOP-LOSS breached: ${current_price:.2f} <= ${stop_price:.2f}")
                         self.cancel_order(sell_order_id)
                         exit_res = self.place_market_order("SELL", self.buy_qty, is_quantity=True)
                         if "error" in exit_res:
@@ -1261,6 +824,7 @@ class ScalperBotV92:
                         self.logger.info(f"🛑 Stopped out @ ${exit_price:.2f}")
                         break
                 
+                # Chase if taking too long
                 if now - sell_start > self.chase_timeout_sec:
                     self.logger.info("Sell order taking too long, converting to market...")
                     self.cancel_order(sell_order_id)
@@ -1280,148 +844,173 @@ class ScalperBotV92:
 
         # Calculate P&L
         realized_pnl = (exit_price - self.buy_price) * self.buy_qty
-        fee_estimate = (self.buy_qty * self.buy_price * 0.001) + (self.buy_qty * exit_price * 0.001)
-        net_pnl = realized_pnl - fee_estimate
-        self.total_fees += fee_estimate
+        self.logger.info(f"💰 P&L: ${realized_pnl:.4f}" + (" (stop-loss exit)" if stopped_out else ""))
         
-        self.logger.info(f"💰 P&L: ${realized_pnl:.4f} (net: ${net_pnl:.4f})" + (" (stop-loss exit)" if stopped_out else ""))
-        self.logger.info(f"📊 Fees: ${fee_estimate:.4f}")
-        
-        # Update metrics
-        self.running_pnl += net_pnl
+        # Update balance and track consecutive losses
+        self.running_pnl += realized_pnl
         self.current_balance = max(0, self.total_balance_usdt + self.running_pnl)
-        self.total_trades += 1
-        
-        if net_pnl > 0:
-            self.win_count += 1
-            self.consecutive_wins += 1
+        if self.current_balance > self.peak_balance:
+            self.peak_balance = self.current_balance
             self.consecutive_losses = 0
-            if self.current_balance > self.peak_balance:
-                self.peak_balance = self.current_balance
-        else:
-            self.loss_count += 1
+        elif realized_pnl < 0:
             self.consecutive_losses += 1
-            self.consecutive_wins = 0
+        else:
+            self.consecutive_losses = 0
         
-        trade_return = net_pnl / self.current_balance if self.current_balance > 0 else 0
-        self.returns.append(trade_return)
-        
-        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-        self.logger.info(f"📊 Win Rate: {win_rate:.1f}% ({self.win_count}W/{self.loss_count}L)")
-        self.logger.info(f"📊 Consecutive Wins: {self.consecutive_wins} | Losses: {self.consecutive_losses}")
         self.logger.info(f"💰 Current Balance: ${self.current_balance:.2f}")
+        self.logger.info(f"📊 Consecutive Losses: {self.consecutive_losses}")
+        self.logger.info("=== Cycle Complete ===")
+
+        # Update country performance
+        if iso not in self.country_performance:
+            self.country_performance[iso] = {
+                "name": country["name"],
+                "flag": country["flag"],
+                "trades": 0,
+                "total_profit": 0,
+                "wins": 0,
+                "losses": 0,
+                "stopped_out": 0
+            }
+
+        self.country_performance[iso]["trades"] += 1
+        self.country_performance[iso]["total_profit"] += realized_pnl
+        if realized_pnl > 0:
+            self.country_performance[iso]["wins"] += 1
+        else:
+            self.country_performance[iso]["losses"] += 1
+        if stopped_out:
+            self.country_performance[iso]["stopped_out"] += 1
 
         result = {
             "success": True,
             "cycle": cycle_number,
+            "country": iso,
+            "country_name": country["name"],
+            "country_flag": country["flag"],
+            "fsi_score": country["fsi_score"],
+            "wst_class": country["wst_class"],
             "entry_price": self.buy_price,
             "exit_price": exit_price,
             "quantity": self.buy_qty,
             "profit": realized_pnl,
-            "net_profit": net_pnl,
-            "fees": fee_estimate,
             "profit_percent": (realized_pnl / (self.buy_price * self.buy_qty)) * 100 if self.buy_price * self.buy_qty > 0 else 0,
             "stopped_out": stopped_out,
             "balance_after": self.current_balance,
-            "consecutive_wins": self.consecutive_wins,
             "consecutive_losses": self.consecutive_losses,
-            "win_rate": win_rate,
-            "passing_conditions": analysis['passing_conditions'],
-            "rsi": analysis['rsi'],
-            "bb_position": analysis['bb']['position'],
             "timestamp": datetime.now().isoformat()
         }
 
         self.cycle_stats["total_cycles"] += 1
-        if net_pnl > 0:
+        if realized_pnl > 0:
             self.cycle_stats["successful_cycles"] += 1
-            self.cycle_stats["total_profit"] += net_pnl
+            self.cycle_stats["total_profit"] += realized_pnl
         else:
             self.cycle_stats["failed_cycles"] += 1
-            self.cycle_stats["total_loss"] += abs(net_pnl)
+            self.cycle_stats["total_loss"] += abs(realized_pnl)
 
-        self.cycle_stats["net_profit"] += net_pnl
+        self.cycle_stats["net_profit"] += realized_pnl
         self.cycle_stats["cycle_results"].append(result)
-        self.trade_history.append(result)
 
         return result
 
-    def run_forever(self, delay_between_cycles: int = 10):
-        """Run continuously - only trades when conditions are GOOD"""
-        self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.2 - FIXED EDITION")
-        self.logger.info("   ONLY TRADES WHEN CONDITIONS ARE GOOD")
-        self.logger.info("   Requires 7/9 conditions PASSING")
-        self.logger.info("   Press Ctrl+C to stop")
-        self.logger.info("="*70)
+    def run_scanner(self):
+        self.logger.info("\n🎯 TOP CRISIS OPPORTUNITIES")
+        self.logger.info("="*60)
+        top = CrisisScoringEngine.get_top_opportunities(10)
+        for i, opp in enumerate(top, 1):
+            self.logger.info(f"{i}. {opp['flag']} {opp['name']}")
+            self.logger.info(f"   FSI: {opp['fsi_score']:.1f} | WST: {opp['wst_class']} | Recovery: {opp['recovery_rate']*100:.0f}%")
+            self.logger.info(f"   Opportunity Score: {opp['opportunity_score']:.2f}")
+
+    def run_100_cycles(self, delay_between_cycles: int = 5):
+        self.logger.info("\n" + "="*60)
+        self.logger.info("🚀 STARTING 100 CYCLES EXECUTION")
+        self.logger.info("="*60)
 
         self.cycle_stats["start_time"] = datetime.now()
-        
-        cycle_num = 1
-        while not self.stopped:
-            try:
-                self.logger.info(f"\n📊 Cycle {cycle_num}")
-                self.logger.info(f"   Streak: {self.consecutive_wins} wins | {self.consecutive_losses} losses")
-                self.logger.info(f"   Skips: {self.skipped_count} in a row")
-                self.logger.info(f"   Balance: ${self.current_balance:.2f}")
-                
-                result = self.run_cycle(cycle_number=cycle_num)
+        top_countries = CrisisScoringEngine.get_top_opportunities(30)
 
-                if result.get("skipped", False):
-                    self.logger.info(f"⏭️ Waiting for GOOD conditions... ({self.skipped_count} skips)")
-                elif not result.get("success", False):
-                    self.logger.error(f"⚠️ Cycle failed: {result.get('error', 'Unknown error')}")
+        for cycle_num in range(1, 101):
+            try:
+                if self.stopped:
+                    self.logger.error("❌ Bot stopped due to risk limits")
+                    break
+                
+                if not self.test_mode:
+                    if not self.balance_fetched or self.current_balance <= 0:
+                        self.logger.error("❌ No valid balance, stopping")
+                        self.stopped = True
+                        break
+                    
+                    if self.current_balance < 3.0:
+                        self.logger.error(f"❌ Balance critically low: ${self.current_balance:.2f}, stopping")
+                        self.stopped = True
+                        break
+                    
+                    if self.cycle_stats.get("failed_cycles", 0) > 50:
+                        self.logger.error("❌ Too many failed cycles, stopping")
+                        self.stopped = True
+                        break
+
+                country_idx = (cycle_num - 1) % len(top_countries)
+                selected_country = top_countries[country_idx]["iso"]
+
+                self.logger.info(f"\n📊 Cycle {cycle_num}/100 - Trading {top_countries[country_idx]['flag']} {top_countries[country_idx]['name']}")
+
+                result = self.run_cycle(iso=selected_country, cycle_number=cycle_num)
+
+                if not result.get("success", False):
+                    self.logger.error(f"⚠️ Cycle {cycle_num} failed: {result.get('error', 'Unknown error')}")
                 else:
-                    self.logger.info(f"✅ TRADE COMPLETED! Profit: ${result.get('net_profit', 0):.4f}")
+                    self.logger.info(f"✅ Cycle {cycle_num} completed successfully!")
+                    self.logger.info(f"   Profit: ${result.get('profit', 0):.4f} ({result.get('profit_percent', 0):.2f}%)")
 
                 self.print_current_stats()
                 self.export_results_to_csv()
 
-                if self.consecutive_wins >= self.target_consecutive_wins:
-                    self.logger.info("\n" + "="*70)
-                    self.logger.info("🎉🎉🎉 TARGET ACHIEVED! 7 CONSECUTIVE WINS! 🎉🎉🎉")
-                    self.logger.info("="*70)
-                    self.stopped = True
-                    break
-
-                wait_time = delay_between_cycles + random.uniform(0, 2)
-                self.logger.info(f"\n⏳ Waiting {wait_time:.1f} seconds...")
-                time.sleep(wait_time)
-                cycle_num += 1
+                if cycle_num < 100:
+                    wait_time = delay_between_cycles + random.uniform(0, 2)
+                    self.logger.info(f"\n⏳ Waiting {wait_time:.1f} seconds before next cycle...")
+                    time.sleep(wait_time)
 
             except KeyboardInterrupt:
-                self.logger.info("\n⚠️ Stopped by user")
+                self.logger.info("\n⚠️ Execution interrupted by user")
                 break
             except Exception as e:
-                self.logger.error(f"❌ Error: {e}")
-                time.sleep(delay_between_cycles * 2)
-                cycle_num += 1
+                self.logger.error(f"❌ Error in cycle {cycle_num}: {e}")
+                if cycle_num < 100:
+                    wait_time = delay_between_cycles * 2
+                    self.logger.info(f"⏳ Waiting {wait_time} seconds before retry...")
+                    time.sleep(wait_time)
 
         self.cycle_stats["end_time"] = datetime.now()
         self.print_final_summary()
         self.export_final_report()
 
     def print_current_stats(self):
-        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
+        stats = self.cycle_stats
         self.logger.info(f"\n📊 CURRENT STATISTICS:")
-        self.logger.info(f"   Total Cycles: {self.cycle_stats['total_cycles']}")
-        self.logger.info(f"   Skipped: {self.cycle_stats.get('skipped_cycles', 0)}")
-        self.logger.info(f"   Wins: {self.win_count} | Losses: {self.loss_count}")
-        self.logger.info(f"   Win Rate: {win_rate:.1f}%")
-        self.logger.info(f"   Consecutive Wins: {self.consecutive_wins} | Losses: {self.consecutive_losses}")
-        self.logger.info(f"   Net Profit: ${self.cycle_stats['net_profit']:.4f}")
+        self.logger.info(f"   Total Cycles: {stats['total_cycles']}")
+        self.logger.info(f"   Successful: {stats['successful_cycles']}")
+        self.logger.info(f"   Failed: {stats['failed_cycles']}")
+        self.logger.info(f"   Net Profit: ${stats['net_profit']:.4f}")
         self.logger.info(f"   Current Balance: ${self.current_balance:.2f}")
+        self.logger.info(f"   Peak Balance: ${self.peak_balance:.2f}")
+        self.logger.info(f"   Consecutive Losses: {self.consecutive_losses}")
+        if stats['total_cycles'] > 0:
+            win_rate = (stats['successful_cycles'] / stats['total_cycles']) * 100
+            self.logger.info(f"   Win Rate: {win_rate:.1f}%")
 
     def print_final_summary(self):
         stats = self.cycle_stats
-        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
         duration = (stats['end_time'] - stats['start_time']).total_seconds()
         hours = duration // 3600
         minutes = (duration % 3600) // 60
         seconds = duration % 60
 
         self.logger.info("\n" + "="*70)
-        self.logger.info("🧠 EINSTEIN EDGE v9.2 - FINAL SUMMARY")
+        self.logger.info("🎯 FINAL SUMMARY - 100 CYCLES COMPLETE")
         self.logger.info("="*70)
         self.logger.info(f"📅 Start Time: {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
         self.logger.info(f"📅 End Time:   {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1430,30 +1019,43 @@ class ScalperBotV92:
         self.logger.info(f"📊 Total Cycles:       {stats['total_cycles']}")
         self.logger.info(f"✅ Successful Cycles:  {stats['successful_cycles']}")
         self.logger.info(f"❌ Failed Cycles:      {stats['failed_cycles']}")
-        self.logger.info(f"⏭️ Skipped Cycles:     {stats.get('skipped_cycles', 0)}")
-        self.logger.info(f"🏆 Win Rate:           {win_rate:.1f}%")
-        self.logger.info(f"📊 Consecutive Wins:   {self.consecutive_wins}")
+        if stats['total_cycles'] > 0:
+            win_rate = (stats['successful_cycles'] / stats['total_cycles']) * 100
+            self.logger.info(f"🏆 Win Rate:           {win_rate:.1f}%")
         self.logger.info("-"*70)
         self.logger.info(f"💰 Starting Balance:   ${self.starting_balance:.2f}")
         self.logger.info(f"💰 Final Balance:      ${self.current_balance:.2f}")
         self.logger.info(f"💰 Peak Balance:       ${self.peak_balance:.2f}")
         self.logger.info(f"📈 Total Profit:       ${stats['net_profit']:.4f}")
-        self.logger.info(f"📊 Total Fees:         ${self.total_fees:.4f}")
         
         if stats['total_cycles'] > 0:
-            avg_profit = stats['net_profit'] / max(1, stats['total_cycles'])
+            avg_profit = stats['net_profit'] / stats['total_cycles']
             self.logger.info(f"📊 Avg Profit/Cycle:   ${avg_profit:.4f}")
         
         if self.starting_balance > 0:
             roi = (stats['net_profit'] / self.starting_balance) * 100
             self.logger.info(f"📊 ROI:                {roi:.1f}%")
+        else:
+            self.logger.info(f"📊 ROI:                0.0%")
         
         if self.peak_balance > 0:
             drawdown = (self.peak_balance - self.current_balance) / self.peak_balance * 100
             self.logger.info(f"📊 Max Drawdown:       {drawdown:.1f}%")
-        
-        self.logger.info("-"*70)
-        self.logger.info(f"📊 Total Trades:        {self.total_trades}")
+        else:
+            self.logger.info(f"📊 Max Drawdown:       0.0%")
+            
+        self.logger.info(f"📊 Consecutive Losses: {self.consecutive_losses}")
+        self.logger.info(f"📊 Bot Stopped:         {self.stopped}")
+
+        if self.country_performance:
+            self.logger.info("\n🌍 COUNTRY PERFORMANCE:")
+            self.logger.info("-"*70)
+            sorted_countries = sorted(self.country_performance.items(), key=lambda x: x[1]["total_profit"], reverse=True)
+            for iso, data in sorted_countries[:10]:
+                win_rate_country = (data["wins"] / data["trades"]) * 100 if data["trades"] > 0 else 0
+                stop_rate = (data.get("stopped_out", 0) / data["trades"]) * 100 if data["trades"] > 0 else 0
+                self.logger.info(f"   {data['flag']} {data['name']}: {data['trades']} trades, ${data['total_profit']:.4f}, {win_rate_country:.1f}% win, {stop_rate:.1f}% stopped")
+
         self.logger.info("="*70)
 
     def export_results_to_csv(self):
@@ -1464,10 +1066,10 @@ class ScalperBotV92:
         file_exists = os.path.isfile(filename)
 
         with open(filename, 'a', newline='') as csvfile:
-            fieldnames = ['cycle', 'timestamp', 'entry_price', 'exit_price', 'quantity',
-                         'profit', 'net_profit', 'fees', 'profit_percent', 'stopped_out', 
-                         'balance_after', 'consecutive_wins', 'consecutive_losses', 'win_rate',
-                         'passing_conditions', 'rsi', 'bb_position', 'success']
+            fieldnames = ['cycle', 'timestamp', 'country', 'country_name', 'fsi_score',
+                         'wst_class', 'entry_price', 'exit_price', 'quantity',
+                         'profit', 'profit_percent', 'stopped_out', 'balance_after', 
+                         'consecutive_losses', 'success']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
             if not file_exists:
@@ -1477,21 +1079,18 @@ class ScalperBotV92:
             writer.writerow({
                 'cycle': latest['cycle'],
                 'timestamp': latest['timestamp'],
+                'country': latest['country'],
+                'country_name': latest['country_name'],
+                'fsi_score': latest['fsi_score'],
+                'wst_class': latest['wst_class'],
                 'entry_price': f"{latest['entry_price']:.2f}",
                 'exit_price': f"{latest['exit_price']:.2f}",
                 'quantity': f"{latest['quantity']:.8f}",
                 'profit': f"{latest['profit']:.4f}",
-                'net_profit': f"{latest.get('net_profit', 0):.4f}",
-                'fees': f"{latest.get('fees', 0):.4f}",
                 'profit_percent': f"{latest['profit_percent']:.2f}",
                 'stopped_out': latest.get('stopped_out', False),
                 'balance_after': f"{latest.get('balance_after', 0):.2f}",
-                'consecutive_wins': latest.get('consecutive_wins', 0),
                 'consecutive_losses': latest.get('consecutive_losses', 0),
-                'win_rate': f"{latest.get('win_rate', 0):.1f}",
-                'passing_conditions': latest.get('passing_conditions', 0),
-                'rsi': f"{latest.get('rsi', 0):.1f}",
-                'bb_position': f"{latest.get('bb_position', 0):.2f}",
                 'success': latest['success']
             })
 
@@ -1504,37 +1103,18 @@ class ScalperBotV92:
         if self.peak_balance > 0:
             max_drawdown_percent = ((self.peak_balance - self.current_balance) / self.peak_balance * 100)
         
-        win_rate = (self.win_count / self.total_trades * 100) if self.total_trades > 0 else 0
-        
         report = {
-            "version": "9.2",
-            "name": "Fixed Einstein Edge",
-            "rule": "Only trades when 7/9 conditions PASSING",
             "starting_balance": self.starting_balance,
             "final_balance": self.current_balance,
             "peak_balance": self.peak_balance,
             "max_drawdown_percent": max_drawdown_percent,
-            "consecutive_wins": self.consecutive_wins,
             "consecutive_losses": self.consecutive_losses,
             "roi_percent": roi_percent,
-            "win_rate": win_rate,
-            "total_trades": self.total_trades,
-            "wins": self.win_count,
-            "losses": self.loss_count,
-            "skipped_trades": self.skipped_trades,
-            "total_fees": self.total_fees,
-            "target_achieved": self.consecutive_wins >= self.target_consecutive_wins,
             "bot_stopped": self.stopped,
-            "settings": {
-                "min_order_usdt": self.min_order_usdt,
-                "target_profit_pct": self.target_profit_pct,
-                "stop_loss_pct": self.stop_loss_pct,
-                "risk_reward": self.target_profit_pct / self.stop_loss_pct,
-                "min_passing_conditions": self.min_passing_conditions,
-                "strategy": "Fixed - Only trade when conditions are GOOD"
-            },
             "summary": self.cycle_stats,
-            "trade_history": self.trade_history
+            "country_performance": self.country_performance,
+            "top_trades": sorted(self.cycle_stats["cycle_results"], key=lambda x: x.get('profit', 0), reverse=True)[:10],
+            "worst_trades": sorted(self.cycle_stats["cycle_results"], key=lambda x: x.get('profit', 0))[:10]
         }
 
         filename = f"crisis_scalper_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -1548,47 +1128,18 @@ class ScalperBotV92:
 # ========================================================================
 
 if __name__ == "__main__":
-    import os
-    import sys
-    
+    # ⚠️ WARNING: Replace these with your own API keys!
     API_KEY = "dD9RfqKg3tDc6SXHV54jhJY5jym0NlK0gEiB5HwQcgCuILEaQ5uu63ZllsPby0Vn"
     API_SECRET = "5ub1m7ESdtllFD8yVWFtkezO479C9J8p0WjNH4KS5J0bc0mcBHlRKaarYIrOIWT0"
-    
-    if not API_KEY or not API_SECRET:
-        print("="*70)
-        print("❌ API KEYS NOT FOUND!")
-        print("="*70)
-        print("\nCreate a .env file with:")
-        print("BINANCE_API_KEY=your_api_key")
-        print("BINANCE_API_SECRET=your_api_secret")
-        print("="*70)
-        sys.exit(1)
-    
-    print("="*70)
-    print("🧠 EINSTEIN EDGE v9.2 - THE FIXED EDITION")
-    print("="*70)
-    print("\nCRITICAL FIX:")
-    print("1. ✅ ONLY trades when 7/9 conditions PASSING")
-    print("2. ✅ NO trading when conditions are bad")
-    print("3. ✅ Proper logic: Passing conditions, not failing")
-    print("4. ✅ Stricter entry requirements")
-    print("5. ✅ Risk:Reward = 1:3")
-    print("\nEXPECTED RESULTS:")
-    print("   - Win Rate: 65-72%")
-    print("   - Fewer trades but HIGHER quality")
-    print("   - Profitable over time")
-    print("   - Risk of Ruin: <1%")
-    print("="*70)
-    
-    print("\n🤖 Starting FIXED EINSTEIN EDGE in 3 seconds...")
-    time.sleep(3)
-    
-    bot = ScalperBotV92(
+
+    bot = ScalperBotV40(
         api_key=API_KEY,
         api_secret=API_SECRET,
         symbol="BTCUSDT",
+        test_mode=False,
         exchange_region="us",
         log_level="INFO"
     )
 
-    bot.run_forever(delay_between_cycles=10)
+    bot.run_scanner()
+    bot.run_100_cycles(delay_between_cycles=5)
